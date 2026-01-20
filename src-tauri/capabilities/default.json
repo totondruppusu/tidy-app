@@ -1,8 +1,6 @@
 {
   "identifier": "default",
   "description": "Default capability set",
-  "permissions": [
-    "core:default",
-    "dialog:allow-open"
-  ]
+  "windows": ["main"],
+  "permissions": ["core:default", "dialog:allow-open"]
 }

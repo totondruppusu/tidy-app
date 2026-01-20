@@ -66,18 +66,30 @@ export default function App() {
   );
 
   const pickFolder = useCallback(async () => {
-    const selected = await open({ directory: true, multiple: false });
-    if (typeof selected === "string") {
-      await handleScan(selected);
+    try {
+      const selected = await open({ directory: true, multiple: false });
+      if (typeof selected === "string") {
+        await handleScan(selected);
+      } else {
+        updateStatus("No folder selected.");
+      }
+    } catch (error) {
+      updateStatus(`Folder picker failed: ${String(error)}`);
     }
-  }, [handleScan]);
+  }, [handleScan, updateStatus]);
 
   const pickDestination = useCallback(async () => {
-    const selected = await open({ directory: true, multiple: false });
-    if (typeof selected === "string") {
-      setDestination(selected);
-      await invoke("set_destination", { destination: selected });
-      updateStatus(`Move destination set to ${selected}.`);
+    try {
+      const selected = await open({ directory: true, multiple: false });
+      if (typeof selected === "string") {
+        setDestination(selected);
+        await invoke("set_destination", { destination: selected });
+        updateStatus(`Move destination set to ${selected}.`);
+      } else {
+        updateStatus("No destination selected.");
+      }
+    } catch (error) {
+      updateStatus(`Destination picker failed: ${String(error)}`);
     }
   }, [updateStatus]);
 
@@ -127,11 +139,16 @@ export default function App() {
     }
     let destinationPath = destination;
     if (!destinationPath) {
-      const selected = await open({ directory: true, multiple: false });
-      if (typeof selected === "string") {
-        destinationPath = selected;
-        setDestination(selected);
-        await invoke("set_destination", { destination: selected });
+      try {
+        const selected = await open({ directory: true, multiple: false });
+        if (typeof selected === "string") {
+          destinationPath = selected;
+          setDestination(selected);
+          await invoke("set_destination", { destination: selected });
+        }
+      } catch (error) {
+        updateStatus(`Destination picker failed: ${String(error)}`);
+        return;
       }
     }
     if (!destinationPath) {

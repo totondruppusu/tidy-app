@@ -6,8 +6,8 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tauri::http::header::{HeaderMap, HeaderName, HeaderValue};
-use tauri::http::{Response, ResponseBuilder, StatusCode};
-use tauri::AppHandle;
+use tauri::http::{Response, StatusCode};
+use tauri::{AppHandle, Manager};
 use uuid::Uuid;
 use walkdir::WalkDir;
 
@@ -228,15 +228,20 @@ fn build_response(
   status: StatusCode,
   headers: HeaderMap,
   body: Vec<u8>,
-) -> Result<Response<Vec<u8>>, tauri::Error> {
-  let mut builder = ResponseBuilder::new().status(status);
+) -> Result<Response<Vec<u8>>, Box<dyn std::error::Error + Send + Sync>> {
+  let mut builder = Response::builder().status(status);
   for (name, value) in headers {
-    builder = builder.header(name, value);
+    if let Some(name) = name {
+      builder = builder.header(name, value);
+    }
   }
   Ok(builder.body(body)?)
 }
 
-fn protocol_response(app: &AppHandle, request: tauri::http::Request<Vec<u8>>) -> Result<Response<Vec<u8>>, tauri::Error> {
+fn protocol_response(
+  app: &AppHandle,
+  request: tauri::http::Request<Vec<u8>>,
+) -> Result<Response<Vec<u8>>, Box<dyn std::error::Error + Send + Sync>> {
   let id = request
     .uri()
     .path()
@@ -308,9 +313,9 @@ fn main() {
   tauri::Builder::default()
     .manage(AppState::default())
     .plugin(tauri_plugin_dialog::init())
-    .register_asynchronous_uri_scheme_protocol("media", |app, request, responder| {
-      let response = protocol_response(&app, request).unwrap_or_else(|_| {
-        ResponseBuilder::new()
+    .register_asynchronous_uri_scheme_protocol("media", |context, request, responder| {
+      let response = protocol_response(context.app_handle(), request).unwrap_or_else(|_| {
+        Response::builder()
           .status(StatusCode::INTERNAL_SERVER_ERROR)
           .body(Vec::new())
           .expect("response")

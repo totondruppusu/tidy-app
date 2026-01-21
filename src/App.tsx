@@ -46,6 +46,16 @@ const isEditableTarget = (target: EventTarget | null) => {
   return tag === "input" || tag === "textarea" || tag === "select" || target.isContentEditable;
 };
 
+const shouldOpenOnEnter = (target: EventTarget | null) => {
+  if (!(target instanceof HTMLElement)) {
+    return true;
+  }
+  if (target === document.body || target === document.documentElement) {
+    return true;
+  }
+  return Boolean(target.closest(".file-list"));
+};
+
 const buildMediaUrl = (id: string) => `media://localhost/${id}`;
 
 const formatBytes = (bytes: number) => {
@@ -407,17 +417,24 @@ export default function App() {
     await moveCurrentToSlot(0, true);
   }, [moveCurrentToSlot]);
 
+  const openFileInFinder = useCallback(
+    async (file: FileEntry) => {
+      try {
+        await invoke("reveal_in_file_manager", { path: file.path, reveal: true });
+      } catch (error) {
+        updateStatus(`Open in Finder failed: ${String(error)}`);
+      }
+    },
+    [updateStatus]
+  );
+
   const openCurrentInFinder = useCallback(async () => {
     if (!currentFile) {
       updateStatus("No file selected.");
       return;
     }
-    try {
-      await invoke("reveal_in_file_manager", { path: currentFile.path, reveal: true });
-    } catch (error) {
-      updateStatus(`Open in Finder failed: ${String(error)}`);
-    }
-  }, [currentFile, updateStatus]);
+    await openFileInFinder(currentFile);
+  }, [currentFile, openFileInFinder, updateStatus]);
 
   const goNext = useCallback(() => {
     setCurrentIndex((prev) => (prev < sortedFiles.length - 1 ? prev + 1 : prev));
@@ -461,13 +478,20 @@ export default function App() {
           event.preventDefault();
           void moveCurrent();
           break;
+        case "Enter":
+          if (!shouldOpenOnEnter(event.target)) {
+            return;
+          }
+          event.preventDefault();
+          void openCurrentInFinder();
+          break;
         default:
           break;
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [goNext, goPrev, isSettingsOpen, moveCurrent, moveCurrentToSlot, trashCurrent]);
+  }, [goNext, goPrev, isSettingsOpen, moveCurrent, moveCurrentToSlot, openCurrentInFinder, trashCurrent]);
 
   useEffect(() => {
     let isMounted = true;
@@ -538,6 +562,7 @@ export default function App() {
         key={file.id}
         className={`file-item ${index === currentIndex ? "active" : ""}`}
         onClick={() => setCurrentIndex(index)}
+        onDoubleClick={() => void openFileInFinder(file)}
         ref={(node) => listItemRefs.current.set(file.id, node)}
         type="button"
         disabled={isLoading}
@@ -596,7 +621,7 @@ export default function App() {
       );
     });
     return items;
-  }, [visibleFiles, currentIndex, isLoading, groupMode]);
+  }, [visibleFiles, currentIndex, isLoading, groupMode, openFileInFinder]);
 
   useEffect(() => {
     if (!currentFile) {
@@ -773,15 +798,6 @@ export default function App() {
               <option value="extension">Extension</option>
             </select>
           </div>
-          <button
-            type="button"
-            className="pill-button"
-            onClick={openCurrentInFinder}
-            disabled={isLoading || !currentFile}
-          >
-            <span className="pill-label">Current</span>
-            <span className="pill-value">Open in Finder</span>
-          </button>
           <button
             type="button"
             className={`pill-button pill-toggle${confirmTrash ? "" : " is-warning"}`}

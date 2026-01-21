@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, isTauri } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open, confirm } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 
@@ -109,6 +110,8 @@ const formatGroupTitle = (mode: GroupMode, key: string) => {
   return formatGroupLabel(key as FileEntry["kind"]);
 };
 
+const DESTINATION_SLOT_COUNT = 5;
+
 const extractFolder = (path: string) => {
   const match = path.match(/^(.*)[\\/][^\\/]+$/);
   return match ? match[1] : path;
@@ -134,7 +137,9 @@ export default function App() {
   const [, setStatus] = useState("Select a folder to begin.");
   const [filterMode, setFilterMode] = useState<FilterMode>("all");
   const [includeSubfolders, setIncludeSubfolders] = useState(false);
-  const [destination, setDestination] = useState<string | null>(null);
+  const [destinationSlots, setDestinationSlots] = useState<(string | null)[]>(() =>
+    Array.from({ length: DESTINATION_SLOT_COUNT }, () => null)
+  );
   const [confirmTrash, setConfirmTrash] = useState(true);
   const [sortMode, setSortMode] = useState<SortMode>("name");
   const [groupMode, setGroupMode] = useState<GroupMode>("none");
@@ -153,6 +158,20 @@ export default function App() {
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
     window.localStorage.setItem("tidy-theme", theme);
+  }, [theme]);
+
+  useEffect(() => {
+    const applyWindowTheme = async () => {
+      if (!isTauri()) {
+        return;
+      }
+      try {
+        await getCurrentWindow().setTheme(theme === "dark" ? "Dark" : "Light");
+      } catch (error) {
+        console.warn("Failed to sync window theme.", error);
+      }
+    };
+    void applyWindowTheme();
   }, [theme]);
 
   const updateStatus = useCallback((message: string) => {
@@ -281,20 +300,31 @@ export default function App() {
     }
   }, [handleScan, updateStatus]);
 
-  const pickDestination = useCallback(async () => {
-    try {
-      const selected = await open({ directory: true, multiple: false });
-      if (typeof selected === "string") {
-        setDestination(selected);
-        await invoke("set_destination", { destination: selected });
-        updateStatus(`Move destination set to ${selected}.`);
-      } else {
+  const updateDestinationSlot = useCallback((slotIndex: number, destination: string) => {
+    setDestinationSlots((prev) => {
+      const next = [...prev];
+      next[slotIndex] = destination;
+      return next;
+    });
+  }, []);
+
+  const pickDestinationForSlot = useCallback(
+    async (slotIndex: number) => {
+      try {
+        const selected = await open({ directory: true, multiple: false });
+        if (typeof selected === "string") {
+          updateDestinationSlot(slotIndex, selected);
+          updateStatus(`Destination ${slotIndex + 1} set to ${selected}.`);
+          return selected;
+        }
         updateStatus("No destination selected.");
+      } catch (error) {
+        updateStatus(`Destination picker failed: ${String(error)}`);
       }
-    } catch (error) {
-      updateStatus(`Destination picker failed: ${String(error)}`);
-    }
-  }, [updateStatus]);
+      return null;
+    },
+    [updateDestinationSlot, updateStatus]
+  );
 
   const removeFileById = useCallback(
     (removedId: string) => {
@@ -343,37 +373,39 @@ export default function App() {
     }
   }, [confirmTrash, currentFile, removeFileById, updateStatus]);
 
-  const moveCurrent = useCallback(async () => {
-    if (!currentFile) {
-      updateStatus("No file selected.");
-      return;
-    }
-    let destinationPath = destination;
-    if (!destinationPath) {
-      try {
-        const selected = await open({ directory: true, multiple: false });
-        if (typeof selected === "string") {
-          destinationPath = selected;
-          setDestination(selected);
-          await invoke("set_destination", { destination: selected });
-        }
-      } catch (error) {
-        updateStatus(`Destination picker failed: ${String(error)}`);
+  const moveCurrentToSlot = useCallback(
+    async (slotIndex: number, allowPickIfMissing = false) => {
+      if (!currentFile) {
+        updateStatus("No file selected.");
         return;
       }
-    }
-    if (!destinationPath) {
-      updateStatus("Move destination not set.");
-      return;
-    }
-    try {
-      const newName = await invoke<string>("move_file", { id: currentFile.id });
-      removeFileById(currentFile.id);
-      updateStatus(`Moved to ${destinationPath}/${newName}.`);
-    } catch (error) {
-      updateStatus(`Move failed: ${String(error)}`);
-    }
-  }, [currentFile, destination, removeFileById, updateStatus]);
+      let destinationPath = destinationSlots[slotIndex] ?? null;
+      if (!destinationPath) {
+        if (allowPickIfMissing) {
+          destinationPath = await pickDestinationForSlot(slotIndex);
+        } else {
+          updateStatus(`Destination ${slotIndex + 1} not set.`);
+          return;
+        }
+      }
+      if (!destinationPath) {
+        return;
+      }
+      try {
+        await invoke("set_destination", { destination: destinationPath });
+        const newName = await invoke<string>("move_file", { id: currentFile.id });
+        removeFileById(currentFile.id);
+        updateStatus(`Moved to ${destinationPath}/${newName}.`);
+      } catch (error) {
+        updateStatus(`Move failed: ${String(error)}`);
+      }
+    },
+    [currentFile, destinationSlots, pickDestinationForSlot, removeFileById, updateStatus]
+  );
+
+  const moveCurrent = useCallback(async () => {
+    await moveCurrentToSlot(0, true);
+  }, [moveCurrentToSlot]);
 
   const openCurrentInFinder = useCallback(async () => {
     if (!currentFile) {
@@ -386,18 +418,6 @@ export default function App() {
       updateStatus(`Open in Finder failed: ${String(error)}`);
     }
   }, [currentFile, updateStatus]);
-
-  const revealDestination = useCallback(async () => {
-    if (!destination) {
-      updateStatus("Move destination not set.");
-      return;
-    }
-    try {
-      await invoke("reveal_in_file_manager", { path: destination, reveal: false });
-    } catch (error) {
-      updateStatus(`Reveal destination failed: ${String(error)}`);
-    }
-  }, [destination, updateStatus]);
 
   const goNext = useCallback(() => {
     setCurrentIndex((prev) => (prev < sortedFiles.length - 1 ? prev + 1 : prev));
@@ -417,6 +437,11 @@ export default function App() {
         return;
       }
       if (isEditableTarget(event.target)) {
+        return;
+      }
+      if (event.key >= "1" && event.key <= "5") {
+        event.preventDefault();
+        void moveCurrentToSlot(Number(event.key) - 1);
         return;
       }
       switch (event.key) {
@@ -442,7 +467,7 @@ export default function App() {
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [goNext, goPrev, isSettingsOpen, moveCurrent, trashCurrent]);
+  }, [goNext, goPrev, isSettingsOpen, moveCurrent, moveCurrentToSlot, trashCurrent]);
 
   useEffect(() => {
     let isMounted = true;
@@ -607,7 +632,6 @@ export default function App() {
   const totalFiles = files.length;
   const filteredCount = sortedFiles.length;
   const folderLabel = currentFolder ? formatPathLabel(currentFolder) : "No folder selected";
-  const destinationLabel = formatPathLabel(destination);
   const folderSizeBytes = useMemo(
     () => files.reduce((total, file) => total + file.sizeBytes, 0),
     [files]
@@ -752,30 +776,11 @@ export default function App() {
           <button
             type="button"
             className="pill-button"
-            onClick={pickDestination}
-            disabled={isLoading}
-            title={destination ?? "No destination set"}
-          >
-            <span className="pill-label">Destination</span>
-            <span className="pill-value">{destination ? destinationLabel : "Set destination"}</span>
-          </button>
-          <button
-            type="button"
-            className="pill-button"
             onClick={openCurrentInFinder}
             disabled={isLoading || !currentFile}
           >
             <span className="pill-label">Current</span>
             <span className="pill-value">Open in Finder</span>
-          </button>
-          <button
-            type="button"
-            className="pill-button"
-            onClick={revealDestination}
-            disabled={isLoading || !destination}
-          >
-            <span className="pill-label">Destination</span>
-            <span className="pill-value">Reveal folder</span>
           </button>
           <button
             type="button"
@@ -901,26 +906,48 @@ export default function App() {
       </div>
 
       <footer className="actions">
-        <button
-          type="button"
-          onClick={goPrev}
-          disabled={!hasFiles || currentIndex === 0 || isLoading}
-        >
-          Prev (←)
-        </button>
-        <button
-          type="button"
-          onClick={goNext}
-          disabled={!hasFiles || currentIndex >= filteredCount - 1 || isLoading}
-        >
-          Next (→)
-        </button>
-        <button type="button" onClick={trashCurrent} disabled={!hasFiles || isLoading}>
-          Trash (↑)
-        </button>
-        <button type="button" onClick={moveCurrent} disabled={!hasFiles || isLoading}>
-          Move (↓)
-        </button>
+        <div className="actions-row">
+          <div className="destination-row" aria-label="Move destinations">
+            {destinationSlots.map((destinationPath, index) => (
+              <button
+                key={`destination-${index}`}
+                type="button"
+                className={`destination-button ${destinationPath ? "is-set" : "is-empty"}`}
+                onClick={() => void pickDestinationForSlot(index)}
+                disabled={isLoading}
+                title={destinationPath ?? `Set destination ${index + 1}`}
+                aria-label={`Set destination ${index + 1}`}
+              >
+                <span className="destination-index">{index + 1}</span>
+                <span className="destination-label">
+                  {destinationPath ? formatPathLabel(destinationPath) : "Set folder…"}
+                </span>
+              </button>
+            ))}
+          </div>
+          <div className="action-row">
+            <button
+              type="button"
+              onClick={goPrev}
+              disabled={!hasFiles || currentIndex === 0 || isLoading}
+            >
+              Prev (←)
+            </button>
+            <button
+              type="button"
+              onClick={goNext}
+              disabled={!hasFiles || currentIndex >= filteredCount - 1 || isLoading}
+            >
+              Next (→)
+            </button>
+            <button type="button" onClick={trashCurrent} disabled={!hasFiles || isLoading}>
+              Trash (↑)
+            </button>
+            <button type="button" onClick={moveCurrent} disabled={!hasFiles || isLoading}>
+              Move (↓)
+            </button>
+          </div>
+        </div>
       </footer>
 
       {isSettingsOpen && (
@@ -1024,16 +1051,6 @@ export default function App() {
                   />
                   <span>{theme === "dark" ? "On" : "Off"}</span>
                 </label>
-              </div>
-              <div className="settings-row">
-                <div className="setting-info">
-                  <div className="setting-title">Move destination</div>
-                  <div className="setting-subtitle">Folder used when moving files.</div>
-                  <div className="setting-value">{destination ?? "Not set"}</div>
-                </div>
-                <button type="button" onClick={pickDestination} disabled={isLoading}>
-                  Choose…
-                </button>
               </div>
             </div>
             <div className="modal-footer">

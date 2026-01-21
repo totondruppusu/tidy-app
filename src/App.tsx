@@ -4,7 +4,17 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open, confirm } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 
-type FilterMode = "all" | "images" | "videos" | "images_videos";
+type FilterMode =
+  | "all"
+  | "images"
+  | "videos"
+  | "images_videos"
+  | "audio"
+  | "docs"
+  | "text"
+  | "compressed"
+  | "executables"
+  | "binary";
 type SortMode =
   | "name_asc"
   | "name_desc"
@@ -23,7 +33,15 @@ type ThemeMode = "light" | "dark";
 type FileEntry = {
   id: string;
   name: string;
-  kind: "image" | "video" | "other";
+  kind:
+    | "image"
+    | "video"
+    | "audio"
+    | "docs"
+    | "text"
+    | "compressed"
+    | "executable"
+    | "binary";
   path: string;
   sizeBytes: number;
   modifiedMs: number | null;
@@ -112,12 +130,47 @@ const formatTimestamp = (timestamp: number | null) => {
   return new Date(timestamp).toLocaleString();
 };
 
+const formatKindLabel = (kind: FileEntry["kind"]) => {
+  switch (kind) {
+    case "image":
+      return "Image";
+    case "video":
+      return "Video";
+    case "audio":
+      return "Audio";
+    case "docs":
+      return "Docs";
+    case "text":
+      return "Text";
+    case "compressed":
+      return "Compressed";
+    case "executable":
+      return "Executable";
+    case "binary":
+      return "Binary";
+    default:
+      return "Other";
+  }
+};
+
 const formatGroupLabel = (kind: FileEntry["kind"]) => {
   switch (kind) {
     case "image":
       return "Images";
     case "video":
       return "Videos";
+    case "audio":
+      return "Audio";
+    case "docs":
+      return "Docs";
+    case "text":
+      return "Text files";
+    case "compressed":
+      return "Compressed";
+    case "executable":
+      return "Executables";
+    case "binary":
+      return "Binary";
     default:
       return "Other files";
   }
@@ -186,7 +239,30 @@ type StoredSettings = {
   destinationSlots?: (string | null)[];
 };
 
-const FILTER_MODES: FilterMode[] = ["all", "images", "videos", "images_videos"];
+const FILTER_MODES: FilterMode[] = [
+  "all",
+  "images",
+  "videos",
+  "images_videos",
+  "audio",
+  "docs",
+  "text",
+  "compressed",
+  "executables",
+  "binary",
+];
+const FILTER_OPTIONS: { value: FilterMode; label: string }[] = [
+  { value: "all", label: "All files" },
+  { value: "images", label: "Images" },
+  { value: "videos", label: "Videos" },
+  { value: "images_videos", label: "Images + Videos" },
+  { value: "audio", label: "Audio" },
+  { value: "docs", label: "Docs" },
+  { value: "text", label: "Text" },
+  { value: "compressed", label: "Compressed" },
+  { value: "executables", label: "Executables" },
+  { value: "binary", label: "Binary" },
+];
 const SORT_MODES: SortMode[] = [
   "name_asc",
   "name_desc",
@@ -303,6 +379,7 @@ export default function App() {
   const listItemRefs = useRef<Map<string, HTMLButtonElement | null>>(new Map());
   const previousExtensionsRef = useRef<string[]>([]);
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const selectAllRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -429,6 +506,18 @@ export default function App() {
     });
     previousExtensionsRef.current = allExtensions;
   }, [allExtensions]);
+
+  const allExtensionsSelected =
+    allExtensions.length > 0 && selectedExtensions.length === allExtensions.length;
+  const someExtensionsSelected =
+    selectedExtensions.length > 0 && selectedExtensions.length < allExtensions.length;
+
+  useEffect(() => {
+    if (!selectAllRef.current) {
+      return;
+    }
+    selectAllRef.current.indeterminate = someExtensionsSelected;
+  }, [someExtensionsSelected]);
 
   const filteredFiles = useMemo(() => {
     if (selectedExtensions.length === 0) {
@@ -863,7 +952,16 @@ export default function App() {
 
     const keys = Array.from(groups.keys()).sort((a, b) => {
       if (groupMode === "type") {
-        const order = ["image", "video", "other"];
+        const order = [
+          "image",
+          "video",
+          "audio",
+          "docs",
+          "text",
+          "compressed",
+          "executable",
+          "binary",
+        ];
         return order.indexOf(a) - order.indexOf(b);
       }
       if (a === "none") {
@@ -956,10 +1054,11 @@ export default function App() {
                 onChange={(event) => setFilterMode(event.target.value as FilterMode)}
                 disabled={isLoading}
               >
-                <option value="all">All files</option>
-                <option value="images">Images only</option>
-                <option value="videos">Videos only</option>
-                <option value="images_videos">Images + Videos</option>
+                {FILTER_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
               </select>
             </div>
             <button
@@ -1009,25 +1108,41 @@ export default function App() {
             {allExtensions.length === 0 ? (
               <div className="extensions-empty">No extensions found.</div>
             ) : (
-              <div className="extension-filters">
-                {allExtensions.map((extension) => (
-                  <label key={extension} className="extension-filter">
+              <>
+                <div className="extensions-controls">
+                  <label className="extension-filter extension-toggle">
                     <input
+                      ref={selectAllRef}
                       type="checkbox"
-                      checked={selectedExtensions.includes(extension)}
-                      onChange={() => {
-                        setSelectedExtensions((current) =>
-                          current.includes(extension)
-                            ? current.filter((value) => value !== extension)
-                            : [...current, extension]
-                        );
+                      checked={allExtensionsSelected}
+                      onChange={(event) => {
+                        setSelectedExtensions(event.target.checked ? allExtensions : []);
                       }}
                       disabled={isLoading}
                     />
-                    <span>{formatExtensionLabel(extension)}</span>
+                    <span>All</span>
                   </label>
-                ))}
-              </div>
+                </div>
+                <div className="extension-filters">
+                  {allExtensions.map((extension) => (
+                    <label key={extension} className="extension-filter">
+                      <input
+                        type="checkbox"
+                        checked={selectedExtensions.includes(extension)}
+                        onChange={() => {
+                          setSelectedExtensions((current) =>
+                            current.includes(extension)
+                              ? current.filter((value) => value !== extension)
+                              : [...current, extension]
+                          );
+                        }}
+                        disabled={isLoading}
+                      />
+                      <span>{formatExtensionLabel(extension)}</span>
+                    </label>
+                  ))}
+                </div>
+              </>
             )}
           </div>
         </aside>
@@ -1108,9 +1223,14 @@ export default function App() {
                   {currentFile.kind === "video" && (
                     <video ref={videoRef} controls src={buildMediaUrl(currentFile.id)} />
                   )}
-                  {currentFile.kind === "other" && (
-                    <div className="placeholder">No preview available for this file type.</div>
+                  {currentFile.kind === "audio" && (
+                    <audio controls src={buildMediaUrl(currentFile.id)} />
                   )}
+                  {currentFile.kind !== "image" &&
+                    currentFile.kind !== "video" &&
+                    currentFile.kind !== "audio" && (
+                      <div className="placeholder">No preview available for this file type.</div>
+                    )}
                   <div className="caption">
                     {currentFile.name} ({currentIndex + 1}/{filteredCount})
                   </div>
@@ -1123,7 +1243,7 @@ export default function App() {
                     </div>
                     <div>
                       <span className="meta-label">Type</span>
-                      <span className="meta-value">{currentFile.kind}</span>
+                      <span className="meta-value">{formatKindLabel(currentFile.kind)}</span>
                     </div>
                     <div>
                       <span className="meta-label">Extension</span>
@@ -1258,10 +1378,11 @@ export default function App() {
                   onChange={(event) => setFilterMode(event.target.value as FilterMode)}
                   disabled={isLoading}
                 >
-                  <option value="all">All files</option>
-                  <option value="images">Images only</option>
-                  <option value="videos">Videos only</option>
-                  <option value="images_videos">Images + Videos</option>
+                  {FILTER_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
                 </select>
               </div>
               <div className="settings-row">

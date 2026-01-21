@@ -26,6 +26,14 @@
   --color-badge-green-text: #237a3f;
   --color-badge-amber-bg: #f9f2dc;
   --color-badge-amber-text: #8a5b15;
+  --color-badge-blue-bg: #e7efff;
+  --color-badge-blue-text: #2f5bd1;
+  --color-badge-teal-bg: #e6f7f6;
+  --color-badge-teal-text: #0f766e;
+  --color-badge-orange-bg: #fde7d9;
+  --color-badge-orange-text: #c2410c;
+  --color-badge-slate-bg: #eef2f7;
+  --color-badge-slate-text: #475569;
   --color-media-bg: #10131a;
   --shadow-card: 0 8px 24px rgba(15, 18, 24, 0.08);
   --shadow-panel: 0 6px 18px rgba(15, 18, 24, 0.08);
@@ -65,6 +73,14 @@
   --color-badge-green-text: #8ce0b1;
   --color-badge-amber-bg: #3b2f1b;
   --color-badge-amber-text: #f2c078;
+  --color-badge-blue-bg: #1b2747;
+  --color-badge-blue-text: #99b4ff;
+  --color-badge-teal-bg: #123436;
+  --color-badge-teal-text: #7dd3c7;
+  --color-badge-orange-bg: #3b1f12;
+  --color-badge-orange-text: #f2a46a;
+  --color-badge-slate-bg: #2a3038;
+  --color-badge-slate-text: #c0c7d2;
   --color-media-bg: #0d0f12;
   --shadow-card: 0 12px 28px rgba(0, 0, 0, 0.45);
   --shadow-panel: 0 10px 22px rgba(0, 0, 0, 0.4);
@@ -433,10 +449,10 @@ input {
 }
 
 .extension-filters {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 6px;
-  align-items: center;
+  align-items: start;
 }
 
 .extension-filter {
@@ -456,6 +472,16 @@ input {
   width: 12px;
   height: 12px;
   margin: 0;
+}
+
+.extensions-controls {
+  display: flex;
+  justify-content: flex-start;
+  margin-bottom: 6px;
+}
+
+.extension-filter.extension-toggle {
+  font-weight: 600;
 }
 
 .file-item {
@@ -500,9 +526,34 @@ input {
   color: var(--color-accent-strong);
 }
 
-.badge-other {
+.badge-audio {
+  background: var(--color-badge-teal-bg);
+  color: var(--color-badge-teal-text);
+}
+
+.badge-docs {
   background: var(--color-badge-amber-bg);
   color: var(--color-badge-amber-text);
+}
+
+.badge-text {
+  background: var(--color-badge-slate-bg);
+  color: var(--color-badge-slate-text);
+}
+
+.badge-compressed {
+  background: var(--color-badge-blue-bg);
+  color: var(--color-badge-blue-text);
+}
+
+.badge-executable {
+  background: var(--color-badge-orange-bg);
+  color: var(--color-badge-orange-text);
+}
+
+.badge-binary {
+  background: var(--color-badge-slate-bg);
+  color: var(--color-badge-slate-text);
 }
 
 .preview-panel {
@@ -642,7 +693,8 @@ input {
 }
 
 .preview-content img,
-.preview-content video {
+.preview-content video,
+.preview-content audio {
   max-width: 100%;
   max-height: 70vh;
   border-radius: 12px;
@@ -651,6 +703,10 @@ input {
 }
 
 .preview-content video {
+  width: 100%;
+}
+
+.preview-content audio {
   width: 100%;
 }
 
@@ -727,7 +783,7 @@ input {
   border-radius: 10px;
   border: 1px dashed var(--color-border-strong);
   background: var(--color-surface-soft);
-  min-width: 140px;
+  min-width: 110px;
   text-align: left;
   cursor: pointer;
 }
@@ -756,7 +812,7 @@ input {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 140px;
+  max-width: 110px;
 }
 
 .destination-button.is-empty .destination-label {

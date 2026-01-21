@@ -18,7 +18,12 @@ use walkdir::WalkDir;
 enum FileKind {
   Image,
   Video,
-  Other,
+  Audio,
+  Docs,
+  Text,
+  Compressed,
+  Executable,
+  Binary,
 }
 
 #[derive(Clone, Serialize)]
@@ -406,14 +411,36 @@ fn move_path(source: &Path, target: &Path) -> Result<(), String> {
 }
 
 fn classify_file(path: &Path) -> FileKind {
-  let extension = path.extension().and_then(|ext| ext.to_str()).unwrap_or("");
-  if is_image_extension(extension) {
+  let extension = path
+    .extension()
+    .and_then(|ext| ext.to_str())
+    .unwrap_or("")
+    .to_lowercase();
+  if is_image_extension(&extension) {
     return FileKind::Image;
   }
-  if is_video_extension(extension) {
+  if is_video_extension(&extension) {
     return FileKind::Video;
   }
-  FileKind::Other
+  if is_audio_extension(&extension) {
+    return FileKind::Audio;
+  }
+  if is_docs_extension(&extension) {
+    return FileKind::Docs;
+  }
+  if is_text_extension(&extension) {
+    return FileKind::Text;
+  }
+  if is_compressed_extension(&extension) {
+    return FileKind::Compressed;
+  }
+  if is_executable_extension(&extension) {
+    return FileKind::Executable;
+  }
+  if is_binary_extension(&extension) {
+    return FileKind::Binary;
+  }
+  FileKind::Binary
 }
 
 fn matches_filter(filter: &str, kind: &FileKind) -> bool {
@@ -421,6 +448,12 @@ fn matches_filter(filter: &str, kind: &FileKind) -> bool {
     "images" => matches!(kind, FileKind::Image),
     "videos" => matches!(kind, FileKind::Video),
     "images_videos" => matches!(kind, FileKind::Image | FileKind::Video),
+    "audio" => matches!(kind, FileKind::Audio),
+    "docs" => matches!(kind, FileKind::Docs),
+    "text" => matches!(kind, FileKind::Text),
+    "compressed" => matches!(kind, FileKind::Compressed),
+    "executables" => matches!(kind, FileKind::Executable),
+    "binary" => matches!(kind, FileKind::Binary),
     _ => true,
   }
 }
@@ -438,15 +471,112 @@ fn is_hidden_entry(path: &Path, root: &Path) -> bool {
 
 fn is_image_extension(extension: &str) -> bool {
   matches!(
-    extension.to_lowercase().as_str(),
+    extension,
     "jpg" | "jpeg" | "png" | "gif" | "bmp" | "webp" | "tiff" | "heic" | "heif"
   )
 }
 
 fn is_video_extension(extension: &str) -> bool {
   matches!(
-    extension.to_lowercase().as_str(),
+    extension,
     "mp4" | "mov" | "mkv" | "webm" | "avi" | "wmv" | "m4v" | "mpeg" | "mpg"
+  )
+}
+
+fn is_audio_extension(extension: &str) -> bool {
+  matches!(
+    extension,
+    "mp3" | "wav" | "flac" | "aac" | "m4a" | "ogg" | "opus" | "aiff" | "wma" | "alac"
+  )
+}
+
+fn is_docs_extension(extension: &str) -> bool {
+  matches!(
+    extension,
+    "pdf"
+      | "doc"
+      | "docx"
+      | "odt"
+      | "rtf"
+      | "ppt"
+      | "pptx"
+      | "key"
+      | "pages"
+      | "numbers"
+      | "xls"
+      | "xlsx"
+      | "ods"
+      | "odp"
+  )
+}
+
+fn is_text_extension(extension: &str) -> bool {
+  matches!(
+    extension,
+    "txt"
+      | "md"
+      | "markdown"
+      | "csv"
+      | "tsv"
+      | "json"
+      | "yaml"
+      | "yml"
+      | "xml"
+      | "html"
+      | "css"
+      | "js"
+      | "ts"
+      | "jsx"
+      | "tsx"
+      | "log"
+      | "ini"
+      | "conf"
+      | "toml"
+      | "env"
+      | "sql"
+  )
+}
+
+fn is_compressed_extension(extension: &str) -> bool {
+  matches!(
+    extension,
+    "zip"
+      | "rar"
+      | "7z"
+      | "tar"
+      | "gz"
+      | "tgz"
+      | "bz2"
+      | "xz"
+      | "zst"
+      | "lz"
+      | "lz4"
+      | "cab"
+  )
+}
+
+fn is_executable_extension(extension: &str) -> bool {
+  matches!(
+    extension,
+    "exe"
+      | "msi"
+      | "dmg"
+      | "pkg"
+      | "app"
+      | "bat"
+      | "cmd"
+      | "sh"
+      | "ps1"
+      | "jar"
+      | "run"
+      | "apk"
+  )
+}
+
+fn is_binary_extension(extension: &str) -> bool {
+  matches!(
+    extension,
+    "bin" | "dat" | "db" | "sqlite" | "bak" | "pak" | "img" | "iso"
   )
 }
 

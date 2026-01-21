@@ -154,6 +154,7 @@ const formatGroupTitle = (mode: GroupMode, key: string) => {
 };
 
 const DESTINATION_SLOT_COUNT = 5;
+const SETTINGS_KEY = "tidy-settings";
 
 const extractFolder = (path: string) => {
   const match = path.match(/^(.*)[\\/][^\\/]+$/);
@@ -174,20 +175,122 @@ const getInitialTheme = (): ThemeMode => {
   return "light";
 };
 
+type StoredSettings = {
+  filterMode?: FilterMode;
+  includeSubfolders?: boolean;
+  includeHidden?: boolean;
+  confirmTrash?: boolean;
+  sortMode?: SortMode;
+  groupMode?: GroupMode;
+  listDensity?: DensityMode;
+  destinationSlots?: (string | null)[];
+};
+
+const FILTER_MODES: FilterMode[] = ["all", "images", "videos", "images_videos"];
+const SORT_MODES: SortMode[] = [
+  "name_asc",
+  "name_desc",
+  "size_desc",
+  "size_asc",
+  "date_desc",
+  "date_asc",
+  "type_asc",
+  "type_desc",
+  "extension_asc",
+  "extension_desc",
+];
+const GROUP_MODES: GroupMode[] = ["none", "type", "extension"];
+const DENSITY_MODES: DensityMode[] = ["comfortable", "compact"];
+
+const isFilterMode = (value: unknown): value is FilterMode =>
+  typeof value === "string" && FILTER_MODES.includes(value as FilterMode);
+
+const isSortMode = (value: unknown): value is SortMode =>
+  typeof value === "string" && SORT_MODES.includes(value as SortMode);
+
+const isGroupMode = (value: unknown): value is GroupMode =>
+  typeof value === "string" && GROUP_MODES.includes(value as GroupMode);
+
+const isDensityMode = (value: unknown): value is DensityMode =>
+  typeof value === "string" && DENSITY_MODES.includes(value as DensityMode);
+
+const normalizeDestinationSlots = (value: unknown): (string | null)[] | null => {
+  if (!Array.isArray(value)) {
+    return null;
+  }
+  return value.map((entry) => (typeof entry === "string" ? entry : null));
+};
+
+const getStoredSettings = (): StoredSettings => {
+  if (typeof window === "undefined") {
+    return {};
+  }
+  try {
+    const raw = window.localStorage.getItem(SETTINGS_KEY);
+    if (!raw) {
+      return {};
+    }
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const settings: StoredSettings = {};
+    if (isFilterMode(parsed.filterMode)) {
+      settings.filterMode = parsed.filterMode;
+    }
+    if (typeof parsed.includeSubfolders === "boolean") {
+      settings.includeSubfolders = parsed.includeSubfolders;
+    }
+    if (typeof parsed.includeHidden === "boolean") {
+      settings.includeHidden = parsed.includeHidden;
+    }
+    if (typeof parsed.confirmTrash === "boolean") {
+      settings.confirmTrash = parsed.confirmTrash;
+    }
+    if (isSortMode(parsed.sortMode)) {
+      settings.sortMode = parsed.sortMode;
+    }
+    if (isGroupMode(parsed.groupMode)) {
+      settings.groupMode = parsed.groupMode;
+    }
+    if (isDensityMode(parsed.listDensity)) {
+      settings.listDensity = parsed.listDensity;
+    }
+    const storedSlots = normalizeDestinationSlots(parsed.destinationSlots);
+    if (storedSlots) {
+      settings.destinationSlots = storedSlots;
+    }
+    return settings;
+  } catch (error) {
+    console.warn("Failed to read stored settings.", error);
+    return {};
+  }
+};
+
 export default function App() {
+  const [storedSettings] = useState(() => getStoredSettings());
   const [files, setFiles] = useState<FileEntry[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [, setStatus] = useState("Select a folder to begin.");
-  const [filterMode, setFilterMode] = useState<FilterMode>("all");
-  const [includeSubfolders, setIncludeSubfolders] = useState(false);
-  const [includeHidden, setIncludeHidden] = useState(false);
-  const [destinationSlots, setDestinationSlots] = useState<(string | null)[]>(() =>
-    Array.from({ length: DESTINATION_SLOT_COUNT }, () => null)
+  const [filterMode, setFilterMode] = useState<FilterMode>(storedSettings.filterMode ?? "all");
+  const [includeSubfolders, setIncludeSubfolders] = useState(
+    storedSettings.includeSubfolders ?? false
   );
-  const [confirmTrash, setConfirmTrash] = useState(true);
-  const [sortMode, setSortMode] = useState<SortMode>("name_asc");
-  const [groupMode, setGroupMode] = useState<GroupMode>("none");
-  const [listDensity, setListDensity] = useState<DensityMode>("comfortable");
+  const [includeHidden, setIncludeHidden] = useState(storedSettings.includeHidden ?? false);
+  const [destinationSlots, setDestinationSlots] = useState<(string | null)[]>(() => {
+    const storedSlots = storedSettings.destinationSlots;
+    if (!storedSlots) {
+      return Array.from({ length: DESTINATION_SLOT_COUNT }, () => null);
+    }
+    const normalized = storedSlots.slice(0, DESTINATION_SLOT_COUNT);
+    while (normalized.length < DESTINATION_SLOT_COUNT) {
+      normalized.push(null);
+    }
+    return normalized;
+  });
+  const [confirmTrash, setConfirmTrash] = useState(storedSettings.confirmTrash ?? true);
+  const [sortMode, setSortMode] = useState<SortMode>(storedSettings.sortMode ?? "name_asc");
+  const [groupMode, setGroupMode] = useState<GroupMode>(storedSettings.groupMode ?? "none");
+  const [listDensity, setListDensity] = useState<DensityMode>(
+    storedSettings.listDensity ?? "comfortable"
+  );
   const [selectedExtensions, setSelectedExtensions] = useState<string[]>([]);
   const [currentFolder, setCurrentFolder] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -205,6 +308,36 @@ export default function App() {
     document.documentElement.dataset.theme = theme;
     window.localStorage.setItem("tidy-theme", theme);
   }, [theme]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    const snapshot: StoredSettings = {
+      filterMode,
+      includeSubfolders,
+      includeHidden,
+      confirmTrash,
+      sortMode,
+      groupMode,
+      listDensity,
+      destinationSlots,
+    };
+    try {
+      window.localStorage.setItem(SETTINGS_KEY, JSON.stringify(snapshot));
+    } catch (error) {
+      console.warn("Failed to persist settings.", error);
+    }
+  }, [
+    filterMode,
+    includeSubfolders,
+    includeHidden,
+    confirmTrash,
+    sortMode,
+    groupMode,
+    listDensity,
+    destinationSlots,
+  ]);
 
   useEffect(() => {
     const applyWindowTheme = async () => {

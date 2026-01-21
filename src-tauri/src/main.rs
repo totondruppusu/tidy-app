@@ -5,9 +5,10 @@ use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::UNIX_EPOCH;
 use tauri::http::header::{HeaderMap, HeaderName, HeaderValue};
 use tauri::http::{Response, StatusCode};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 use uuid::Uuid;
 use walkdir::WalkDir;
 
@@ -20,10 +21,15 @@ enum FileKind {
 }
 
 #[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct FileEntry {
   id: String,
   name: String,
   kind: FileKind,
+  path: String,
+  size_bytes: u64,
+  modified_ms: Option<u64>,
+  mime: String,
 }
 
 #[derive(Default)]
@@ -38,6 +44,23 @@ struct ScanResult {
   total: usize,
 }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ScanProgress {
+  scan_id: String,
+  scanned: usize,
+  matched: usize,
+  total: usize,
+  phase: String,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ScanBatch {
+  scan_id: String,
+  files: Vec<FileEntry>,
+}
+
 #[tauri::command]
 fn set_destination(state: tauri::State<'_, AppState>, destination: String) {
   let mut dest = state.destination.lock().expect("destination lock");
@@ -45,60 +68,173 @@ fn set_destination(state: tauri::State<'_, AppState>, destination: String) {
 }
 
 #[tauri::command]
-fn scan_folder(
-  state: tauri::State<'_, AppState>,
+async fn scan_folder(
+  window: tauri::Window,
   folder_path: String,
   filter_mode: String,
   include_subfolders: bool,
+  scan_id: String,
 ) -> Result<ScanResult, String> {
-  let mut entries = Vec::new();
-  let mut map = state.map.lock().expect("map lock");
-  map.clear();
+  let app_handle = window.app_handle().clone();
+  let window = window.clone();
+  tauri::async_runtime::spawn_blocking(move || {
+    let state = app_handle.state::<AppState>();
+    let mut entries = Vec::new();
+    let mut map = state.map.lock().expect("map lock");
+    map.clear();
 
-  let folder = PathBuf::from(&folder_path);
-  if !folder.exists() {
-    return Err("Folder not found".into());
-  }
-
-  let iterator: Box<dyn Iterator<Item = PathBuf>> = if include_subfolders {
-    Box::new(
-      WalkDir::new(&folder)
-        .follow_links(false)
-        .into_iter()
-        .filter_map(|entry| entry.ok())
-        .filter(|entry| entry.file_type().is_file())
-        .map(|entry| entry.path().to_path_buf()),
-    )
-  } else {
-    Box::new(
-      fs::read_dir(&folder)
-        .map_err(|error| error.to_string())?
-        .filter_map(|entry| entry.ok())
-        .filter(|entry| entry.file_type().map(|ft| ft.is_file()).unwrap_or(false))
-        .map(|entry| entry.path()),
-    )
-  };
-
-  let filter = filter_mode.as_str();
-  for path in iterator {
-    let kind = classify_file(&path);
-    if !matches_filter(filter, &kind) {
-      continue;
+    let folder = PathBuf::from(&folder_path);
+    if !folder.exists() {
+      return Err("Folder not found".into());
     }
-    let name = path
-      .file_name()
-      .and_then(|name| name.to_str())
-      .unwrap_or("Unknown")
-      .to_string();
-    let id = Uuid::new_v4().to_string();
-    map.insert(id.clone(), path);
-    entries.push(FileEntry { id, name, kind });
-  }
 
-  entries.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    let iterator: Box<dyn Iterator<Item = PathBuf>> = if include_subfolders {
+      Box::new(
+        WalkDir::new(&folder)
+          .follow_links(false)
+          .into_iter()
+          .filter_map(|entry| entry.ok())
+          .filter(|entry| entry.file_type().is_file())
+          .map(|entry| entry.path().to_path_buf()),
+      )
+    } else {
+      Box::new(
+        fs::read_dir(&folder)
+          .map_err(|error| error.to_string())?
+          .filter_map(|entry| entry.ok())
+          .filter(|entry| entry.file_type().map(|ft| ft.is_file()).unwrap_or(false))
+          .map(|entry| entry.path()),
+      )
+    };
 
-  let total = entries.len();
-  Ok(ScanResult { files: entries, total })
+    let filter = filter_mode.as_str();
+    let mut paths = Vec::new();
+    let mut scanned = 0usize;
+    let mut last_emit = 0usize;
+    for path in iterator {
+      scanned += 1;
+      paths.push(path);
+      if scanned.saturating_sub(last_emit) >= 300 {
+        let _ = window.emit(
+          "scan_progress",
+          ScanProgress {
+            scan_id: scan_id.clone(),
+            scanned,
+            matched: 0,
+            total: 0,
+            phase: "indexing".to_string(),
+          },
+        );
+        last_emit = scanned;
+      }
+    }
+
+    if scanned != last_emit {
+      let _ = window.emit(
+        "scan_progress",
+        ScanProgress {
+          scan_id: scan_id.clone(),
+          scanned,
+          matched: 0,
+          total: 0,
+          phase: "indexing".to_string(),
+        },
+      );
+    }
+
+    let total = paths.len();
+    scanned = 0;
+    last_emit = 0;
+    let mut matched = 0usize;
+    let mut batch = Vec::with_capacity(100);
+    for path in paths {
+      scanned += 1;
+      let kind = classify_file(&path);
+      if matches_filter(filter, &kind) {
+        let name = path
+          .file_name()
+          .and_then(|name| name.to_str())
+          .unwrap_or("Unknown")
+          .to_string();
+        let path_display = path.to_string_lossy().to_string();
+        let metadata = fs::metadata(&path).ok();
+        let size_bytes = metadata.as_ref().map(|meta| meta.len()).unwrap_or(0);
+        let modified_ms = metadata
+          .as_ref()
+          .and_then(|meta| meta.modified().ok())
+          .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+          .map(|duration| duration.as_millis() as u64);
+        let mime = MimeGuess::from_path(&path)
+          .first_or_octet_stream()
+          .essence_str()
+          .to_string();
+        let id = Uuid::new_v4().to_string();
+        map.insert(id.clone(), path);
+        let entry = FileEntry {
+          id,
+          name,
+          kind,
+          path: path_display,
+          size_bytes,
+          modified_ms,
+          mime,
+        };
+        entries.push(entry.clone());
+        batch.push(entry);
+        matched += 1;
+        if batch.len() >= 100 {
+          let _ = window.emit(
+            "scan_batch",
+            ScanBatch {
+              scan_id: scan_id.clone(),
+              files: std::mem::take(&mut batch),
+            },
+          );
+        }
+      }
+      if scanned.saturating_sub(last_emit) >= 200 {
+        let _ = window.emit(
+          "scan_progress",
+          ScanProgress {
+            scan_id: scan_id.clone(),
+            scanned,
+            matched,
+            total,
+            phase: "scanning".to_string(),
+          },
+        );
+        last_emit = scanned;
+      }
+    }
+
+    entries.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+
+    if scanned != last_emit {
+      let _ = window.emit(
+        "scan_progress",
+        ScanProgress {
+          scan_id: scan_id.clone(),
+          scanned,
+          matched,
+          total,
+          phase: "scanning".to_string(),
+        },
+      );
+    }
+    if !batch.is_empty() {
+      let _ = window.emit(
+        "scan_batch",
+        ScanBatch {
+          scan_id: scan_id.clone(),
+          files: batch,
+        },
+      );
+    }
+    let total = entries.len();
+    Ok(ScanResult { files: entries, total })
+  })
+  .await
+  .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]

@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::Mutex;
 use std::time::UNIX_EPOCH;
 use tauri::http::header::{HeaderMap, HeaderName, HeaderValue};
@@ -283,6 +284,42 @@ fn move_file(state: tauri::State<'_, AppState>, id: String) -> Result<String, St
   Ok(new_name)
 }
 
+#[tauri::command]
+fn reveal_in_file_manager(path: String, reveal: bool) -> Result<(), String> {
+  let target = PathBuf::from(path);
+  if !target.exists() {
+    return Err("Path not found".into());
+  }
+
+  let status = if cfg!(target_os = "macos") {
+    let mut cmd = Command::new("open");
+    if reveal {
+      cmd.arg("-R");
+    }
+    cmd.arg(&target).status()
+  } else if cfg!(target_os = "windows") {
+    let mut cmd = Command::new("explorer");
+    if reveal {
+      cmd.arg("/select,");
+    }
+    cmd.arg(&target).status()
+  } else {
+    let mut cmd = Command::new("xdg-open");
+    let open_target = if reveal {
+      target.parent().unwrap_or(&target).to_path_buf()
+    } else {
+      target
+    };
+    cmd.arg(open_target).status()
+  };
+
+  match status {
+    Ok(status) if status.success() => Ok(()),
+    Ok(status) => Err(format!("File manager exited with {}", status)),
+    Err(error) => Err(error.to_string()),
+  }
+}
+
 fn unique_path(destination: &Path, file_name: &str) -> PathBuf {
   let mut candidate = destination.join(file_name);
   if !candidate.exists() {
@@ -458,7 +495,13 @@ fn main() {
       });
       responder.respond(response);
     })
-    .invoke_handler(tauri::generate_handler![scan_folder, trash_file, move_file, set_destination])
+    .invoke_handler(tauri::generate_handler![
+      scan_folder,
+      trash_file,
+      move_file,
+      set_destination,
+      reveal_in_file_manager
+    ])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");
 }

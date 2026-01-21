@@ -4,6 +4,9 @@ import { open, confirm } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 
 type FilterMode = "all" | "images" | "videos" | "images_videos";
+type SortMode = "name" | "size" | "date";
+type DensityMode = "comfortable" | "compact";
+type GroupMode = "none" | "type" | "extension";
 
 type FileEntry = {
   id: string;
@@ -64,6 +67,47 @@ const formatTimestamp = (timestamp: number | null) => {
   return new Date(timestamp).toLocaleString();
 };
 
+const formatGroupLabel = (kind: FileEntry["kind"]) => {
+  switch (kind) {
+    case "image":
+      return "Images";
+    case "video":
+      return "Videos";
+    default:
+      return "Other files";
+  }
+};
+
+const formatPathLabel = (path: string | null) => {
+  if (!path) {
+    return "Not set";
+  }
+  const parts = path.split(/[\\/]/);
+  return parts[parts.length - 1] || path;
+};
+
+const getExtension = (name: string) => {
+  const lastDot = name.lastIndexOf(".");
+  if (lastDot <= 0 || lastDot === name.length - 1) {
+    return "none";
+  }
+  return name.slice(lastDot + 1).toLowerCase();
+};
+
+const formatExtensionLabel = (extension: string) => {
+  if (extension === "none") {
+    return "No extension";
+  }
+  return `.${extension}`;
+};
+
+const formatGroupTitle = (mode: GroupMode, key: string) => {
+  if (mode === "extension") {
+    return formatExtensionLabel(key);
+  }
+  return formatGroupLabel(key as FileEntry["kind"]);
+};
+
 const extractFolder = (path: string) => {
   const match = path.match(/^(.*)[\\/][^\\/]+$/);
   return match ? match[1] : path;
@@ -72,24 +116,102 @@ const extractFolder = (path: string) => {
 export default function App() {
   const [files, setFiles] = useState<FileEntry[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
-  const [status, setStatus] = useState("Select a folder to begin.");
+  const [, setStatus] = useState("Select a folder to begin.");
   const [filterMode, setFilterMode] = useState<FilterMode>("all");
   const [includeSubfolders, setIncludeSubfolders] = useState(false);
   const [destination, setDestination] = useState<string | null>(null);
   const [confirmTrash, setConfirmTrash] = useState(true);
+  const [sortMode, setSortMode] = useState<SortMode>("name");
+  const [groupMode, setGroupMode] = useState<GroupMode>("none");
+  const [listDensity, setListDensity] = useState<DensityMode>("comfortable");
+  const [selectedExtensions, setSelectedExtensions] = useState<string[]>([]);
   const [currentFolder, setCurrentFolder] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [scanProgress, setScanProgress] = useState<ScanProgress | null>(null);
   const [renderCount, setRenderCount] = useState(0);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const activeScanId = useRef<string | null>(null);
   const listItemRefs = useRef<Map<string, HTMLButtonElement | null>>(new Map());
-
-  const currentFile = files[currentIndex];
-  const hasFiles = files.length > 0;
+  const previousExtensionsRef = useRef<string[]>([]);
 
   const updateStatus = useCallback((message: string) => {
     setStatus(message);
   }, []);
+
+  const sortFiles = useCallback(
+    (list: FileEntry[]) => {
+      const next = [...list];
+      next.sort((a, b) => {
+        if (sortMode === "size") {
+          return b.sizeBytes - a.sizeBytes;
+        }
+        if (sortMode === "date") {
+          return (b.modifiedMs ?? 0) - (a.modifiedMs ?? 0);
+        }
+        return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+      });
+      return next;
+    },
+    [sortMode]
+  );
+
+  const allExtensions = useMemo(() => {
+    const set = new Set<string>();
+    files.forEach((file) => {
+      set.add(getExtension(file.name));
+    });
+    const list = Array.from(set);
+    list.sort((a, b) => {
+      if (a === "none") {
+        return 1;
+      }
+      if (b === "none") {
+        return -1;
+      }
+      return a.localeCompare(b);
+    });
+    return list;
+  }, [files]);
+
+  useEffect(() => {
+    setSelectedExtensions((current) => {
+      if (allExtensions.length === 0) {
+        return [];
+      }
+      const prev = previousExtensionsRef.current;
+      const hadAllSelected =
+        prev.length > 0 && prev.every((extension) => current.includes(extension)) && current.length >= prev.length;
+      if (current.length === 0 || hadAllSelected) {
+        return allExtensions;
+      }
+      return current.filter((extension) => allExtensions.includes(extension));
+    });
+    previousExtensionsRef.current = allExtensions;
+  }, [allExtensions]);
+
+  const filteredFiles = useMemo(() => {
+    if (selectedExtensions.length === 0) {
+      return [];
+    }
+    const allowed = new Set(selectedExtensions);
+    return files.filter((file) => allowed.has(getExtension(file.name)));
+  }, [files, selectedExtensions]);
+
+  const sortedFiles = useMemo(() => sortFiles(filteredFiles), [filteredFiles, sortFiles]);
+  const currentFile = sortedFiles[currentIndex];
+  const hasFiles = sortedFiles.length > 0;
+
+  useEffect(() => {
+    if (sortedFiles.length === 0) {
+      if (currentIndex !== 0) {
+        setCurrentIndex(0);
+      }
+      return;
+    }
+    if (currentIndex >= sortedFiles.length) {
+      setCurrentIndex(sortedFiles.length - 1);
+    }
+  }, [currentIndex, sortedFiles.length]);
 
   const handleScan = useCallback(
     async (folderPath?: string) => {
@@ -152,23 +274,31 @@ export default function App() {
     }
   }, [updateStatus]);
 
-  const adjustIndexAfterRemoval = useCallback(
-    (removedIndex: number) => {
+  const removeFileById = useCallback(
+    (removedId: string) => {
       setFiles((prev) => {
-        const next = prev.filter((_, index) => index !== removedIndex);
+        const allowed = new Set(selectedExtensions);
+        const filterByExtension = (file: FileEntry) => allowed.has(getExtension(file.name));
+        const sortedPrev = sortFiles(prev.filter(filterByExtension));
+        const removedIndex = sortedPrev.findIndex((file) => file.id === removedId);
+        const next = prev.filter((file) => file.id !== removedId);
+        const sortedNext = sortFiles(next.filter(filterByExtension));
         setCurrentIndex((current) => {
+          if (removedIndex === -1) {
+            return current;
+          }
           if (current > removedIndex) {
             return current - 1;
           }
           if (current === removedIndex) {
-            return current >= next.length ? Math.max(next.length - 1, 0) : current;
+            return current >= sortedNext.length ? Math.max(sortedNext.length - 1, 0) : current;
           }
           return current;
         });
         return next;
       });
     },
-    []
+    [selectedExtensions, sortFiles]
   );
 
   const trashCurrent = useCallback(async () => {
@@ -184,12 +314,12 @@ export default function App() {
     }
     try {
       await invoke("trash_file", { id: currentFile.id });
-      adjustIndexAfterRemoval(currentIndex);
+      removeFileById(currentFile.id);
       updateStatus(`Moved ${currentFile.name} to trash.`);
     } catch (error) {
       updateStatus(`Trash failed: ${String(error)}`);
     }
-  }, [adjustIndexAfterRemoval, confirmTrash, currentFile, currentIndex, updateStatus]);
+  }, [confirmTrash, currentFile, removeFileById, updateStatus]);
 
   const moveCurrent = useCallback(async () => {
     if (!currentFile) {
@@ -216,16 +346,40 @@ export default function App() {
     }
     try {
       const newName = await invoke<string>("move_file", { id: currentFile.id });
-      adjustIndexAfterRemoval(currentIndex);
+      removeFileById(currentFile.id);
       updateStatus(`Moved to ${destinationPath}/${newName}.`);
     } catch (error) {
       updateStatus(`Move failed: ${String(error)}`);
     }
-  }, [adjustIndexAfterRemoval, currentFile, currentIndex, destination, updateStatus]);
+  }, [currentFile, destination, removeFileById, updateStatus]);
+
+  const openCurrentInFinder = useCallback(async () => {
+    if (!currentFile) {
+      updateStatus("No file selected.");
+      return;
+    }
+    try {
+      await invoke("reveal_in_file_manager", { path: currentFile.path, reveal: true });
+    } catch (error) {
+      updateStatus(`Open in Finder failed: ${String(error)}`);
+    }
+  }, [currentFile, updateStatus]);
+
+  const revealDestination = useCallback(async () => {
+    if (!destination) {
+      updateStatus("Move destination not set.");
+      return;
+    }
+    try {
+      await invoke("reveal_in_file_manager", { path: destination, reveal: false });
+    } catch (error) {
+      updateStatus(`Reveal destination failed: ${String(error)}`);
+    }
+  }, [destination, updateStatus]);
 
   const goNext = useCallback(() => {
-    setCurrentIndex((prev) => (prev < files.length - 1 ? prev + 1 : prev));
-  }, [files.length]);
+    setCurrentIndex((prev) => (prev < sortedFiles.length - 1 ? prev + 1 : prev));
+  }, [sortedFiles.length]);
 
   const goPrev = useCallback(() => {
     setCurrentIndex((prev) => (prev > 0 ? prev - 1 : prev));
@@ -233,6 +387,13 @@ export default function App() {
 
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
+      if (isSettingsOpen) {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          setIsSettingsOpen(false);
+        }
+        return;
+      }
       if (isEditableTarget(event.target)) {
         return;
       }
@@ -259,7 +420,7 @@ export default function App() {
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [goNext, goPrev, moveCurrent, trashCurrent]);
+  }, [goNext, goPrev, isSettingsOpen, moveCurrent, trashCurrent]);
 
   useEffect(() => {
     if (currentFolder) {
@@ -295,22 +456,22 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (files.length === 0) {
+    if (sortedFiles.length === 0) {
       setRenderCount(0);
       return;
     }
-    setRenderCount((prev) => Math.min(prev, files.length));
+    setRenderCount((prev) => Math.min(prev, sortedFiles.length));
     let cancelled = false;
     const step = () => {
       if (cancelled) {
         return;
       }
       setRenderCount((prev) => {
-        if (prev >= files.length) {
+        if (prev >= sortedFiles.length) {
           return prev;
         }
-        const next = Math.min(prev + 200, files.length);
-        if (next < files.length) {
+        const next = Math.min(prev + 200, sortedFiles.length);
+        if (next < sortedFiles.length) {
           requestAnimationFrame(step);
         }
         return next;
@@ -320,18 +481,18 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [files.length]);
+  }, [sortedFiles.length]);
 
   useEffect(() => {
     if (currentIndex + 1 > renderCount) {
-      setRenderCount(Math.min(currentIndex + 1, files.length));
+      setRenderCount(Math.min(currentIndex + 1, sortedFiles.length));
     }
-  }, [currentIndex, renderCount, files.length]);
+  }, [currentIndex, renderCount, sortedFiles.length]);
 
-  const visibleFiles = useMemo(() => files.slice(0, renderCount), [files, renderCount]);
+  const visibleFiles = useMemo(() => sortedFiles.slice(0, renderCount), [sortedFiles, renderCount]);
 
   const listItems = useMemo(() => {
-    return visibleFiles.map((file, index) => (
+    const renderButton = (file: FileEntry, index: number) => (
       <button
         key={file.id}
         className={`file-item ${index === currentIndex ? "active" : ""}`}
@@ -343,8 +504,58 @@ export default function App() {
         <span className={`badge badge-${file.kind}`}>{file.kind}</span>
         <span className="filename">{file.name}</span>
       </button>
-    ));
-  }, [visibleFiles, currentIndex, isLoading]);
+    );
+
+    if (groupMode === "none") {
+      return visibleFiles.map((file, index) => renderButton(file, index));
+    }
+
+    const indexMap = new Map<string, number>();
+    visibleFiles.forEach((file, index) => {
+      indexMap.set(file.id, index);
+    });
+
+    const groups = new Map<string, FileEntry[]>();
+    visibleFiles.forEach((file) => {
+      const key = groupMode === "extension" ? getExtension(file.name) : file.kind;
+      const bucket = groups.get(key) ?? [];
+      bucket.push(file);
+      groups.set(key, bucket);
+    });
+
+    const keys = Array.from(groups.keys()).sort((a, b) => {
+      if (groupMode === "type") {
+        const order = ["image", "video", "other"];
+        return order.indexOf(a) - order.indexOf(b);
+      }
+      if (a === "none") {
+        return 1;
+      }
+      if (b === "none") {
+        return -1;
+      }
+      return a.localeCompare(b);
+    });
+    const items: JSX.Element[] = [];
+    keys.forEach((key) => {
+      const groupFiles = groups.get(key);
+      if (!groupFiles || groupFiles.length === 0) {
+        return;
+      }
+      items.push(
+        <div key={`${groupMode}-${key}`} className="list-section">
+          <div className="list-section-title">{formatGroupTitle(groupMode, key)}</div>
+          <div className="list-section-items">
+            {groupFiles.map((file) => {
+              const index = indexMap.get(file.id) ?? 0;
+              return renderButton(file, index);
+            })}
+          </div>
+        </div>
+      );
+    });
+    return items;
+  }, [visibleFiles, currentIndex, isLoading, groupMode]);
 
   useEffect(() => {
     if (!currentFile) {
@@ -372,62 +583,112 @@ export default function App() {
     return `Scanning ${percent}% · ${scanProgress.scanned}/${scanProgress.total} files · ${scanProgress.matched} matched`;
   }, [isLoading, scanProgress]);
 
-  const isRenderingList = renderCount < files.length;
+  const isRenderingList = renderCount < sortedFiles.length;
   const progressPercent =
     isLoading && scanProgress && scanProgress.total
       ? Math.min(100, Math.round((scanProgress.scanned / scanProgress.total) * 100))
       : null;
+  const totalFiles = files.length;
+  const filteredCount = sortedFiles.length;
+  const folderLabel = currentFolder ? formatPathLabel(currentFolder) : "No folder selected";
+  const destinationLabel = formatPathLabel(destination);
 
   return (
     <div className={`app-shell ${isLoading ? "is-loading" : ""}`}>
       <header className="toolbar">
-        <button type="button" onClick={pickFolder} disabled={isLoading}>
-          Select folder…
-        </button>
-        <div className="filters">
-          <label>
-            <span>Filter</span>
+        <div className="toolbar-group">
+          <button type="button" onClick={pickFolder} disabled={isLoading}>
+            Select folder…
+          </button>
+          <div className="toolbar-pill" title={currentFolder ?? "No folder selected"}>
+            <span className="pill-label">Folder</span>
+            <span className="pill-value">{folderLabel}</span>
+          </div>
+        </div>
+        <div className="toolbar-group toolbar-actions">
+          <div className="toolbar-control">
+            <span className="control-label">Sort</span>
             <select
-              value={filterMode}
-              onChange={(event) => setFilterMode(event.target.value as FilterMode)}
+              value={sortMode}
+              onChange={(event) => setSortMode(event.target.value as SortMode)}
               disabled={isLoading}
             >
-              <option value="all">All files</option>
-              <option value="images">Images only</option>
-              <option value="videos">Videos only</option>
-              <option value="images_videos">Images + Videos</option>
+              <option value="name">Name</option>
+              <option value="size">Size</option>
+              <option value="date">Date</option>
             </select>
-          </label>
-          <label className="checkbox">
-            <input
-              type="checkbox"
-              checked={includeSubfolders}
-              onChange={(event) => setIncludeSubfolders(event.target.checked)}
+          </div>
+          <div className="toolbar-control">
+            <span className="control-label">Group</span>
+            <select
+              value={groupMode}
+              onChange={(event) => setGroupMode(event.target.value as GroupMode)}
               disabled={isLoading}
-            />
-            Include subfolders
-          </label>
-        </div>
-        <button type="button" onClick={pickDestination} disabled={isLoading}>
-          Set move destination…
-        </button>
-        <label className="checkbox">
-          <input
-            type="checkbox"
-            checked={confirmTrash}
-            onChange={(event) => setConfirmTrash(event.target.checked)}
+            >
+              <option value="none">None</option>
+              <option value="type">Type</option>
+              <option value="extension">Extension</option>
+            </select>
+          </div>
+          <button
+            type="button"
+            className="pill-button"
+            onClick={pickDestination}
             disabled={isLoading}
-          />
-          Confirm before trash
-        </label>
-        <div className="spacer" />
-        <div className="status">{status}</div>
+            title={destination ?? "No destination set"}
+          >
+            <span className="pill-label">Destination</span>
+            <span className="pill-value">{destination ? destinationLabel : "Set destination"}</span>
+          </button>
+          <button
+            type="button"
+            className="pill-button"
+            onClick={openCurrentInFinder}
+            disabled={isLoading || !currentFile}
+          >
+            <span className="pill-label">Current</span>
+            <span className="pill-value">Open in Finder</span>
+          </button>
+          <button
+            type="button"
+            className="pill-button"
+            onClick={revealDestination}
+            disabled={isLoading || !destination}
+          >
+            <span className="pill-label">Destination</span>
+            <span className="pill-value">Reveal folder</span>
+          </button>
+          <button
+            type="button"
+            className={`pill-toggle ${confirmTrash ? "on" : "off"}`}
+            onClick={() => setConfirmTrash((prev) => !prev)}
+            aria-pressed={confirmTrash}
+            disabled={isLoading}
+          >
+            {confirmTrash ? "Confirm trash: On" : "Confirm trash: Off"}
+          </button>
+          <button
+            type="button"
+            className="icon-button settings-button"
+            onClick={() => setIsSettingsOpen(true)}
+            aria-label="Open settings"
+            aria-haspopup="dialog"
+            aria-expanded={isSettingsOpen}
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path d="M19.14 12.94c.04-.31.06-.63.06-.94s-.02-.63-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.02 7.02 0 0 0-1.62-.94l-.36-2.54a.5.5 0 0 0-.5-.42h-3.84a.5.5 0 0 0-.5.42l-.36 2.54c-.57.23-1.12.54-1.62.94l-2.39-.96a.5.5 0 0 0-.6.22L2.61 7.86a.5.5 0 0 0 .12.64l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58a.5.5 0 0 0-.12.64l1.92 3.32c.13.22.39.3.6.22l2.39-.96c.5.4 1.05.71 1.62.94l.36 2.54c.05.24.26.42.5.42h3.84c.25 0 .46-.18.5-.42l.36-2.54c.57-.23 1.12-.54 1.62-.94l2.39.96c.22.08.47 0 .6-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58ZM12 15.5A3.5 3.5 0 1 1 12 8a3.5 3.5 0 0 1 0 7.5Z" />
+            </svg>
+          </button>
+        </div>
       </header>
 
       <main className="content">
         <aside className="list-panel">
           <div className="list-header">
-            <span>Files ({files.length})</span>
+            <span>
+              Files ({filteredCount}
+              {filteredCount !== totalFiles ? `/${totalFiles}` : ""})
+            </span>
             <div className="list-header-actions">
               <button
                 type="button"
@@ -444,7 +705,11 @@ export default function App() {
               {isRenderingList && <span className="rendering">Rendering list...</span>}
             </div>
           </div>
-          <div className={`file-list ${isLoading ? "loading" : ""}`}>
+          <div
+            className={`file-list ${isLoading ? "loading" : ""} ${
+              listDensity === "compact" ? "density-compact" : "density-comfortable"
+            }`}
+          >
             {hasFiles ? (
               listItems
             ) : isLoading ? (
@@ -454,9 +719,37 @@ export default function App() {
                 ))}
               </div>
             ) : (
-              <div className="empty">No files loaded.</div>
+              <div className="empty">
+                {totalFiles === 0 ? "No files loaded." : "No files match the selected extensions."}
+              </div>
             )}
-            {isRenderingList && <div className="list-progress">Showing {renderCount} of {files.length}</div>}
+            {isRenderingList && <div className="list-progress">Showing {renderCount} of {filteredCount}</div>}
+          </div>
+          <div className="list-footer">
+            <div className="footer-title">Extensions</div>
+            {allExtensions.length === 0 ? (
+              <div className="extensions-empty">No extensions found.</div>
+            ) : (
+              <div className="extension-filters">
+                {allExtensions.map((extension) => (
+                  <label key={extension} className="extension-filter">
+                    <input
+                      type="checkbox"
+                      checked={selectedExtensions.includes(extension)}
+                      onChange={() => {
+                        setSelectedExtensions((current) =>
+                          current.includes(extension)
+                            ? current.filter((value) => value !== extension)
+                            : [...current, extension]
+                        );
+                      }}
+                      disabled={isLoading}
+                    />
+                    <span>{formatExtensionLabel(extension)}</span>
+                  </label>
+                ))}
+              </div>
+            )}
           </div>
         </aside>
         <section className="preview-panel">
@@ -492,7 +785,7 @@ export default function App() {
                     <div className="placeholder">No preview available for this file type.</div>
                   )}
                   <div className="caption">
-                    {currentFile.name} ({currentIndex + 1}/{files.length})
+                    {currentFile.name} ({currentIndex + 1}/{filteredCount})
                   </div>
                 </div>
                 <aside className="preview-details" aria-label="File details">
@@ -534,7 +827,7 @@ export default function App() {
                     <div>
                       <span className="meta-label">Position</span>
                       <span className="meta-value">
-                        {currentIndex + 1} of {files.length}
+                        {currentIndex + 1} of {filteredCount}
                       </span>
                     </div>
                     <div>
@@ -562,7 +855,7 @@ export default function App() {
         <button
           type="button"
           onClick={goNext}
-          disabled={!hasFiles || currentIndex >= files.length - 1 || isLoading}
+          disabled={!hasFiles || currentIndex >= filteredCount - 1 || isLoading}
         >
           Next (→)
         </button>
@@ -573,6 +866,113 @@ export default function App() {
           Move (↓)
         </button>
       </footer>
+
+      {isSettingsOpen && (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onClick={(event) => {
+            if (event.target === event.currentTarget) {
+              setIsSettingsOpen(false);
+            }
+          }}
+        >
+          <div className="modal-panel" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+            <div className="modal-header">
+              <h2 id="settings-title" className="modal-title">
+                Settings
+              </h2>
+              <button
+                type="button"
+                className="icon-button"
+                onClick={() => setIsSettingsOpen(false)}
+                aria-label="Close settings"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                  <path d="M18.3 5.7a1 1 0 0 0-1.4 0L12 10.6 7.1 5.7a1 1 0 1 0-1.4 1.4L10.6 12l-4.9 4.9a1 1 0 1 0 1.4 1.4L12 13.4l4.9 4.9a1 1 0 0 0 1.4-1.4L13.4 12l4.9-4.9a1 1 0 0 0 0-1.4Z" />
+                </svg>
+              </button>
+            </div>
+            <div className="modal-body">
+              <div className="settings-row">
+                <div className="setting-info">
+                  <div className="setting-title">Filter mode</div>
+                  <div className="setting-subtitle">Choose which files appear in the list.</div>
+                </div>
+                <select
+                  value={filterMode}
+                  onChange={(event) => setFilterMode(event.target.value as FilterMode)}
+                  disabled={isLoading}
+                >
+                  <option value="all">All files</option>
+                  <option value="images">Images only</option>
+                  <option value="videos">Videos only</option>
+                  <option value="images_videos">Images + Videos</option>
+                </select>
+              </div>
+              <div className="settings-row">
+                <div className="setting-info">
+                  <div className="setting-title">Include subfolders</div>
+                  <div className="setting-subtitle">Scan nested directories when choosing a folder.</div>
+                </div>
+                <label className="setting-toggle">
+                  <input
+                    type="checkbox"
+                    checked={includeSubfolders}
+                    onChange={(event) => setIncludeSubfolders(event.target.checked)}
+                    disabled={isLoading}
+                  />
+                  <span>{includeSubfolders ? "On" : "Off"}</span>
+                </label>
+              </div>
+              <div className="settings-row">
+                <div className="setting-info">
+                  <div className="setting-title">Confirm before trash</div>
+                  <div className="setting-subtitle">Show a confirmation dialog before deleting.</div>
+                </div>
+                <label className="setting-toggle">
+                  <input
+                    type="checkbox"
+                    checked={confirmTrash}
+                    onChange={(event) => setConfirmTrash(event.target.checked)}
+                    disabled={isLoading}
+                  />
+                  <span>{confirmTrash ? "On" : "Off"}</span>
+                </label>
+              </div>
+              <div className="settings-row">
+                <div className="setting-info">
+                  <div className="setting-title">List density</div>
+                  <div className="setting-subtitle">Control how compact the file list appears.</div>
+                </div>
+                <select
+                  value={listDensity}
+                  onChange={(event) => setListDensity(event.target.value as DensityMode)}
+                  disabled={isLoading}
+                >
+                  <option value="comfortable">Comfortable</option>
+                  <option value="compact">Compact</option>
+                </select>
+              </div>
+              <div className="settings-row">
+                <div className="setting-info">
+                  <div className="setting-title">Move destination</div>
+                  <div className="setting-subtitle">Folder used when moving files.</div>
+                  <div className="setting-value">{destination ?? "Not set"}</div>
+                </div>
+                <button type="button" onClick={pickDestination} disabled={isLoading}>
+                  Choose…
+                </button>
+              </div>
+            </div>
+            <div className="modal-footer">
+              <button type="button" onClick={() => setIsSettingsOpen(false)}>
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -608,6 +608,10 @@ export default function App() {
   const filteredCount = sortedFiles.length;
   const folderLabel = currentFolder ? formatPathLabel(currentFolder) : "No folder selected";
   const destinationLabel = formatPathLabel(destination);
+  const folderSizeBytes = useMemo(
+    () => files.reduce((total, file) => total + file.sizeBytes, 0),
+    [files]
+  );
 
   return (
     <div className={`app-shell ${isLoading ? "is-loading" : ""}`}>
@@ -866,6 +870,10 @@ export default function App() {
                     <div>
                       <span className="meta-label">Folder</span>
                       <span className="meta-value">{extractFolder(currentFile.path)}</span>
+                    </div>
+                    <div>
+                      <span className="meta-label">Folder size</span>
+                      <span className="meta-value">{formatBytes(folderSizeBytes)}</span>
                     </div>
                     <div>
                       <span className="meta-label">Full path</span>

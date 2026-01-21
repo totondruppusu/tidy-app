@@ -271,7 +271,8 @@ export default function App() {
     try {
       const selected = await open({ directory: true, multiple: false });
       if (typeof selected === "string") {
-        await handleScan(selected);
+        setCurrentFolder(selected);
+        updateStatus("Folder selected. Click search to scan.");
       } else {
         updateStatus("No folder selected.");
       }
@@ -444,12 +445,6 @@ export default function App() {
   }, [goNext, goPrev, isSettingsOpen, moveCurrent, trashCurrent]);
 
   useEffect(() => {
-    if (currentFolder) {
-      void handleScan(currentFolder);
-    }
-  }, [currentFolder, filterMode, handleScan, includeSubfolders]);
-
-  useEffect(() => {
     let isMounted = true;
     const unlistenPromise = listen<ScanProgress>("scan_progress", (event) => {
       if (!isMounted) {
@@ -616,17 +611,116 @@ export default function App() {
 
   return (
     <div className={`app-shell ${isLoading ? "is-loading" : ""}`}>
-      <header className="toolbar">
-        <div className="toolbar-group">
-          <button type="button" onClick={pickFolder} disabled={isLoading}>
-            Select folder…
-          </button>
-          <div className="toolbar-pill" title={currentFolder ?? "No folder selected"}>
-            <span className="pill-label">Folder</span>
-            <span className="pill-value">{folderLabel}</span>
+      <div className="app-grid">
+        <aside className="list-panel">
+          <div className="list-top-controls">
+            <button
+              type="button"
+              className="pill-button"
+              onClick={pickFolder}
+              disabled={isLoading}
+              title={currentFolder ?? "No folder selected"}
+            >
+              <span className="pill-label">Folder</span>
+              <span className="pill-value">{currentFolder ? folderLabel : "Select folder…"}</span>
+            </button>
+            <div className="toolbar-control">
+              <span className="control-label">Filter</span>
+              <select
+                value={filterMode}
+                onChange={(event) => setFilterMode(event.target.value as FilterMode)}
+                disabled={isLoading}
+              >
+                <option value="all">All files</option>
+                <option value="images">Images only</option>
+                <option value="videos">Videos only</option>
+                <option value="images_videos">Images + Videos</option>
+              </select>
+            </div>
+            <button
+              type="button"
+              className="icon-button search-button"
+              onClick={() => handleScan(currentFolder ?? undefined)}
+              disabled={isLoading || !currentFolder}
+              aria-label="Scan folder"
+              title="Scan folder"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M15.5 14h-.79l-.28-.27a6 6 0 1 0-.71.71l.27.28v.79L20 20.5 21.5 19l-6-5zM10 15a5 5 0 1 1 0-10 5 5 0 0 1 0 10z" />
+              </svg>
+            </button>
           </div>
-        </div>
-        <div className="toolbar-group toolbar-actions">
+          <div className="list-header">
+            <span>
+              Files ({filteredCount}
+              {filteredCount !== totalFiles ? `/${totalFiles}` : ""})
+            </span>
+            <div className="list-header-actions">
+              <button
+                type="button"
+                className="icon-button"
+                onClick={() => currentFolder && handleScan(currentFolder)}
+                disabled={isLoading || !currentFolder}
+                aria-label="Refresh file list"
+                title="Refresh"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                  <path d="M4 12a8 8 0 0 1 13.66-5.66l1.59-1.59V9h-4.25l1.47-1.47A6 6 0 1 0 18 12h2a8 8 0 0 1-16 0z" />
+                </svg>
+              </button>
+              {isRenderingList && <span className="rendering">Rendering list...</span>}
+            </div>
+          </div>
+          <div
+            className={`file-list ${isLoading ? "loading" : ""} ${
+              listDensity === "compact" ? "density-compact" : "density-comfortable"
+            }`}
+          >
+            {hasFiles ? (
+              listItems
+            ) : isLoading ? (
+              <div className="skeleton-list" aria-hidden="true">
+                {Array.from({ length: 8 }).map((_, index) => (
+                  <div key={`skeleton-${index}`} className="skeleton-item" />
+                ))}
+              </div>
+            ) : (
+              <div className="empty">
+                {totalFiles === 0 ? "No files loaded." : "No files match the selected extensions."}
+              </div>
+            )}
+            {isRenderingList && <div className="list-progress">Showing {renderCount} of {filteredCount}</div>}
+          </div>
+          <div className="list-footer">
+            <div className="footer-title">Extensions</div>
+            {allExtensions.length === 0 ? (
+              <div className="extensions-empty">No extensions found.</div>
+            ) : (
+              <div className="extension-filters">
+                {allExtensions.map((extension) => (
+                  <label key={extension} className="extension-filter">
+                    <input
+                      type="checkbox"
+                      checked={selectedExtensions.includes(extension)}
+                      onChange={() => {
+                        setSelectedExtensions((current) =>
+                          current.includes(extension)
+                            ? current.filter((value) => value !== extension)
+                            : [...current, extension]
+                        );
+                      }}
+                      disabled={isLoading}
+                    />
+                    <span>{formatExtensionLabel(extension)}</span>
+                  </label>
+                ))}
+              </div>
+            )}
+          </div>
+        </aside>
+
+        <header className="toolbar">
+          <div className="toolbar-group toolbar-actions">
           <div className="toolbar-control">
             <span className="control-label">Sort</span>
             <select
@@ -702,79 +796,10 @@ export default function App() {
           </svg>
           </button>
         </div>
-      </header>
+        </header>
 
-      <main className="content">
-        <aside className="list-panel">
-          <div className="list-header">
-            <span>
-              Files ({filteredCount}
-              {filteredCount !== totalFiles ? `/${totalFiles}` : ""})
-            </span>
-            <div className="list-header-actions">
-              <button
-                type="button"
-                className="icon-button"
-                onClick={() => currentFolder && handleScan(currentFolder)}
-                disabled={isLoading || !currentFolder}
-                aria-label="Refresh file list"
-                title="Refresh"
-              >
-                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                  <path d="M4 12a8 8 0 0 1 13.66-5.66l1.59-1.59V9h-4.25l1.47-1.47A6 6 0 1 0 18 12h2a8 8 0 0 1-16 0z" />
-                </svg>
-              </button>
-              {isRenderingList && <span className="rendering">Rendering list...</span>}
-            </div>
-          </div>
-          <div
-            className={`file-list ${isLoading ? "loading" : ""} ${
-              listDensity === "compact" ? "density-compact" : "density-comfortable"
-            }`}
-          >
-            {hasFiles ? (
-              listItems
-            ) : isLoading ? (
-              <div className="skeleton-list" aria-hidden="true">
-                {Array.from({ length: 8 }).map((_, index) => (
-                  <div key={`skeleton-${index}`} className="skeleton-item" />
-                ))}
-              </div>
-            ) : (
-              <div className="empty">
-                {totalFiles === 0 ? "No files loaded." : "No files match the selected extensions."}
-              </div>
-            )}
-            {isRenderingList && <div className="list-progress">Showing {renderCount} of {filteredCount}</div>}
-          </div>
-          <div className="list-footer">
-            <div className="footer-title">Extensions</div>
-            {allExtensions.length === 0 ? (
-              <div className="extensions-empty">No extensions found.</div>
-            ) : (
-              <div className="extension-filters">
-                {allExtensions.map((extension) => (
-                  <label key={extension} className="extension-filter">
-                    <input
-                      type="checkbox"
-                      checked={selectedExtensions.includes(extension)}
-                      onChange={() => {
-                        setSelectedExtensions((current) =>
-                          current.includes(extension)
-                            ? current.filter((value) => value !== extension)
-                            : [...current, extension]
-                        );
-                      }}
-                      disabled={isLoading}
-                    />
-                    <span>{formatExtensionLabel(extension)}</span>
-                  </label>
-                ))}
-              </div>
-            )}
-          </div>
-        </aside>
-        <section className="preview-panel">
+        <main className="content">
+          <section className="preview-panel">
           {isLoading ? (
             <div className="loading-state">
               <div className="spinner" />
@@ -863,8 +888,9 @@ export default function App() {
           ) : (
             <div className="placeholder">Select a folder to preview files.</div>
           )}
-        </section>
-      </main>
+          </section>
+        </main>
+      </div>
 
       <footer className="actions">
         <button

@@ -5,7 +5,17 @@ import { open, confirm } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 
 type FilterMode = "all" | "images" | "videos" | "images_videos";
-type SortMode = "name" | "size" | "date";
+type SortMode =
+  | "name_asc"
+  | "name_desc"
+  | "size_desc"
+  | "size_asc"
+  | "date_desc"
+  | "date_asc"
+  | "type_asc"
+  | "type_desc"
+  | "extension_asc"
+  | "extension_desc";
 type DensityMode = "comfortable" | "compact";
 type GroupMode = "none" | "type" | "extension";
 type ThemeMode = "light" | "dark";
@@ -175,7 +185,7 @@ export default function App() {
     Array.from({ length: DESTINATION_SLOT_COUNT }, () => null)
   );
   const [confirmTrash, setConfirmTrash] = useState(true);
-  const [sortMode, setSortMode] = useState<SortMode>("name");
+  const [sortMode, setSortMode] = useState<SortMode>("name_asc");
   const [groupMode, setGroupMode] = useState<GroupMode>("none");
   const [listDensity, setListDensity] = useState<DensityMode>("comfortable");
   const [selectedExtensions, setSelectedExtensions] = useState<string[]>([]);
@@ -217,14 +227,36 @@ export default function App() {
   const sortFiles = useCallback(
     (list: FileEntry[]) => {
       const next = [...list];
+      const compareName = (a: FileEntry, b: FileEntry) =>
+        a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+      const compareExtension = (a: FileEntry, b: FileEntry) =>
+        getExtension(a.name).localeCompare(getExtension(b.name), undefined, { sensitivity: "base" });
+      const compareType = (a: FileEntry, b: FileEntry) =>
+        a.kind.localeCompare(b.kind, undefined, { sensitivity: "base" });
       next.sort((a, b) => {
-        if (sortMode === "size") {
-          return b.sizeBytes - a.sizeBytes;
+        switch (sortMode) {
+          case "size_desc":
+            return b.sizeBytes - a.sizeBytes || compareName(a, b);
+          case "size_asc":
+            return a.sizeBytes - b.sizeBytes || compareName(a, b);
+          case "date_desc":
+            return (b.modifiedMs ?? 0) - (a.modifiedMs ?? 0) || compareName(a, b);
+          case "date_asc":
+            return (a.modifiedMs ?? 0) - (b.modifiedMs ?? 0) || compareName(a, b);
+          case "type_asc":
+            return compareType(a, b) || compareName(a, b);
+          case "type_desc":
+            return compareType(b, a) || compareName(a, b);
+          case "extension_asc":
+            return compareExtension(a, b) || compareName(a, b);
+          case "extension_desc":
+            return compareExtension(b, a) || compareName(a, b);
+          case "name_desc":
+            return compareName(b, a);
+          case "name_asc":
+          default:
+            return compareName(a, b);
         }
-        if (sortMode === "date") {
-          return (b.modifiedMs ?? 0) - (a.modifiedMs ?? 0);
-        }
-        return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
       });
       return next;
     },
@@ -876,9 +908,16 @@ export default function App() {
               onChange={(event) => setSortMode(event.target.value as SortMode)}
               disabled={isLoading}
             >
-              <option value="name">Name</option>
-              <option value="size">Size</option>
-              <option value="date">Date</option>
+              <option value="name_asc">Name (A-Z)</option>
+              <option value="name_desc">Name (Z-A)</option>
+              <option value="size_desc">Size (Largest)</option>
+              <option value="size_asc">Size (Smallest)</option>
+              <option value="date_desc">Date (Newest)</option>
+              <option value="date_asc">Date (Oldest)</option>
+              <option value="type_asc">Type (A-Z)</option>
+              <option value="type_desc">Type (Z-A)</option>
+              <option value="extension_asc">Extension (A-Z)</option>
+              <option value="extension_desc">Extension (Z-A)</option>
             </select>
           </div>
           <div className="toolbar-control">

@@ -38,6 +38,29 @@ type ScanBatch = {
   files: FileEntry[];
 };
 
+type MoveResult = {
+  newName: string;
+  targetPath: string;
+};
+
+type TrashResult = {
+  trashPath: string;
+};
+
+type UndoAction =
+  | {
+      kind: "move";
+      file: FileEntry;
+      fromPath: string;
+      toPath: string;
+    }
+  | {
+      kind: "trash";
+      file: FileEntry;
+      fromPath: string;
+      trashPath: string;
+    };
+
 const isEditableTarget = (target: EventTarget | null) => {
   if (!(target instanceof HTMLElement)) {
     return false;
@@ -161,6 +184,7 @@ export default function App() {
   const [renderCount, setRenderCount] = useState(0);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [theme, setTheme] = useState<ThemeMode>(getInitialTheme);
+  const [lastAction, setLastAction] = useState<UndoAction | null>(null);
   const activeScanId = useRef<string | null>(null);
   const listItemRefs = useRef<Map<string, HTMLButtonElement | null>>(new Map());
   const previousExtensionsRef = useRef<string[]>([]);
@@ -277,6 +301,7 @@ export default function App() {
         setFiles([]);
         setCurrentIndex(0);
         setRenderCount(0);
+        setLastAction(null);
         updateStatus(includeSubfolders ? "Scanning folders and subfolders..." : "Scanning folder...");
         const result = await invoke<ScanResult>("scan_folder", {
           folderPath,
@@ -363,6 +388,26 @@ export default function App() {
     [selectedExtensions, sortFiles]
   );
 
+  const restoreFileEntry = useCallback(
+    (restored: FileEntry) => {
+      setFiles((prev) => {
+        if (prev.some((file) => file.id === restored.id)) {
+          return prev;
+        }
+        const next = [...prev, restored];
+        const allowed = new Set(selectedExtensions);
+        const filterByExtension = (file: FileEntry) => allowed.has(getExtension(file.name));
+        const sortedNext = sortFiles(next.filter(filterByExtension));
+        const restoredIndex = sortedNext.findIndex((file) => file.id === restored.id);
+        if (restoredIndex !== -1) {
+          setCurrentIndex(restoredIndex);
+        }
+        return next;
+      });
+    },
+    [selectedExtensions, sortFiles]
+  );
+
   const trashCurrent = useCallback(async () => {
     if (!currentFile) {
       updateStatus("No file selected.");
@@ -375,13 +420,19 @@ export default function App() {
       return;
     }
     try {
-      await invoke("trash_file", { id: currentFile.id });
+      const result = await invoke<TrashResult>("trash_file", { id: currentFile.id });
       removeFileById(currentFile.id);
+      setLastAction({
+        kind: "trash",
+        file: currentFile,
+        fromPath: currentFile.path,
+        trashPath: result.trashPath,
+      });
       updateStatus(`Moved ${currentFile.name} to trash.`);
     } catch (error) {
       updateStatus(`Trash failed: ${String(error)}`);
     }
-  }, [confirmTrash, currentFile, removeFileById, updateStatus]);
+  }, [confirmTrash, currentFile, removeFileById, updateStatus, setLastAction]);
 
   const moveCurrentToSlot = useCallback(
     async (slotIndex: number, allowPickIfMissing = false) => {
@@ -403,14 +454,20 @@ export default function App() {
       }
       try {
         await invoke("set_destination", { destination: destinationPath });
-        const newName = await invoke<string>("move_file", { id: currentFile.id });
+        const result = await invoke<MoveResult>("move_file", { id: currentFile.id });
         removeFileById(currentFile.id);
-        updateStatus(`Moved to ${destinationPath}/${newName}.`);
+        setLastAction({
+          kind: "move",
+          file: currentFile,
+          fromPath: currentFile.path,
+          toPath: result.targetPath,
+        });
+        updateStatus(`Moved to ${result.targetPath}.`);
       } catch (error) {
         updateStatus(`Move failed: ${String(error)}`);
       }
     },
-    [currentFile, destinationSlots, pickDestinationForSlot, removeFileById, updateStatus]
+    [currentFile, destinationSlots, pickDestinationForSlot, removeFileById, updateStatus, setLastAction]
   );
 
   const moveCurrent = useCallback(async () => {
@@ -444,6 +501,26 @@ export default function App() {
     setCurrentIndex((prev) => (prev > 0 ? prev - 1 : prev));
   }, []);
 
+  const undoLastAction = useCallback(async () => {
+    if (!lastAction) {
+      updateStatus("Nothing to undo.");
+      return;
+    }
+    const sourcePath = lastAction.kind === "move" ? lastAction.toPath : lastAction.trashPath;
+    try {
+      await invoke("restore_file", {
+        id: lastAction.file.id,
+        source: sourcePath,
+        destination: lastAction.fromPath,
+      });
+      restoreFileEntry(lastAction.file);
+      setLastAction(null);
+      updateStatus(`Undid ${lastAction.kind}.`);
+    } catch (error) {
+      updateStatus(`Undo failed: ${String(error)}`);
+    }
+  }, [lastAction, restoreFileEntry, updateStatus, setLastAction]);
+
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
       if (isSettingsOpen) {
@@ -476,7 +553,7 @@ export default function App() {
           break;
         case "ArrowDown":
           event.preventDefault();
-          void moveCurrent();
+          void undoLastAction();
           break;
         case "Enter":
           if (!shouldOpenOnEnter(event.target)) {
@@ -491,7 +568,7 @@ export default function App() {
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [goNext, goPrev, isSettingsOpen, moveCurrent, moveCurrentToSlot, openCurrentInFinder, trashCurrent]);
+  }, [goNext, goPrev, isSettingsOpen, moveCurrentToSlot, openCurrentInFinder, trashCurrent, undoLastAction]);
 
   useEffect(() => {
     let isMounted = true;
@@ -959,8 +1036,8 @@ export default function App() {
             <button type="button" onClick={trashCurrent} disabled={!hasFiles || isLoading}>
               Trash (↑)
             </button>
-            <button type="button" onClick={moveCurrent} disabled={!hasFiles || isLoading}>
-              Move (↓)
+            <button type="button" onClick={undoLastAction} disabled={!lastAction || isLoading}>
+              Undo (↓)
             </button>
           </div>
         </div>

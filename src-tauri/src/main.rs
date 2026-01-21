@@ -33,16 +33,29 @@ struct FileEntry {
   mime: String,
 }
 
-#[derive(Default)]
 struct AppState {
   map: Mutex<HashMap<String, PathBuf>>,
   destination: Mutex<Option<PathBuf>>,
+  trash_dir: PathBuf,
 }
 
 #[derive(Serialize)]
 struct ScanResult {
   files: Vec<FileEntry>,
   total: usize,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MoveResult {
+  new_name: String,
+  target_path: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TrashResult {
+  trash_path: String,
 }
 
 #[derive(Clone, Serialize)]
@@ -239,14 +252,23 @@ async fn scan_folder(
 }
 
 #[tauri::command]
-fn trash_file(state: tauri::State<'_, AppState>, id: String) -> Result<(), String> {
+fn trash_file(state: tauri::State<'_, AppState>, id: String) -> Result<TrashResult, String> {
   let mut map = state.map.lock().expect("map lock");
   let path = map.remove(&id).ok_or("File not found")?;
-  trash::delete(&path).map_err(|error| error.to_string())
+  let file_name = path
+    .file_name()
+    .and_then(|name| name.to_str())
+    .ok_or("Invalid file name")?;
+  fs::create_dir_all(&state.trash_dir).map_err(|error| error.to_string())?;
+  let target_path = unique_path(&state.trash_dir, file_name);
+  move_path(&path, &target_path)?;
+  Ok(TrashResult {
+    trash_path: target_path.to_string_lossy().to_string(),
+  })
 }
 
 #[tauri::command]
-fn move_file(state: tauri::State<'_, AppState>, id: String) -> Result<String, String> {
+fn move_file(state: tauri::State<'_, AppState>, id: String) -> Result<MoveResult, String> {
   let destination = state
     .destination
     .lock()
@@ -263,17 +285,7 @@ fn move_file(state: tauri::State<'_, AppState>, id: String) -> Result<String, St
 
   let target_path = unique_path(&destination, file_name);
 
-  match fs::rename(&source, &target_path) {
-    Ok(_) => {}
-    Err(error) => {
-      if error.raw_os_error() == Some(18) {
-        fs::copy(&source, &target_path).map_err(|error| error.to_string())?;
-        fs::remove_file(&source).map_err(|error| error.to_string())?;
-      } else {
-        return Err(error.to_string());
-      }
-    }
-  }
+  move_path(&source, &target_path)?;
 
   let new_name = target_path
     .file_name()
@@ -281,7 +293,36 @@ fn move_file(state: tauri::State<'_, AppState>, id: String) -> Result<String, St
     .ok_or("Invalid target name")?
     .to_string();
 
-  Ok(new_name)
+  Ok(MoveResult {
+    new_name,
+    target_path: target_path.to_string_lossy().to_string(),
+  })
+}
+
+#[tauri::command]
+fn restore_file(
+  state: tauri::State<'_, AppState>,
+  id: String,
+  source: String,
+  destination: String,
+) -> Result<(), String> {
+  let source_path = PathBuf::from(source);
+  if !source_path.exists() {
+    return Err("Source file not found.".into());
+  }
+  let destination_path = PathBuf::from(destination);
+  if destination_path.exists() {
+    return Err("Restore target already exists.".into());
+  }
+  if let Some(parent) = destination_path.parent() {
+    if !parent.exists() {
+      return Err("Restore folder no longer exists.".into());
+    }
+  }
+  move_path(&source_path, &destination_path)?;
+  let mut map = state.map.lock().expect("map lock");
+  map.insert(id, destination_path);
+  Ok(())
 }
 
 #[tauri::command]
@@ -343,6 +384,21 @@ fn unique_path(destination: &Path, file_name: &str) -> PathBuf {
     }
   }
   destination.join(format!("{} ({})", stem, Uuid::new_v4()))
+}
+
+fn move_path(source: &Path, target: &Path) -> Result<(), String> {
+  match fs::rename(source, target) {
+    Ok(_) => Ok(()),
+    Err(error) => {
+      if error.raw_os_error() == Some(18) {
+        fs::copy(source, target).map_err(|error| error.to_string())?;
+        fs::remove_file(source).map_err(|error| error.to_string())?;
+        Ok(())
+      } else {
+        Err(error.to_string())
+      }
+    }
+  }
 }
 
 fn classify_file(path: &Path) -> FileKind {
@@ -484,7 +540,20 @@ fn protocol_response(
 
 fn main() {
   tauri::Builder::default()
-    .manage(AppState::default())
+    .setup(|app| {
+      let trash_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?
+        .join("trash");
+      fs::create_dir_all(&trash_dir).map_err(|error| error.to_string())?;
+      app.manage(AppState {
+        map: Mutex::new(HashMap::new()),
+        destination: Mutex::new(None),
+        trash_dir,
+      });
+      Ok(())
+    })
     .plugin(tauri_plugin_dialog::init())
     .register_asynchronous_uri_scheme_protocol("media", |context, request, responder| {
       let response = protocol_response(context.app_handle(), request).unwrap_or_else(|_| {
@@ -499,6 +568,7 @@ fn main() {
       scan_folder,
       trash_file,
       move_file,
+      restore_file,
       set_destination,
       reveal_in_file_manager
     ])

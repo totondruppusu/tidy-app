@@ -170,6 +170,7 @@ export default function App() {
   const [, setStatus] = useState("Select a folder to begin.");
   const [filterMode, setFilterMode] = useState<FilterMode>("all");
   const [includeSubfolders, setIncludeSubfolders] = useState(false);
+  const [includeHidden, setIncludeHidden] = useState(false);
   const [destinationSlots, setDestinationSlots] = useState<(string | null)[]>(() =>
     Array.from({ length: DESTINATION_SLOT_COUNT }, () => null)
   );
@@ -188,6 +189,7 @@ export default function App() {
   const activeScanId = useRef<string | null>(null);
   const listItemRefs = useRef<Map<string, HTMLButtonElement | null>>(new Map());
   const previousExtensionsRef = useRef<string[]>([]);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -307,6 +309,7 @@ export default function App() {
           folderPath,
           filterMode,
           includeSubfolders,
+          includeHidden,
           scanId
         });
         setFiles(result.files);
@@ -318,7 +321,7 @@ export default function App() {
         setIsLoading(false);
       }
     },
-    [filterMode, includeSubfolders, updateStatus]
+    [filterMode, includeSubfolders, includeHidden, updateStatus]
   );
 
   const pickFolder = useCallback(async () => {
@@ -521,6 +524,18 @@ export default function App() {
     }
   }, [lastAction, restoreFileEntry, updateStatus, setLastAction]);
 
+  const toggleVideoPlayback = useCallback(() => {
+    const video = videoRef.current;
+    if (!video) {
+      return;
+    }
+    if (video.paused) {
+      void video.play();
+    } else {
+      video.pause();
+    }
+  }, []);
+
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
       if (isSettingsOpen) {
@@ -531,6 +546,11 @@ export default function App() {
         return;
       }
       if (isEditableTarget(event.target)) {
+        return;
+      }
+      if ((event.code === "Space" || event.key === " ") && currentFile?.kind === "video") {
+        event.preventDefault();
+        toggleVideoPlayback();
         return;
       }
       if (event.key >= "1" && event.key <= "5") {
@@ -568,7 +588,17 @@ export default function App() {
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [goNext, goPrev, isSettingsOpen, moveCurrentToSlot, openCurrentInFinder, trashCurrent, undoLastAction]);
+  }, [
+    currentFile,
+    goNext,
+    goPrev,
+    isSettingsOpen,
+    moveCurrentToSlot,
+    openCurrentInFinder,
+    toggleVideoPlayback,
+    trashCurrent,
+    undoLastAction,
+  ]);
 
   useEffect(() => {
     let isMounted = true;
@@ -786,18 +816,6 @@ export default function App() {
               {filteredCount !== totalFiles ? `/${totalFiles}` : ""})
             </span>
             <div className="list-header-actions">
-              <button
-                type="button"
-                className="icon-button"
-                onClick={() => currentFolder && handleScan(currentFolder)}
-                disabled={isLoading || !currentFolder}
-                aria-label="Refresh file list"
-                title="Refresh"
-              >
-                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                  <path d="M4 12a8 8 0 0 1 13.66-5.66l1.59-1.59V9h-4.25l1.47-1.47A6 6 0 1 0 18 12h2a8 8 0 0 1-16 0z" />
-                </svg>
-              </button>
               {isRenderingList && <span className="rendering">Rendering list...</span>}
             </div>
           </div>
@@ -907,18 +925,6 @@ export default function App() {
               <div className="spinner" />
               <div className="loading-title">Scanning files</div>
               <div className="loading-subtitle">{loadingMessage ?? "Collecting file list..."}</div>
-              <div
-                className={`loading-meter ${progressPercent === null ? "indeterminate" : "determinate"}`}
-                role="progressbar"
-                aria-valuemin={0}
-                aria-valuemax={100}
-                aria-valuenow={progressPercent ?? undefined}
-              >
-                <span style={progressPercent === null ? undefined : { width: `${progressPercent}%` }} />
-              </div>
-              <div className="loading-percent">
-                {progressPercent === null ? "Preparing scan..." : `${progressPercent}%`}
-              </div>
             </div>
           ) : currentFile ? (
             <div className="preview-content">
@@ -928,7 +934,7 @@ export default function App() {
                     <img src={buildMediaUrl(currentFile.id)} alt={currentFile.name} />
                   )}
                   {currentFile.kind === "video" && (
-                    <video controls src={buildMediaUrl(currentFile.id)} />
+                    <video ref={videoRef} controls src={buildMediaUrl(currentFile.id)} />
                   )}
                   {currentFile.kind === "other" && (
                     <div className="placeholder">No preview available for this file type.</div>
@@ -1099,6 +1105,21 @@ export default function App() {
                     disabled={isLoading}
                   />
                   <span>{includeSubfolders ? "On" : "Off"}</span>
+                </label>
+              </div>
+              <div className="settings-row">
+                <div className="setting-info">
+                  <div className="setting-title">Include hidden items</div>
+                  <div className="setting-subtitle">Show dotfiles and hidden folders in scans.</div>
+                </div>
+                <label className="setting-toggle">
+                  <input
+                    type="checkbox"
+                    checked={includeHidden}
+                    onChange={(event) => setIncludeHidden(event.target.checked)}
+                    disabled={isLoading}
+                  />
+                  <span>{includeHidden ? "On" : "Off"}</span>
                 </label>
               </div>
               <div className="settings-row">

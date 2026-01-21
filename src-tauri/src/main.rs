@@ -87,6 +87,7 @@ async fn scan_folder(
   folder_path: String,
   filter_mode: String,
   include_subfolders: bool,
+  include_hidden: bool,
   scan_id: String,
 ) -> Result<ScanResult, String> {
   let app_handle = window.app_handle().clone();
@@ -107,8 +108,10 @@ async fn scan_folder(
         WalkDir::new(&folder)
           .follow_links(false)
           .into_iter()
+          .filter_entry(|entry| include_hidden || !is_hidden_entry(entry.path(), &folder))
           .filter_map(|entry| entry.ok())
           .filter(|entry| entry.file_type().is_file())
+          .filter(|entry| include_hidden || !is_hidden_entry(entry.path(), &folder))
           .map(|entry| entry.path().to_path_buf()),
       )
     } else {
@@ -117,6 +120,7 @@ async fn scan_folder(
           .map_err(|error| error.to_string())?
           .filter_map(|entry| entry.ok())
           .filter(|entry| entry.file_type().map(|ft| ft.is_file()).unwrap_or(false))
+          .filter(|entry| include_hidden || !is_hidden_entry(&entry.path(), &folder))
           .map(|entry| entry.path()),
       )
     };
@@ -419,6 +423,17 @@ fn matches_filter(filter: &str, kind: &FileKind) -> bool {
     "images_videos" => matches!(kind, FileKind::Image | FileKind::Video),
     _ => true,
   }
+}
+
+fn is_hidden_entry(path: &Path, root: &Path) -> bool {
+  if path == root {
+    return false;
+  }
+  let relative = path.strip_prefix(root).unwrap_or(path);
+  relative.components().any(|component| {
+    let name = component.as_os_str().to_string_lossy();
+    name.starts_with('.')
+  })
 }
 
 fn is_image_extension(extension: &str) -> bool {

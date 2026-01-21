@@ -7,6 +7,7 @@ type FilterMode = "all" | "images" | "videos" | "images_videos";
 type SortMode = "name" | "size" | "date";
 type DensityMode = "comfortable" | "compact";
 type GroupMode = "none" | "type" | "extension";
+type ThemeMode = "light" | "dark";
 
 type FileEntry = {
   id: string;
@@ -113,6 +114,20 @@ const extractFolder = (path: string) => {
   return match ? match[1] : path;
 };
 
+const getInitialTheme = (): ThemeMode => {
+  if (typeof window === "undefined") {
+    return "light";
+  }
+  const stored = window.localStorage.getItem("tidy-theme");
+  if (stored === "light" || stored === "dark") {
+    return stored;
+  }
+  if (window.matchMedia?.("(prefers-color-scheme: dark)").matches) {
+    return "dark";
+  }
+  return "light";
+};
+
 export default function App() {
   const [files, setFiles] = useState<FileEntry[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
@@ -130,9 +145,15 @@ export default function App() {
   const [scanProgress, setScanProgress] = useState<ScanProgress | null>(null);
   const [renderCount, setRenderCount] = useState(0);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [theme, setTheme] = useState<ThemeMode>(getInitialTheme);
   const activeScanId = useRef<string | null>(null);
   const listItemRefs = useRef<Map<string, HTMLButtonElement | null>>(new Map());
   const previousExtensionsRef = useRef<string[]>([]);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    window.localStorage.setItem("tidy-theme", theme);
+  }, [theme]);
 
   const updateStatus = useCallback((message: string) => {
     setStatus(message);
@@ -660,12 +681,13 @@ export default function App() {
           </button>
           <button
             type="button"
-            className={`pill-toggle ${confirmTrash ? "on" : "off"}`}
+            className={`pill-button pill-toggle${confirmTrash ? "" : " is-warning"}`}
             onClick={() => setConfirmTrash((prev) => !prev)}
             aria-pressed={confirmTrash}
             disabled={isLoading}
           >
-            {confirmTrash ? "Confirm trash: On" : "Confirm trash: Off"}
+            <span className="pill-label">Trash alert</span>
+            <span className="pill-value">{confirmTrash ? "On" : "Off"}</span>
           </button>
           <button
             type="button"
@@ -675,9 +697,9 @@ export default function App() {
             aria-haspopup="dialog"
             aria-expanded={isSettingsOpen}
           >
-            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-              <path d="M19.14 12.94c.04-.31.06-.63.06-.94s-.02-.63-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.02 7.02 0 0 0-1.62-.94l-.36-2.54a.5.5 0 0 0-.5-.42h-3.84a.5.5 0 0 0-.5.42l-.36 2.54c-.57.23-1.12.54-1.62.94l-2.39-.96a.5.5 0 0 0-.6.22L2.61 7.86a.5.5 0 0 0 .12.64l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58a.5.5 0 0 0-.12.64l1.92 3.32c.13.22.39.3.6.22l2.39-.96c.5.4 1.05.71 1.62.94l.36 2.54c.05.24.26.42.5.42h3.84c.25 0 .46-.18.5-.42l.36-2.54c.57-.23 1.12-.54 1.62-.94l2.39.96c.22.08.47 0 .6-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58ZM12 15.5A3.5 3.5 0 1 1 12 8a3.5 3.5 0 0 1 0 7.5Z" />
-            </svg>
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" width="24" height="24">
+            <path d="M19.14 12.94c.04-.31.06-.63.06-.94s-.02-.63-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.02 7.02 0 0 0-1.62-.94l-.36-2.54a.5.5 0 0 0-.5-.42h-3.84a.5.5 0 0 0-.5.42l-.36 2.54c-.57.23-1.12.54-1.62.94l-2.39-.96a.5.5 0 0 0-.6.22L2.61 7.86a.5.5 0 0 0 .12.64l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58a.5.5 0 0 0-.12.64l1.92 3.32c.13.22.39.3.6.22l2.39-.96c.5.4 1.05.71 1.62.94l.36 2.54c.05.24.26.42.5.42h3.84c.25 0 .46-.18.5-.42l.36-2.54c.57-.23 1.12-.54 1.62-.94l2.39.96c.22.08.47 0 .6-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58ZM12 15.5A3.5 3.5 0 1 1 12 8a3.5 3.5 0 0 1 0 7.5Z" />
+          </svg>
           </button>
         </div>
       </header>
@@ -927,10 +949,10 @@ export default function App() {
               </div>
               <div className="settings-row">
                 <div className="setting-info">
-                  <div className="setting-title">Confirm before trash</div>
+                  <div className="setting-title">Trash alert</div>
                   <div className="setting-subtitle">Show a confirmation dialog before deleting.</div>
                 </div>
-                <label className="setting-toggle">
+                <label className={`setting-toggle${confirmTrash ? "" : " is-warning"}`}>
                   <input
                     type="checkbox"
                     checked={confirmTrash}
@@ -953,6 +975,21 @@ export default function App() {
                   <option value="comfortable">Comfortable</option>
                   <option value="compact">Compact</option>
                 </select>
+              </div>
+              <div className="settings-row">
+                <div className="setting-info">
+                  <div className="setting-title">Dark mode</div>
+                  <div className="setting-subtitle">Switch to a darker color palette.</div>
+                </div>
+                <label className="setting-toggle">
+                  <input
+                    type="checkbox"
+                    checked={theme === "dark"}
+                    onChange={(event) => setTheme(event.target.checked ? "dark" : "light")}
+                    disabled={isLoading}
+                  />
+                  <span>{theme === "dark" ? "On" : "Off"}</span>
+                </label>
               </div>
               <div className="settings-row">
                 <div className="setting-info">

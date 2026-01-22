@@ -1034,6 +1034,19 @@ export default function App() {
 
   return (
     <div className={`app-shell ${isLoading ? "is-loading" : ""}`}>
+      <div className="titlebar-drag" data-tauri-drag-region />
+      <button
+        type="button"
+        className="icon-button settings-button app-settings-button"
+        onClick={() => setIsSettingsOpen(true)}
+        aria-label="Open settings"
+        aria-haspopup="dialog"
+        aria-expanded={isSettingsOpen}
+      >
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" width="24" height="24">
+          <path d="M19.14 12.94c.04-.31.06-.63.06-.94s-.02-.63-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.02 7.02 0 0 0-1.62-.94l-.36-2.54a.5.5 0 0 0-.5-.42h-3.84a.5.5 0 0 0-.5.42l-.36 2.54c-.57.23-1.12.54-1.62.94l-2.39-.96a.5.5 0 0 0-.6.22L2.61 7.86a.5.5 0 0 0 .12.64l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58a.5.5 0 0 0-.12.64l1.92 3.32c.13.22.39.3.6.22l2.39-.96c.5.4 1.05.71 1.62.94l.36 2.54c.05.24.26.42.5.42h3.84c.25 0 .46-.18.5-.42l.36-2.54c.57-.23 1.12-.54 1.62-.94l2.39.96c.22.08.47 0 .6-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58ZM12 15.5A3.5 3.5 0 1 1 12 8a3.5 3.5 0 0 1 0 7.5Z" />
+        </svg>
+      </button>
       <div className="app-grid">
         <aside className="list-panel">
           <div className="list-top-controls">
@@ -1080,6 +1093,37 @@ export default function App() {
               {filteredCount !== totalFiles ? `/${totalFiles}` : ""})
             </span>
             <div className="list-header-actions">
+              <div className="toolbar-control">
+                <span className="control-label">Sort</span>
+                <select
+                  value={sortMode}
+                  onChange={(event) => setSortMode(event.target.value as SortMode)}
+                  disabled={isLoading}
+                >
+                  <option value="name_asc">Name (A-Z)</option>
+                  <option value="name_desc">Name (Z-A)</option>
+                  <option value="size_desc">Size (Largest)</option>
+                  <option value="size_asc">Size (Smallest)</option>
+                  <option value="date_desc">Date (Newest)</option>
+                  <option value="date_asc">Date (Oldest)</option>
+                  <option value="type_asc">Type (A-Z)</option>
+                  <option value="type_desc">Type (Z-A)</option>
+                  <option value="extension_asc">Extension (A-Z)</option>
+                  <option value="extension_desc">Extension (Z-A)</option>
+                </select>
+              </div>
+              <div className="toolbar-control">
+                <span className="control-label">Group</span>
+                <select
+                  value={groupMode}
+                  onChange={(event) => setGroupMode(event.target.value as GroupMode)}
+                  disabled={isLoading}
+                >
+                  <option value="none">None</option>
+                  <option value="type">Type</option>
+                  <option value="extension">Extension</option>
+                </select>
+              </div>
               {isRenderingList && <span className="rendering">Rendering list...</span>}
             </div>
           </div>
@@ -1147,64 +1191,6 @@ export default function App() {
           </div>
         </aside>
 
-        <header className="toolbar">
-          <div className="toolbar-group toolbar-actions">
-          <div className="toolbar-control">
-            <span className="control-label">Sort</span>
-            <select
-              value={sortMode}
-              onChange={(event) => setSortMode(event.target.value as SortMode)}
-              disabled={isLoading}
-            >
-              <option value="name_asc">Name (A-Z)</option>
-              <option value="name_desc">Name (Z-A)</option>
-              <option value="size_desc">Size (Largest)</option>
-              <option value="size_asc">Size (Smallest)</option>
-              <option value="date_desc">Date (Newest)</option>
-              <option value="date_asc">Date (Oldest)</option>
-              <option value="type_asc">Type (A-Z)</option>
-              <option value="type_desc">Type (Z-A)</option>
-              <option value="extension_asc">Extension (A-Z)</option>
-              <option value="extension_desc">Extension (Z-A)</option>
-            </select>
-          </div>
-          <div className="toolbar-control">
-            <span className="control-label">Group</span>
-            <select
-              value={groupMode}
-              onChange={(event) => setGroupMode(event.target.value as GroupMode)}
-              disabled={isLoading}
-            >
-              <option value="none">None</option>
-              <option value="type">Type</option>
-              <option value="extension">Extension</option>
-            </select>
-          </div>
-          <button
-            type="button"
-            className={`pill-button pill-toggle${confirmTrash ? "" : " is-warning"}`}
-            onClick={() => setConfirmTrash((prev) => !prev)}
-            aria-pressed={confirmTrash}
-            disabled={isLoading}
-          >
-            <span className="pill-label">Trash alert</span>
-            <span className="pill-value">{confirmTrash ? "On" : "Off"}</span>
-          </button>
-          <button
-            type="button"
-            className="icon-button settings-button"
-            onClick={() => setIsSettingsOpen(true)}
-            aria-label="Open settings"
-            aria-haspopup="dialog"
-            aria-expanded={isSettingsOpen}
-          >
-          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" width="24" height="24">
-            <path d="M19.14 12.94c.04-.31.06-.63.06-.94s-.02-.63-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.02 7.02 0 0 0-1.62-.94l-.36-2.54a.5.5 0 0 0-.5-.42h-3.84a.5.5 0 0 0-.5.42l-.36 2.54c-.57.23-1.12.54-1.62.94l-2.39-.96a.5.5 0 0 0-.6.22L2.61 7.86a.5.5 0 0 0 .12.64l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58a.5.5 0 0 0-.12.64l1.92 3.32c.13.22.39.3.6.22l2.39-.96c.5.4 1.05.71 1.62.94l.36 2.54c.05.24.26.42.5.42h3.84c.25 0 .46-.18.5-.42l.36-2.54c.57-.23 1.12-.54 1.62-.94l2.39.96c.22.08.47 0 .6-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58ZM12 15.5A3.5 3.5 0 1 1 12 8a3.5 3.5 0 0 1 0 7.5Z" />
-          </svg>
-          </button>
-        </div>
-        </header>
-
         <main className="content">
           <section className="preview-panel">
           {isLoading ? (
@@ -1231,9 +1217,7 @@ export default function App() {
                     currentFile.kind !== "audio" && (
                       <div className="placeholder">No preview available for this file type.</div>
                     )}
-                  <div className="caption">
-                    {currentFile.name} ({currentIndex + 1}/{filteredCount})
-                  </div>
+                  <div className="caption" aria-hidden="true" />
                 </div>
                 <aside className="preview-details" aria-label="File details">
                   <div className="file-meta">
@@ -1294,52 +1278,64 @@ export default function App() {
           )}
           </section>
         </main>
-      </div>
 
-      <footer className="actions">
-        <div className="actions-row">
-          <div className="destination-row" aria-label="Move destinations">
-            {destinationSlots.map((destinationPath, index) => (
+        <footer className="actions">
+          <div className="actions-row">
+            <div className="destination-row" aria-label="Move destinations">
+              {destinationSlots.map((destinationPath, index) => (
+                <button
+                  key={`destination-${index}`}
+                  type="button"
+                  className={`destination-button ${destinationPath ? "is-set" : "is-empty"}`}
+                  onClick={() => void pickDestinationForSlot(index)}
+                  disabled={isLoading}
+                  title={destinationPath ?? `Set destination ${index + 1}`}
+                  aria-label={`Set destination ${index + 1}`}
+                >
+                  <span className="destination-index">{index + 1}</span>
+                  <span className="destination-label">
+                    {destinationPath ? formatPathLabel(destinationPath) : "Set folder…"}
+                  </span>
+                </button>
+              ))}
+            </div>
+            <div className="action-row">
               <button
-                key={`destination-${index}`}
+                className="action-button action-prev"
                 type="button"
-                className={`destination-button ${destinationPath ? "is-set" : "is-empty"}`}
-                onClick={() => void pickDestinationForSlot(index)}
-                disabled={isLoading}
-                title={destinationPath ?? `Set destination ${index + 1}`}
-                aria-label={`Set destination ${index + 1}`}
+                onClick={goPrev}
+                disabled={!hasFiles || currentIndex === 0 || isLoading}
               >
-                <span className="destination-index">{index + 1}</span>
-                <span className="destination-label">
-                  {destinationPath ? formatPathLabel(destinationPath) : "Set folder…"}
-                </span>
+                Prev ←
               </button>
-            ))}
+              <button
+                className="action-button action-undo"
+                type="button"
+                onClick={undoLastAction}
+                disabled={!lastAction || isLoading}
+              >
+                Undo ↓
+              </button>
+              <button
+                className="action-button action-next"
+                type="button"
+                onClick={goNext}
+                disabled={!hasFiles || currentIndex >= filteredCount - 1 || isLoading}
+              >
+                Next →
+              </button>
+              <button
+                className="action-button action-trash"
+                type="button"
+                onClick={trashCurrent}
+                disabled={!hasFiles || isLoading}
+              >
+                Trash ↑
+              </button>
+            </div>
           </div>
-          <div className="action-row">
-            <button
-              type="button"
-              onClick={goPrev}
-              disabled={!hasFiles || currentIndex === 0 || isLoading}
-            >
-              Prev (←)
-            </button>
-            <button
-              type="button"
-              onClick={goNext}
-              disabled={!hasFiles || currentIndex >= filteredCount - 1 || isLoading}
-            >
-              Next (→)
-            </button>
-            <button type="button" onClick={trashCurrent} disabled={!hasFiles || isLoading}>
-              Trash (↑)
-            </button>
-            <button type="button" onClick={undoLastAction} disabled={!lastAction || isLoading}>
-              Undo (↓)
-            </button>
-          </div>
-        </div>
-      </footer>
+        </footer>
+      </div>
 
       {isSettingsOpen && (
         <div

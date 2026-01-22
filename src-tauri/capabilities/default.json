@@ -2,5 +2,11 @@
   "identifier": "default",
   "description": "Default capability set",
   "windows": ["main"],
-  "permissions": ["core:default", "core:window:allow-set-theme", "dialog:allow-open", "dialog:allow-confirm"]
+  "permissions": [
+    "core:default",
+    "core:window:allow-set-theme",
+    "core:window:allow-start-dragging",
+    "dialog:allow-open",
+    "dialog:allow-confirm"
+  ]
 }

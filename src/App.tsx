@@ -199,6 +199,9 @@ const formatExtensionLabel = (extension: string) => {
   return `.${extension}`;
 };
 
+const clampNumber = (value: number, min: number, max: number) =>
+  Math.min(max, Math.max(min, value));
+
 const formatGroupTitle = (mode: GroupMode, key: string) => {
   if (mode === "extension") {
     return formatExtensionLabel(key);
@@ -373,8 +376,12 @@ export default function App() {
   const [scanProgress, setScanProgress] = useState<ScanProgress | null>(null);
   const [renderCount, setRenderCount] = useState(0);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [theme, setTheme] = useState<ThemeMode>(getInitialTheme);
   const [lastAction, setLastAction] = useState<UndoAction | null>(null);
+  const [previewZoom, setPreviewZoom] = useState(1);
+  const previewZoomTargetRef = useRef(1);
+  const previewZoomRafRef = useRef<number | null>(null);
   const activeScanId = useRef<string | null>(null);
   const listItemRefs = useRef<Map<string, HTMLButtonElement | null>>(new Map());
   const previousExtensionsRef = useRef<string[]>([]);
@@ -530,6 +537,61 @@ export default function App() {
   const sortedFiles = useMemo(() => sortFiles(filteredFiles), [filteredFiles, sortFiles]);
   const currentFile = sortedFiles[currentIndex];
   const hasFiles = sortedFiles.length > 0;
+
+  useEffect(() => {
+    setPreviewZoom(1);
+    previewZoomTargetRef.current = 1;
+    if (previewZoomRafRef.current !== null) {
+      cancelAnimationFrame(previewZoomRafRef.current);
+      previewZoomRafRef.current = null;
+    }
+  }, [currentFile?.id]);
+
+  const handlePreviewWheel = useCallback(
+    (event: React.WheelEvent<HTMLDivElement>) => {
+      if (!event.ctrlKey) {
+        return;
+      }
+      if (currentFile?.kind !== "image" && currentFile?.kind !== "video") {
+        return;
+      }
+      event.preventDefault();
+      if (Math.abs(event.deltaY) < 0.6) {
+        return;
+      }
+      const zoomFactor = Math.exp(-event.deltaY * 0.0045);
+      previewZoomTargetRef.current = clampNumber(
+        previewZoomTargetRef.current * zoomFactor,
+        0.5,
+        4
+      );
+      if (previewZoomRafRef.current !== null) {
+        return;
+      }
+      const tick = () => {
+        setPreviewZoom((value) => {
+          const target = previewZoomTargetRef.current;
+          const diff = target - value;
+          if (Math.abs(diff) < 0.001) {
+            previewZoomRafRef.current = null;
+            return target;
+          }
+          previewZoomRafRef.current = requestAnimationFrame(tick);
+          return value + diff * 0.18;
+        });
+      };
+      previewZoomRafRef.current = requestAnimationFrame(tick);
+    },
+    [currentFile]
+  );
+
+  useEffect(() => {
+    return () => {
+      if (previewZoomRafRef.current !== null) {
+        cancelAnimationFrame(previewZoomRafRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (sortedFiles.length === 0) {
@@ -1033,8 +1095,23 @@ export default function App() {
   );
 
   return (
-    <div className={`app-shell ${isLoading ? "is-loading" : ""}`}>
+    <div className={`app-shell ${isLoading ? "is-loading" : ""} ${isSidebarCollapsed ? "sidebar-collapsed" : ""}`}>
       <div className="titlebar-drag" data-tauri-drag-region />
+      {isSidebarCollapsed && (
+        <button
+          type="button"
+          className="icon-button sidebar-toggle floating-toggle"
+          onClick={() => setIsSidebarCollapsed((prev) => !prev)}
+          aria-label="Show sidebar"
+          aria-controls="sidebar-panel"
+          aria-pressed={isSidebarCollapsed}
+          title="Show sidebar"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" width="24" height="24">
+            <path d="M9 5.5 16 12 9 18.5V5.5Z" />
+          </svg>
+        </button>
+      )}
       <button
         type="button"
         className="icon-button settings-button app-settings-button"
@@ -1048,148 +1125,168 @@ export default function App() {
         </svg>
       </button>
       <div className="app-grid">
-        <aside className="list-panel">
-          <div className="list-top-controls">
-            <button
-              type="button"
-              className="pill-button"
-              onClick={pickFolder}
-              disabled={isLoading}
-              title={currentFolder ?? "No folder selected"}
-            >
-              <span className="pill-label">Folder</span>
-              <span className="pill-value">{currentFolder ? folderLabel : "Select folder…"}</span>
-            </button>
-            <div className="toolbar-control">
-              <span className="control-label">Filter</span>
-              <select
-                value={filterMode}
-                onChange={(event) => setFilterMode(event.target.value as FilterMode)}
-                disabled={isLoading}
+        {!isSidebarCollapsed && (
+          <aside className="list-panel" id="sidebar-panel">
+            <div className="list-top-controls">
+              <button
+                type="button"
+                className="icon-button sidebar-toggle"
+                onClick={() => setIsSidebarCollapsed((prev) => !prev)}
+                aria-label={isSidebarCollapsed ? "Show sidebar" : "Hide sidebar"}
+                aria-controls="sidebar-panel"
+                aria-pressed={isSidebarCollapsed}
+                title={isSidebarCollapsed ? "Show sidebar" : "Hide sidebar"}
               >
-                {FILTER_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <button
-              type="button"
-              className="icon-button search-button"
-              onClick={() => handleScan(currentFolder ?? undefined)}
-              disabled={isLoading || !currentFolder}
-              aria-label="Scan folder"
-              title="Scan folder"
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                <path d="M15.5 14h-.79l-.28-.27a6 6 0 1 0-.71.71l.27.28v.79L20 20.5 21.5 19l-6-5zM10 15a5 5 0 1 1 0-10 5 5 0 0 1 0 10z" />
-              </svg>
-            </button>
-          </div>
-          <div className="list-header">
-            <span>
-              Files ({filteredCount}
-              {filteredCount !== totalFiles ? `/${totalFiles}` : ""})
-            </span>
-            <div className="list-header-actions">
-              <div className="toolbar-control">
-                <span className="control-label">Sort</span>
-                <select
-                  value={sortMode}
-                  onChange={(event) => setSortMode(event.target.value as SortMode)}
+                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" width="24" height="24">
+                  {isSidebarCollapsed ? (
+                    <path d="M9 5.5 16 12 9 18.5V5.5Z" />
+                  ) : (
+                    <path d="M15 5.5 8 12l7 6.5V5.5Z" />
+                  )}
+                </svg>
+              </button>
+              <div className="searchbar-controls" role="group" aria-label="Folder search controls">
+                <button
+                  type="button"
+                  className="pill-button"
+                  onClick={pickFolder}
                   disabled={isLoading}
+                  title={currentFolder ?? "No folder selected"}
                 >
-                  <option value="name_asc">Name (A-Z)</option>
-                  <option value="name_desc">Name (Z-A)</option>
-                  <option value="size_desc">Size (Largest)</option>
-                  <option value="size_asc">Size (Smallest)</option>
-                  <option value="date_desc">Date (Newest)</option>
-                  <option value="date_asc">Date (Oldest)</option>
-                  <option value="type_asc">Type (A-Z)</option>
-                  <option value="type_desc">Type (Z-A)</option>
-                  <option value="extension_asc">Extension (A-Z)</option>
-                  <option value="extension_desc">Extension (Z-A)</option>
-                </select>
-              </div>
-              <div className="toolbar-control">
-                <span className="control-label">Group</span>
-                <select
-                  value={groupMode}
-                  onChange={(event) => setGroupMode(event.target.value as GroupMode)}
-                  disabled={isLoading}
-                >
-                  <option value="none">None</option>
-                  <option value="type">Type</option>
-                  <option value="extension">Extension</option>
-                </select>
-              </div>
-              {isRenderingList && <span className="rendering">Rendering list...</span>}
-            </div>
-          </div>
-          <div
-            className={`file-list ${isLoading ? "loading" : ""} ${
-              listDensity === "compact" ? "density-compact" : "density-comfortable"
-            }`}
-          >
-            {hasFiles ? (
-              listItems
-            ) : isLoading ? (
-              <div className="skeleton-list" aria-hidden="true">
-                {Array.from({ length: 8 }).map((_, index) => (
-                  <div key={`skeleton-${index}`} className="skeleton-item" />
-                ))}
-              </div>
-            ) : (
-              <div className="empty">
-                {totalFiles === 0 ? "No files loaded." : "No files match the selected extensions."}
-              </div>
-            )}
-            {isRenderingList && <div className="list-progress">Showing {renderCount} of {filteredCount}</div>}
-          </div>
-          <div className="list-footer">
-            <div className="footer-title">Extensions</div>
-            {allExtensions.length === 0 ? (
-              <div className="extensions-empty">No extensions found.</div>
-            ) : (
-              <>
-                <div className="extensions-controls">
-                  <label className="extension-filter extension-toggle">
-                    <input
-                      ref={selectAllRef}
-                      type="checkbox"
-                      checked={allExtensionsSelected}
-                      onChange={(event) => {
-                        setSelectedExtensions(event.target.checked ? allExtensions : []);
-                      }}
-                      disabled={isLoading}
-                    />
-                    <span>All</span>
-                  </label>
+                  <span className="pill-label">Folder</span>
+                  <span className="pill-value">{currentFolder ? folderLabel : "Select folder…"}</span>
+                </button>
+                <div className="toolbar-control">
+                  <select
+                    value={filterMode}
+                    onChange={(event) => setFilterMode(event.target.value as FilterMode)}
+                    disabled={isLoading}
+                  >
+                    {FILTER_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
                 </div>
-                <div className="extension-filters">
-                  {allExtensions.map((extension) => (
-                    <label key={extension} className="extension-filter">
+                <button
+                  type="button"
+                  className="icon-button search-button"
+                  onClick={() => handleScan(currentFolder ?? undefined)}
+                  disabled={isLoading || !currentFolder}
+                  aria-label="Scan folder"
+                  title="Scan folder"
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                    <path d="M15.5 14h-.79l-.28-.27a6 6 0 1 0-.71.71l.27.28v.79L20 20.5 21.5 19l-6-5zM10 15a5 5 0 1 1 0-10 5 5 0 0 1 0 10z" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+            <div className="list-header">
+              <span>
+                Files ({filteredCount}
+                {filteredCount !== totalFiles ? `/${totalFiles}` : ""})
+              </span>
+              <div className="list-header-actions">
+                <div className="toolbar-control">
+                  <span className="control-label">Sort</span>
+                  <select
+                    value={sortMode}
+                    onChange={(event) => setSortMode(event.target.value as SortMode)}
+                    disabled={isLoading}
+                  >
+                    <option value="name_asc">Name (A-Z)</option>
+                    <option value="name_desc">Name (Z-A)</option>
+                    <option value="size_desc">Size (Largest)</option>
+                    <option value="size_asc">Size (Smallest)</option>
+                    <option value="date_desc">Date (Newest)</option>
+                    <option value="date_asc">Date (Oldest)</option>
+                    <option value="type_asc">Type (A-Z)</option>
+                    <option value="type_desc">Type (Z-A)</option>
+                    <option value="extension_asc">Extension (A-Z)</option>
+                    <option value="extension_desc">Extension (Z-A)</option>
+                  </select>
+                </div>
+                <div className="toolbar-control">
+                  <span className="control-label">Group</span>
+                  <select
+                    value={groupMode}
+                    onChange={(event) => setGroupMode(event.target.value as GroupMode)}
+                    disabled={isLoading}
+                  >
+                    <option value="none">None</option>
+                    <option value="type">Type</option>
+                    <option value="extension">Extension</option>
+                  </select>
+                </div>
+                {isRenderingList && <span className="rendering">Rendering list...</span>}
+              </div>
+            </div>
+            <div
+              className={`file-list ${isLoading ? "loading" : ""} ${
+                listDensity === "compact" ? "density-compact" : "density-comfortable"
+              }`}
+            >
+              {hasFiles ? (
+                listItems
+              ) : isLoading ? (
+                <div className="skeleton-list" aria-hidden="true">
+                  {Array.from({ length: 8 }).map((_, index) => (
+                    <div key={`skeleton-${index}`} className="skeleton-item" />
+                  ))}
+                </div>
+              ) : (
+                <div className="empty">
+                  {totalFiles === 0 ? "No files loaded." : "No files match the selected extensions."}
+                </div>
+              )}
+              {isRenderingList && <div className="list-progress">Showing {renderCount} of {filteredCount}</div>}
+            </div>
+            <div className="list-footer">
+              <div className="footer-title">Extensions</div>
+              {allExtensions.length === 0 ? (
+                <div className="extensions-empty">No extensions found.</div>
+              ) : (
+                <>
+                  <div className="extensions-controls">
+                    <label className="extension-filter extension-toggle">
                       <input
+                        ref={selectAllRef}
                         type="checkbox"
-                        checked={selectedExtensions.includes(extension)}
-                        onChange={() => {
-                          setSelectedExtensions((current) =>
-                            current.includes(extension)
-                              ? current.filter((value) => value !== extension)
-                              : [...current, extension]
-                          );
+                        checked={allExtensionsSelected}
+                        onChange={(event) => {
+                          setSelectedExtensions(event.target.checked ? allExtensions : []);
                         }}
                         disabled={isLoading}
                       />
-                      <span>{formatExtensionLabel(extension)}</span>
+                      <span>All</span>
                     </label>
-                  ))}
-                </div>
-              </>
-            )}
-          </div>
-        </aside>
+                  </div>
+                  <div className="extension-filters">
+                    {allExtensions.map((extension) => (
+                      <label key={extension} className="extension-filter">
+                        <input
+                          type="checkbox"
+                          checked={selectedExtensions.includes(extension)}
+                          onChange={() => {
+                            setSelectedExtensions((current) =>
+                              current.includes(extension)
+                                ? current.filter((value) => value !== extension)
+                                : [...current, extension]
+                            );
+                          }}
+                          disabled={isLoading}
+                        />
+                        <span>{formatExtensionLabel(extension)}</span>
+                      </label>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+          </aside>
+        )}
 
         <main className="content">
           <section className="preview-panel">
@@ -1202,12 +1299,16 @@ export default function App() {
           ) : currentFile ? (
             <div className="preview-content">
               <div className="preview-layout">
-                <div className="preview-media">
-                  {currentFile.kind === "image" && (
-                    <img src={buildMediaUrl(currentFile.id)} alt={currentFile.name} />
-                  )}
-                  {currentFile.kind === "video" && (
-                    <video ref={videoRef} controls src={buildMediaUrl(currentFile.id)} />
+                <div className="preview-media" onWheel={handlePreviewWheel}>
+                  {(currentFile.kind === "image" || currentFile.kind === "video") && (
+                    <div className="preview-zoom" style={{ transform: `scale(${previewZoom})` }}>
+                      {currentFile.kind === "image" && (
+                        <img src={buildMediaUrl(currentFile.id)} alt={currentFile.name} />
+                      )}
+                      {currentFile.kind === "video" && (
+                        <video ref={videoRef} controls src={buildMediaUrl(currentFile.id)} />
+                      )}
+                    </div>
                   )}
                   {currentFile.kind === "audio" && (
                     <audio controls src={buildMediaUrl(currentFile.id)} />
@@ -1215,7 +1316,9 @@ export default function App() {
                   {currentFile.kind !== "image" &&
                     currentFile.kind !== "video" &&
                     currentFile.kind !== "audio" && (
-                      <div className="placeholder">No preview available for this file type.</div>
+                      <div className="preview-message">
+                        <div className="placeholder">No preview available for this file type.</div>
+                      </div>
                     )}
                   <div className="caption" aria-hidden="true" />
                 </div>
@@ -1274,7 +1377,9 @@ export default function App() {
               </div>
             </div>
           ) : (
-            <div className="placeholder">Select a folder to preview files.</div>
+            <div className="preview-message">
+              <div className="placeholder">Select a folder to preview files.</div>
+            </div>
           )}
           </section>
         </main>

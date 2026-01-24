@@ -1,8 +1,9 @@
 use mime_guess::MimeGuess;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs::{self, File};
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
@@ -12,6 +13,11 @@ use tauri::http::{Response, StatusCode};
 use tauri::{AppHandle, Emitter, Manager};
 use uuid::Uuid;
 use walkdir::WalkDir;
+use bzip2::read::BzDecoder;
+use flate2::read::GzDecoder;
+use tar::Archive;
+use xz2::read::XzDecoder;
+use zip::ZipArchive;
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -36,13 +42,17 @@ struct FileEntry {
   size_bytes: u64,
   modified_ms: Option<u64>,
   mime: String,
+  duplicate_group: Option<String>,
 }
 
 struct AppState {
   map: Mutex<HashMap<String, PathBuf>>,
+  preview_map: Mutex<HashMap<String, String>>,
   destination: Mutex<Option<PathBuf>>,
   trash_dir: PathBuf,
 }
+
+const MAX_ARCHIVE_ENTRIES: usize = 200;
 
 #[derive(Serialize)]
 struct ScanResult {
@@ -61,6 +71,13 @@ struct MoveResult {
 #[serde(rename_all = "camelCase")]
 struct TrashResult {
   trash_path: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ArchivePreview {
+  entries: Vec<String>,
+  truncated: bool,
 }
 
 #[derive(Clone, Deserialize)]
@@ -109,6 +126,7 @@ async fn scan_folder(
     let mut entries = Vec::new();
     let mut map = state.map.lock().expect("map lock");
     map.clear();
+    state.preview_map.lock().expect("preview map lock").clear();
 
     let folder = PathBuf::from(&folder_path);
     if !folder.exists() {
@@ -173,6 +191,11 @@ async fn scan_folder(
     }
 
     let total = paths.len();
+    let duplicate_groups = if filter == "duplicates" {
+      Some(find_duplicate_groups(&paths))
+    } else {
+      None
+    };
     scanned = 0;
     last_emit = 0;
     let mut matched = 0usize;
@@ -180,7 +203,12 @@ async fn scan_folder(
     for path in paths {
       scanned += 1;
       let kind = classify_file(&path);
-      if matches_filter(filter, &kind) {
+      let is_match = if let Some(duplicates) = duplicate_groups.as_ref() {
+        duplicates.contains_key(&path)
+      } else {
+        matches_filter(filter, &kind)
+      };
+      if is_match {
         let name = path
           .file_name()
           .and_then(|name| name.to_str())
@@ -199,6 +227,9 @@ async fn scan_folder(
           .essence_str()
           .to_string();
         let id = Uuid::new_v4().to_string();
+        let duplicate_group = duplicate_groups
+          .as_ref()
+          .and_then(|duplicates| duplicates.get(&path).cloned());
         map.insert(id.clone(), path);
         let entry = FileEntry {
           id,
@@ -208,6 +239,7 @@ async fn scan_folder(
           size_bytes,
           modified_ms,
           mime,
+          duplicate_group,
         };
         entries.push(entry.clone());
         batch.push(entry);
@@ -401,6 +433,121 @@ fn restore_folder(
 }
 
 #[tauri::command]
+fn list_archive_entries(
+  state: tauri::State<'_, AppState>,
+  id: String,
+) -> Result<ArchivePreview, String> {
+  let path = {
+    let map = state.map.lock().expect("map lock");
+    map.get(&id).cloned().ok_or("File not found")?
+  };
+  if !path.exists() {
+    return Err("File not found".into());
+  }
+
+  match detect_archive_kind(&path) {
+    Some(ArchiveKind::Zip) => list_zip_entries(&path),
+    Some(ArchiveKind::Tar) => {
+      let file = File::open(&path).map_err(|error| error.to_string())?;
+      list_tar_entries(BufReader::new(file))
+    }
+    Some(ArchiveKind::TarGz) => {
+      let file = File::open(&path).map_err(|error| error.to_string())?;
+      list_tar_entries(GzDecoder::new(BufReader::new(file)))
+    }
+    Some(ArchiveKind::TarBz2) => {
+      let file = File::open(&path).map_err(|error| error.to_string())?;
+      list_tar_entries(BzDecoder::new(BufReader::new(file)))
+    }
+    Some(ArchiveKind::TarXz) => {
+      let file = File::open(&path).map_err(|error| error.to_string())?;
+      list_tar_entries(XzDecoder::new(BufReader::new(file)))
+    }
+    None => Err("Preview not available for this archive format.".into()),
+  }
+}
+
+#[tauri::command]
+fn generate_preview(
+  app: AppHandle,
+  state: tauri::State<'_, AppState>,
+  id: String,
+) -> Result<String, String> {
+  let source_path = {
+    let map = state.map.lock().expect("map lock");
+    map.get(&id).cloned().ok_or("File not found")?
+  };
+  if !source_path.exists() {
+    return Err("File not found".into());
+  }
+
+  let existing_id = {
+    let preview_map = state.preview_map.lock().expect("preview map lock");
+    preview_map.get(&id).cloned()
+  };
+  if let Some(existing_id) = existing_id {
+    let map = state.map.lock().expect("map lock");
+    if let Some(existing_path) = map.get(&existing_id) {
+      if existing_path.exists() {
+        return Ok(existing_id);
+      }
+    }
+  }
+
+  if !cfg!(target_os = "macos") {
+    return Err("Preview generation is only supported on macOS.".into());
+  }
+
+  let cache_dir = app.path().app_cache_dir().map_err(|error| error.to_string())?;
+  let preview_root = cache_dir.join("previews");
+  fs::create_dir_all(&preview_root).map_err(|error| error.to_string())?;
+  let session_dir = preview_root.join(Uuid::new_v4().to_string());
+  fs::create_dir_all(&session_dir).map_err(|error| error.to_string())?;
+
+  let output = Command::new("qlmanage")
+    .arg("-t")
+    .arg("-s")
+    .arg("1400")
+    .arg("-o")
+    .arg(&session_dir)
+    .arg(&source_path)
+    .output()
+    .map_err(|error| error.to_string())?;
+
+  if !output.status.success() {
+    return Err("Preview generation failed.".into());
+  }
+
+  let preview_path = fs::read_dir(&session_dir)
+    .map_err(|error| error.to_string())?
+    .filter_map(|entry| entry.ok())
+    .map(|entry| entry.path())
+    .find(|path| {
+      path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| match ext.to_ascii_lowercase().as_str() {
+          "png" | "jpg" | "jpeg" => true,
+          _ => false,
+        })
+        .unwrap_or(false)
+    })
+    .ok_or("Preview file not found")?;
+
+  let preview_id = format!("preview:{}", Uuid::new_v4());
+  {
+    let mut map = state.map.lock().expect("map lock");
+    map.insert(preview_id.clone(), preview_path);
+  }
+  state
+    .preview_map
+    .lock()
+    .expect("preview map lock")
+    .insert(id, preview_id.clone());
+  Ok(preview_id)
+}
+
+#[tauri::command]
 fn reveal_in_file_manager(path: String, reveal: bool) -> Result<(), String> {
   let target = PathBuf::from(path);
   if !target.exists() {
@@ -559,6 +706,51 @@ fn matches_filter(filter: &str, kind: &FileKind) -> bool {
   }
 }
 
+fn hash_file(path: &Path) -> Result<String, String> {
+  let file = File::open(path).map_err(|error| error.to_string())?;
+  let mut reader = BufReader::new(file);
+  let mut hasher = Sha256::new();
+  let mut buffer = [0u8; 8192];
+  loop {
+    let read = reader.read(&mut buffer).map_err(|error| error.to_string())?;
+    if read == 0 {
+      break;
+    }
+    hasher.update(&buffer[..read]);
+  }
+  Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn find_duplicate_groups(paths: &[PathBuf]) -> HashMap<PathBuf, String> {
+  let mut size_map: HashMap<u64, Vec<PathBuf>> = HashMap::new();
+  for path in paths {
+    if let Ok(metadata) = fs::metadata(path) {
+      size_map.entry(metadata.len()).or_default().push(path.clone());
+    }
+  }
+
+  let mut duplicates = HashMap::new();
+  for group in size_map.values() {
+    if group.len() < 2 {
+      continue;
+    }
+    let mut hash_map: HashMap<String, Vec<PathBuf>> = HashMap::new();
+    for path in group {
+      if let Ok(hash) = hash_file(path) {
+        hash_map.entry(hash).or_default().push(path.clone());
+      }
+    }
+    for (hash, files) in hash_map {
+      if files.len() > 1 {
+        for path in files {
+          duplicates.insert(path.clone(), hash.clone());
+        }
+      }
+    }
+  }
+  duplicates
+}
+
 fn is_hidden_entry(path: &Path, root: &Path) -> bool {
   if path == root {
     return false;
@@ -681,6 +873,70 @@ fn is_binary_extension(extension: &str) -> bool {
   )
 }
 
+enum ArchiveKind {
+  Zip,
+  Tar,
+  TarGz,
+  TarBz2,
+  TarXz,
+}
+
+fn detect_archive_kind(path: &Path) -> Option<ArchiveKind> {
+  let name = path.file_name()?.to_string_lossy().to_lowercase();
+  if name.ends_with(".tar.gz") || name.ends_with(".tgz") {
+    return Some(ArchiveKind::TarGz);
+  }
+  if name.ends_with(".tar.bz2") || name.ends_with(".tbz2") {
+    return Some(ArchiveKind::TarBz2);
+  }
+  if name.ends_with(".tar.xz") || name.ends_with(".txz") {
+    return Some(ArchiveKind::TarXz);
+  }
+  if name.ends_with(".tar") {
+    return Some(ArchiveKind::Tar);
+  }
+  let extension = path.extension()?.to_string_lossy().to_lowercase();
+  if extension == "zip" {
+    return Some(ArchiveKind::Zip);
+  }
+  None
+}
+
+fn list_zip_entries(path: &Path) -> Result<ArchivePreview, String> {
+  let file = File::open(path).map_err(|error| error.to_string())?;
+  let mut archive = ZipArchive::new(file).map_err(|error| error.to_string())?;
+  let mut entries = Vec::new();
+  let total = archive.len();
+  for index in 0..archive.len() {
+    let file = archive.by_index(index).map_err(|error| error.to_string())?;
+    entries.push(file.name().to_string());
+    if entries.len() >= MAX_ARCHIVE_ENTRIES {
+      break;
+    }
+  }
+  Ok(ArchivePreview {
+    entries,
+    truncated: total > MAX_ARCHIVE_ENTRIES,
+  })
+}
+
+fn list_tar_entries<R: Read>(reader: R) -> Result<ArchivePreview, String> {
+  let mut archive = Archive::new(reader);
+  let mut entries = Vec::new();
+  let mut truncated = false;
+  let tar_entries = archive.entries().map_err(|error| error.to_string())?;
+  for entry in tar_entries {
+    let entry = entry.map_err(|error| error.to_string())?;
+    let path = entry.path().map_err(|error| error.to_string())?;
+    entries.push(path.to_string_lossy().to_string());
+    if entries.len() >= MAX_ARCHIVE_ENTRIES {
+      truncated = true;
+      break;
+    }
+  }
+  Ok(ArchivePreview { entries, truncated })
+}
+
 fn parse_range(range: &str, size: u64) -> Option<(u64, u64)> {
   if !range.starts_with("bytes=") {
     return None;
@@ -795,6 +1051,7 @@ fn main() {
       fs::create_dir_all(&trash_dir).map_err(|error| error.to_string())?;
       app.manage(AppState {
         map: Mutex::new(HashMap::new()),
+        preview_map: Mutex::new(HashMap::new()),
         destination: Mutex::new(None),
         trash_dir,
       });
@@ -818,6 +1075,8 @@ fn main() {
       restore_file,
       restore_folder,
       set_destination,
+      list_archive_entries,
+      generate_preview,
       reveal_in_file_manager
     ])
     .run(tauri::generate_context!())

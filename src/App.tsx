@@ -14,7 +14,8 @@ type FilterMode =
   | "text"
   | "compressed"
   | "executables"
-  | "binary";
+  | "binary"
+  | "duplicates";
 type SortMode =
   | "none"
   | "name_asc"
@@ -28,7 +29,7 @@ type SortMode =
   | "extension_asc"
   | "extension_desc";
 type DensityMode = "comfortable" | "compact";
-type GroupMode = "none" | "type" | "extension";
+type GroupMode = "none" | "type" | "extension" | "duplicates";
 type ThemeMode = "light" | "dark";
 type ViewMode = "tree" | "list";
 
@@ -48,6 +49,12 @@ type FileEntry = {
   sizeBytes: number;
   modifiedMs: number | null;
   mime: string;
+  duplicateGroup?: string | null;
+};
+
+type ArchivePreview = {
+  entries: string[];
+  truncated: boolean;
 };
 
 type ScanResult = {
@@ -109,6 +116,17 @@ type UndoAction =
 
 const MAX_UNDO_STACK = 20;
 const PREVIEW_DELAY_MS = 120;
+const OFFICE_PREVIEW_EXTENSIONS = ["doc", "docx", "xlsx", "ppt", "pptx", "key", "odp"];
+const SCROLL_HINT_TOLERANCE = 6;
+
+const updateScrollHint = (scrollNode: HTMLElement, frameNode: HTMLElement) => {
+  const maxScroll = scrollNode.scrollHeight - scrollNode.clientHeight;
+  const canScroll = maxScroll > SCROLL_HINT_TOLERANCE;
+  const showTop = canScroll && scrollNode.scrollTop > SCROLL_HINT_TOLERANCE;
+  const showBottom = canScroll && scrollNode.scrollTop < maxScroll - SCROLL_HINT_TOLERANCE;
+  frameNode.classList.toggle("scroll-hint-top", showTop);
+  frameNode.classList.toggle("scroll-hint-bottom", showBottom);
+};
 
 const isEditableTarget = (target: EventTarget | null) => {
   if (!(target instanceof HTMLElement)) {
@@ -234,8 +252,15 @@ const KIND_ORDER: FileEntry["kind"][] = [
   "binary",
 ];
 
-const getGroupKey = (mode: GroupMode, file: FileEntry) =>
-  mode === "extension" ? getExtension(file.name) : file.kind;
+const getGroupKey = (mode: GroupMode, file: FileEntry) => {
+  if (mode === "extension") {
+    return getExtension(file.name);
+  }
+  if (mode === "duplicates") {
+    return file.duplicateGroup ?? file.id;
+  }
+  return file.kind;
+};
 
 const getGroupIdForFile = (mode: GroupMode, file: FileEntry) =>
   mode === "none" ? null : `${mode}:${getGroupKey(mode, file)}`;
@@ -245,6 +270,9 @@ const sortGroupKeys = (mode: GroupMode, keys: string[]) => {
   sorted.sort((a, b) => {
     if (mode === "type") {
       return KIND_ORDER.indexOf(a as FileEntry["kind"]) - KIND_ORDER.indexOf(b as FileEntry["kind"]);
+    }
+    if (mode === "duplicates") {
+      return a.localeCompare(b);
     }
     if (a === "none") {
       return 1;
@@ -268,7 +296,23 @@ const groupFilesByMode = (mode: GroupMode, list: FileEntry[]) => {
       groups.set(key, [file]);
     }
   });
-  return { groups, keys: sortGroupKeys(mode, Array.from(groups.keys())) };
+  let keys = Array.from(groups.keys());
+  if (mode === "duplicates") {
+    keys.sort((a, b) => {
+      const groupA = groups.get(a) ?? [];
+      const groupB = groups.get(b) ?? [];
+      const countDelta = groupB.length - groupA.length;
+      if (countDelta !== 0) {
+        return countDelta;
+      }
+      const nameA = groupA[0]?.name ?? "";
+      const nameB = groupB[0]?.name ?? "";
+      return nameA.localeCompare(nameB, undefined, { sensitivity: "base" });
+    });
+  } else {
+    keys = sortGroupKeys(mode, keys);
+  }
+  return { groups, keys };
 };
 
 type TreeFolderNode = {
@@ -307,11 +351,31 @@ const sortTreeNodesByIndex = (nodes: TreeNode[], indexMap: Map<string, number>) 
 const clampNumber = (value: number, min: number, max: number) =>
   Math.min(max, Math.max(min, value));
 
-const formatGroupTitle = (mode: GroupMode, key: string) => {
+const formatGroupTitle = (mode: GroupMode, key: string, groupFiles?: FileEntry[]) => {
+  if (mode === "duplicates") {
+    if (!groupFiles || groupFiles.length === 0) {
+      return "Duplicate set";
+    }
+    const nameSet = new Set(groupFiles.map((file) => file.name));
+    return nameSet.size === 1 ? groupFiles[0].name : "Duplicate set";
+  }
   if (mode === "extension") {
     return formatExtensionLabel(key);
   }
   return formatGroupLabel(key as FileEntry["kind"]);
+};
+
+const formatDuplicateGroupMeta = (groupFiles: FileEntry[]) => {
+  if (groupFiles.length === 0) {
+    return null;
+  }
+  const sizeLabel = formatBytes(groupFiles[0].sizeBytes);
+  const nameCount = new Set(groupFiles.map((file) => file.name)).size;
+  const parts = [`${sizeLabel} each`];
+  if (nameCount > 1) {
+    parts.unshift(`${nameCount} names`);
+  }
+  return parts.join(" · ");
 };
 
 const DESTINATION_SLOT_COUNT = 5;
@@ -331,6 +395,14 @@ const getRelativeSegments = (fullPath: string, basePath: string | null) => {
     index += 1;
   }
   return fullSegments.slice(index);
+};
+
+const formatRelativeFolder = (fullPath: string, basePath: string | null) => {
+  const segments = getRelativeSegments(fullPath, basePath);
+  if (segments.length <= 1) {
+    return "Root folder";
+  }
+  return segments.slice(0, -1).join("/");
 };
 
 const buildFileTree = (list: FileEntry[], basePath: string | null) => {
@@ -401,6 +473,7 @@ const FILTER_MODES: FilterMode[] = [
   "compressed",
   "executables",
   "binary",
+  "duplicates",
 ];
 const FILTER_OPTIONS: { value: FilterMode; label: string }[] = [
   { value: "all", label: "All files" },
@@ -413,6 +486,7 @@ const FILTER_OPTIONS: { value: FilterMode; label: string }[] = [
   { value: "compressed", label: "Compressed" },
   { value: "executables", label: "Executables" },
   { value: "binary", label: "Binary" },
+  { value: "duplicates", label: "Duplicates" },
 ];
 const SORT_MODES: SortMode[] = [
   "none",
@@ -427,7 +501,7 @@ const SORT_MODES: SortMode[] = [
   "extension_asc",
   "extension_desc",
 ];
-const GROUP_MODES: GroupMode[] = ["none", "type", "extension"];
+const GROUP_MODES: GroupMode[] = ["none", "type", "extension", "duplicates"];
 const DENSITY_MODES: DensityMode[] = ["comfortable", "compact"];
 const VIEW_MODES: ViewMode[] = ["tree", "list"];
 
@@ -524,6 +598,9 @@ export default function App() {
   const [confirmTrash, setConfirmTrash] = useState(storedSettings.confirmTrash ?? true);
   const [sortMode, setSortMode] = useState<SortMode>(storedSettings.sortMode ?? "name_asc");
   const [groupMode, setGroupMode] = useState<GroupMode>(storedSettings.groupMode ?? "none");
+  const isDuplicateFilter = filterMode === "duplicates";
+  const effectiveGroupMode: GroupMode = isDuplicateFilter ? "duplicates" : groupMode;
+  const displayGroupMode: GroupMode = isDuplicateFilter ? "duplicates" : groupMode;
   const [listDensity, setListDensity] = useState<DensityMode>(
     storedSettings.listDensity ?? "comfortable"
   );
@@ -534,24 +611,42 @@ export default function App() {
   const [scanProgress, setScanProgress] = useState<ScanProgress | null>(null);
   const [renderCount, setRenderCount] = useState(0);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isHelpOpen, setIsHelpOpen] = useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isDrawerMode, setIsDrawerMode] = useState(false);
-  const [isExtensionsCollapsed, setIsExtensionsCollapsed] = useState(false);
+  const [isExtensionsCollapsed, setIsExtensionsCollapsed] = useState(true);
   const [theme, setTheme] = useState<ThemeMode>(getInitialTheme);
   const [undoStack, setUndoStack] = useState<UndoAction[]>([]);
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
   const [collapsedFolders, setCollapsedFolders] = useState<Record<string, boolean>>({});
   const [previewZoom, setPreviewZoom] = useState(1);
+  const [previewPan, setPreviewPan] = useState({ x: 0, y: 0 });
+  const [isPreviewPanning, setIsPreviewPanning] = useState(false);
+  const [officePreviewId, setOfficePreviewId] = useState<string | null>(null);
+  const [officePreviewStatus, setOfficePreviewStatus] = useState<"idle" | "loading" | "error">(
+    "idle"
+  );
+  const [archiveEntries, setArchiveEntries] = useState<string[]>([]);
+  const [archiveTruncated, setArchiveTruncated] = useState(false);
+  const [archiveStatus, setArchiveStatus] = useState<"idle" | "loading" | "error">("idle");
+  const [archiveError, setArchiveError] = useState<string | null>(null);
   const previewZoomTargetRef = useRef(1);
   const previewZoomRafRef = useRef<number | null>(null);
+  const previewPanStartRef = useRef<{ x: number; y: number } | null>(null);
+  const previewPanPointerRef = useRef<{ x: number; y: number } | null>(null);
   const previewDelayTimeoutRef = useRef<number | null>(null);
   const activeScanId = useRef<string | null>(null);
   const listItemRefs = useRef<Map<string, HTMLButtonElement | null>>(new Map());
   const previousActiveFileIdRef = useRef<string | null>(null);
   const visibleFileOrderRef = useRef<string[]>([]);
   const previousExtensionsRef = useRef<string[]>([]);
+  const hasUserAdjustedExtensionsRef = useRef(false);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const selectAllRef = useRef<HTMLInputElement | null>(null);
+  const fileListFrameRef = useRef<HTMLDivElement | null>(null);
+  const fileListScrollRef = useRef<HTMLDivElement | null>(null);
+  const previewFrameRef = useRef<HTMLDivElement | null>(null);
+  const previewScrollRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -578,6 +673,65 @@ export default function App() {
       setIsSidebarCollapsed(true);
     }
   }, [isDrawerMode]);
+
+  const syncScrollHints = useCallback((scrollNode: HTMLElement | null, frameNode: HTMLElement | null) => {
+    if (!scrollNode || !frameNode) {
+      return;
+    }
+    updateScrollHint(scrollNode, frameNode);
+  }, []);
+
+  useEffect(() => {
+    const scrollNode = fileListScrollRef.current;
+    const frameNode = fileListFrameRef.current;
+    if (!scrollNode || !frameNode) {
+      return;
+    }
+    let raf = 0;
+    const handle = () => {
+      if (raf) {
+        cancelAnimationFrame(raf);
+      }
+      raf = requestAnimationFrame(() => updateScrollHint(scrollNode, frameNode));
+    };
+    handle();
+    scrollNode.addEventListener("scroll", handle, { passive: true });
+    const resizeObserver = new ResizeObserver(handle);
+    resizeObserver.observe(scrollNode);
+    return () => {
+      scrollNode.removeEventListener("scroll", handle);
+      resizeObserver.disconnect();
+      if (raf) {
+        cancelAnimationFrame(raf);
+      }
+    };
+  }, [isSidebarCollapsed]);
+
+  useEffect(() => {
+    const scrollNode = previewScrollRef.current;
+    const frameNode = previewFrameRef.current;
+    if (!scrollNode || !frameNode) {
+      return;
+    }
+    let raf = 0;
+    const handle = () => {
+      if (raf) {
+        cancelAnimationFrame(raf);
+      }
+      raf = requestAnimationFrame(() => updateScrollHint(scrollNode, frameNode));
+    };
+    handle();
+    scrollNode.addEventListener("scroll", handle, { passive: true });
+    const resizeObserver = new ResizeObserver(handle);
+    resizeObserver.observe(scrollNode);
+    return () => {
+      scrollNode.removeEventListener("scroll", handle);
+      resizeObserver.disconnect();
+      if (raf) {
+        cancelAnimationFrame(raf);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -697,7 +851,11 @@ export default function App() {
   useEffect(() => {
     setSelectedExtensions((current) => {
       if (allExtensions.length === 0) {
+        hasUserAdjustedExtensionsRef.current = false;
         return [];
+      }
+      if (!hasUserAdjustedExtensionsRef.current) {
+        return allExtensions;
       }
       const prev = previousExtensionsRef.current;
       const hadAllSelected =
@@ -739,11 +897,108 @@ export default function App() {
   }, [sortedFiles]);
   const currentFile = sortedFiles[currentIndex];
   const previewFile = sortedFiles[previewIndex];
+  const previewExtension = previewFile ? getExtension(previewFile.name) : "none";
+  const isMediaPreview = previewFile?.kind === "image" || previewFile?.kind === "video";
+  const isAudioPreview = previewFile?.kind === "audio";
+  const isTextPreview = previewFile?.kind === "text";
+  const isPdfPreview = previewFile?.kind === "docs" && previewExtension === "pdf";
+  const isOfficePreview =
+    previewFile?.kind === "docs" && OFFICE_PREVIEW_EXTENSIONS.includes(previewExtension);
+  const isDocumentPreview = isTextPreview || isPdfPreview;
+  const isArchivePreview = previewFile?.kind === "compressed";
+  const isFallbackPreview =
+    Boolean(previewFile) &&
+    !isMediaPreview &&
+    !isAudioPreview &&
+    !isDocumentPreview &&
+    !isOfficePreview &&
+    !isArchivePreview;
   const hasFiles = sortedFiles.length > 0;
+  const isZoomablePreview = isMediaPreview;
+
+  useEffect(() => {
+    if (!previewFile || !isOfficePreview) {
+      setOfficePreviewId(null);
+      setOfficePreviewStatus("idle");
+      return;
+    }
+    if (!isTauri()) {
+      setOfficePreviewId(null);
+      setOfficePreviewStatus("error");
+      return;
+    }
+    let isActive = true;
+    setOfficePreviewId(null);
+    setOfficePreviewStatus("loading");
+    invoke<string>("generate_preview", { id: previewFile.id })
+      .then((previewId) => {
+        if (!isActive) {
+          return;
+        }
+        setOfficePreviewId(previewId);
+        setOfficePreviewStatus("idle");
+      })
+      .catch((error) => {
+        if (!isActive) {
+          return;
+        }
+        console.warn("Failed to generate office preview.", error);
+        setOfficePreviewId(null);
+        setOfficePreviewStatus("error");
+      });
+    return () => {
+      isActive = false;
+    };
+  }, [previewFile?.id, isOfficePreview]);
+
+  useEffect(() => {
+    if (!previewFile || !isArchivePreview) {
+      setArchiveEntries([]);
+      setArchiveTruncated(false);
+      setArchiveStatus("idle");
+      setArchiveError(null);
+      return;
+    }
+    if (!isTauri()) {
+      setArchiveEntries([]);
+      setArchiveTruncated(false);
+      setArchiveStatus("error");
+      setArchiveError("Archive preview requires the desktop app.");
+      return;
+    }
+    let isActive = true;
+    setArchiveEntries([]);
+    setArchiveTruncated(false);
+    setArchiveStatus("loading");
+    setArchiveError(null);
+    invoke<ArchivePreview>("list_archive_entries", { id: previewFile.id })
+      .then((result) => {
+        if (!isActive) {
+          return;
+        }
+        setArchiveEntries(result.entries);
+        setArchiveTruncated(result.truncated);
+        setArchiveStatus("idle");
+      })
+      .catch((error) => {
+        if (!isActive) {
+          return;
+        }
+        console.warn("Failed to load archive preview.", error);
+        setArchiveEntries([]);
+        setArchiveTruncated(false);
+        setArchiveStatus("error");
+        setArchiveError("Preview unavailable for this archive.");
+      });
+    return () => {
+      isActive = false;
+    };
+  }, [previewFile?.id, isArchivePreview]);
 
   useEffect(() => {
     setPreviewZoom(1);
     previewZoomTargetRef.current = 1;
+    setPreviewPan({ x: 0, y: 0 });
     if (previewZoomRafRef.current !== null) {
       cancelAnimationFrame(previewZoomRafRef.current);
       previewZoomRafRef.current = null;
@@ -787,6 +1042,78 @@ export default function App() {
     },
     [previewFile]
   );
+
+  const setPreviewZoomValue = useCallback((value: number) => {
+    const clamped = clampNumber(value, 0.5, 4);
+    previewZoomTargetRef.current = clamped;
+    if (previewZoomRafRef.current !== null) {
+      cancelAnimationFrame(previewZoomRafRef.current);
+      previewZoomRafRef.current = null;
+    }
+    setPreviewZoom(clamped);
+  }, []);
+
+  const handleZoomOut = useCallback(() => {
+    if (!isZoomablePreview) {
+      return;
+    }
+    setPreviewZoomValue(previewZoomTargetRef.current / 1.15);
+  }, [isZoomablePreview, setPreviewZoomValue]);
+
+  const handleZoomIn = useCallback(() => {
+    if (!isZoomablePreview) {
+      return;
+    }
+    setPreviewZoomValue(previewZoomTargetRef.current * 1.15);
+  }, [isZoomablePreview, setPreviewZoomValue]);
+
+  const handleZoomReset = useCallback(() => {
+    if (!isZoomablePreview) {
+      return;
+    }
+    setPreviewZoomValue(1);
+    setPreviewPan({ x: 0, y: 0 });
+  }, [isZoomablePreview, setPreviewZoomValue]);
+
+  const handlePreviewPanStart = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      if (previewFile?.kind !== "image") {
+        return;
+      }
+      if (event.button !== 0) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      event.currentTarget.setPointerCapture(event.pointerId);
+      previewPanStartRef.current = { x: previewPan.x, y: previewPan.y };
+      previewPanPointerRef.current = { x: event.clientX, y: event.clientY };
+      setIsPreviewPanning(true);
+    },
+    [previewFile?.kind, previewPan.x, previewPan.y]
+  );
+
+  const handlePreviewPanMove = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    if (!previewPanStartRef.current || !previewPanPointerRef.current) {
+      return;
+    }
+    const startPan = previewPanStartRef.current;
+    const startPointer = previewPanPointerRef.current;
+    setPreviewPan({
+      x: startPan.x + (event.clientX - startPointer.x),
+      y: startPan.y + (event.clientY - startPointer.y),
+    });
+  }, []);
+
+  const handlePreviewPanEnd = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    if (!previewPanStartRef.current) {
+      return;
+    }
+    previewPanStartRef.current = null;
+    previewPanPointerRef.current = null;
+    event.currentTarget.releasePointerCapture(event.pointerId);
+    setIsPreviewPanning(false);
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -903,6 +1230,45 @@ export default function App() {
     });
   }, []);
 
+  const getOrderSnapshot = useCallback((sortedPrev: FileEntry[]) => {
+    const order = visibleFileOrderRef.current;
+    if (order.length === 0) {
+      return sortedPrev.map((file) => file.id);
+    }
+    const idSet = new Set(sortedPrev.map((file) => file.id));
+    const filtered = order.filter((id) => idSet.has(id));
+    return filtered.length > 0 ? filtered : sortedPrev.map((file) => file.id);
+  }, [visibleFileOrderRef]);
+
+  const getNextVisibleId = useCallback(
+    (currentId: string | null, order: string[], removedSet: Set<string>) => {
+      if (!currentId) {
+        return null;
+      }
+      if (!removedSet.has(currentId)) {
+        return currentId;
+      }
+      const position = order.indexOf(currentId);
+      if (position === -1) {
+        return null;
+      }
+      for (let i = position + 1; i < order.length; i += 1) {
+        const candidate = order[i];
+        if (!removedSet.has(candidate)) {
+          return candidate;
+        }
+      }
+      for (let i = position - 1; i >= 0; i -= 1) {
+        const candidate = order[i];
+        if (!removedSet.has(candidate)) {
+          return candidate;
+        }
+      }
+      return null;
+    },
+    []
+  );
+
   const pickDestinationForSlot = useCallback(
     async (slotIndex: number) => {
       try {
@@ -927,6 +1293,8 @@ export default function App() {
         const filterByExtension = (file: FileEntry) =>
           selectedExtensionsSet.has(getExtension(file.name));
         const sortedPrev = sortFiles(prev.filter(filterByExtension));
+        const orderSnapshot = getOrderSnapshot(sortedPrev);
+        const removedSet = new Set([removedId]);
         const removedIndex = sortedPrev.findIndex((file) => file.id === removedId);
         const next = prev.filter((file) => file.id !== removedId);
         const sortedNext = sortFiles(next.filter(filterByExtension));
@@ -934,18 +1302,26 @@ export default function App() {
           if (removedIndex === -1) {
             return current;
           }
-          if (current > removedIndex) {
-            return current - 1;
+          if (sortedPrev.length === 0) {
+            return 0;
           }
-          if (current === removedIndex) {
-            return current >= sortedNext.length ? Math.max(sortedNext.length - 1, 0) : current;
+          const boundedCurrent = Math.min(current, sortedPrev.length - 1);
+          const currentId = sortedPrev[boundedCurrent]?.id ?? null;
+          // Keep selection aligned with the visible order when removing files.
+          const targetId = getNextVisibleId(currentId, orderSnapshot, removedSet);
+          if (!targetId) {
+            return sortedNext.length === 0 ? 0 : Math.min(boundedCurrent, sortedNext.length - 1);
           }
-          return current;
+          const nextIndex = sortedNext.findIndex((file) => file.id === targetId);
+          if (nextIndex === -1) {
+            return sortedNext.length === 0 ? 0 : Math.min(boundedCurrent, sortedNext.length - 1);
+          }
+          return nextIndex;
         });
         return next;
       });
     },
-    [selectedExtensionsSet, sortFiles]
+    [selectedExtensionsSet, sortFiles, getOrderSnapshot, getNextVisibleId]
   );
 
   const removeFilesByIds = useCallback(
@@ -960,28 +1336,27 @@ export default function App() {
         const sortedPrev = sortFiles(prev.filter(filterByExtension));
         const next = prev.filter((file) => !removedSet.has(file.id));
         const sortedNext = sortFiles(next.filter(filterByExtension));
+        const orderSnapshot = getOrderSnapshot(sortedPrev);
         setCurrentIndex((current) => {
           if (sortedPrev.length === 0) {
             return 0;
           }
           const boundedCurrent = Math.min(current, sortedPrev.length - 1);
-          const currentFileId = sortedPrev[boundedCurrent]?.id;
-          const removedBefore = sortedPrev
-            .slice(0, boundedCurrent)
-            .filter((file) => removedSet.has(file.id)).length;
-          const isCurrentRemoved = currentFileId ? removedSet.has(currentFileId) : false;
-          if (isCurrentRemoved) {
-            if (sortedNext.length === 0) {
-              return 0;
-            }
-            return Math.min(boundedCurrent - removedBefore, sortedNext.length - 1);
+          const currentId = sortedPrev[boundedCurrent]?.id ?? null;
+          const targetId = getNextVisibleId(currentId, orderSnapshot, removedSet);
+          if (!targetId) {
+            return sortedNext.length === 0 ? 0 : Math.min(boundedCurrent, sortedNext.length - 1);
           }
-          return Math.min(boundedCurrent - removedBefore, Math.max(sortedNext.length - 1, 0));
+          const nextIndex = sortedNext.findIndex((file) => file.id === targetId);
+          if (nextIndex === -1) {
+            return sortedNext.length === 0 ? 0 : Math.min(boundedCurrent, sortedNext.length - 1);
+          }
+          return nextIndex;
         });
         return next;
       });
     },
-    [selectedExtensionsSet, sortFiles]
+    [selectedExtensionsSet, sortFiles, getOrderSnapshot, getNextVisibleId]
   );
 
   const restoreFileEntry = useCallback(
@@ -1153,6 +1528,17 @@ export default function App() {
     [updateStatus]
   );
 
+  const openFileInSystem = useCallback(
+    async (file: FileEntry) => {
+      try {
+        await invoke("reveal_in_file_manager", { path: file.path, reveal: false });
+      } catch (error) {
+        updateStatus(`Open file failed: ${String(error)}`);
+      }
+    },
+    [updateStatus]
+  );
+
   const openCurrentInFinder = useCallback(async () => {
     if (!currentFile) {
       updateStatus("No file selected.");
@@ -1248,6 +1634,13 @@ export default function App() {
 
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
+      if (isHelpOpen) {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          setIsHelpOpen(false);
+        }
+        return;
+      }
       if (isSettingsOpen) {
         if (event.key === "Escape") {
           event.preventDefault();
@@ -1302,6 +1695,7 @@ export default function App() {
     currentFile,
     goNext,
     goPrev,
+    isHelpOpen,
     isSettingsOpen,
     moveCurrentToSlot,
     openCurrentInFinder,
@@ -1387,7 +1781,7 @@ export default function App() {
       if (folderSegments.length === 0) {
         return;
       }
-      const groupId = getGroupIdForFile(groupMode, file);
+      const groupId = getGroupIdForFile(effectiveGroupMode, file);
       let currentPath = "";
       folderSegments.forEach((segment) => {
         currentPath = currentPath ? `${currentPath}/${segment}` : segment;
@@ -1395,7 +1789,7 @@ export default function App() {
       });
     });
     return Array.from(keys);
-  }, [sortedFiles, groupMode, currentFolder]);
+  }, [sortedFiles, effectiveGroupMode, currentFolder]);
 
   const hasFolders = folderKeys.length > 0;
   const hasCollapsedFolders = useMemo(
@@ -1427,6 +1821,7 @@ export default function App() {
   }, []);
 
   const listRender = useMemo(() => {
+    const showDuplicateLocation = isDuplicateFilter && viewMode === "list";
     const renderButton = (file: FileEntry, index: number, depth?: number) => (
       <button
         key={file.id}
@@ -1443,7 +1838,12 @@ export default function App() {
         }
       >
         <span className={`badge badge-${file.kind}`}>{file.kind}</span>
-        <span className="filename">{file.name}</span>
+        <span className="file-content">
+          <span className="filename">{file.name}</span>
+          {showDuplicateLocation && (
+            <span className="file-location">{formatRelativeFolder(file.path, currentFolder)}</span>
+          )}
+        </span>
       </button>
     );
 
@@ -1452,12 +1852,14 @@ export default function App() {
       indexMap.set(file.id, index);
     });
 
-    if (viewMode === "list") {
-      if (groupMode === "none") {
-      return { items: visibleFiles.map((file, index) => renderButton(file, index)) };
-    }
+    const isDuplicateGrouping = effectiveGroupMode === "duplicates";
 
-      const { groups, keys } = groupFilesByMode(groupMode, visibleFiles);
+    if (viewMode === "list") {
+      if (effectiveGroupMode === "none") {
+        return { items: visibleFiles.map((file, index) => renderButton(file, index)) };
+      }
+
+      const { groups, keys } = groupFilesByMode(effectiveGroupMode, visibleFiles);
 
       const items: JSX.Element[] = [];
       keys.forEach((key) => {
@@ -1465,19 +1867,23 @@ export default function App() {
         if (!groupFiles || groupFiles.length === 0) {
           return;
         }
-        const groupId = `${groupMode}:${key}`;
+        const groupId = `${effectiveGroupMode}:${key}`;
         const isGroupCollapsed = Boolean(collapsedGroups[groupId]);
+        const groupTitle = formatGroupTitle(effectiveGroupMode, key, groupFiles);
+        const groupMeta = isDuplicateGrouping ? formatDuplicateGroupMeta(groupFiles) : null;
+        const countLabel = isDuplicateGrouping ? `${groupFiles.length} copies` : `${groupFiles.length}`;
         items.push(
-          <div key={`${groupMode}-${key}`} className="list-section">
+          <div
+            key={`${effectiveGroupMode}-${key}`}
+            className={`list-section${isDuplicateGrouping ? " list-section-duplicates" : ""}`}
+          >
             <button
               type="button"
               className="list-section-toggle"
               onClick={() => toggleGroupCollapse(groupId)}
               aria-expanded={!isGroupCollapsed}
               aria-label={
-                isGroupCollapsed
-                  ? `Expand ${formatGroupTitle(groupMode, key)}`
-                  : `Collapse ${formatGroupTitle(groupMode, key)}`
+                isGroupCollapsed ? `Expand ${groupTitle}` : `Collapse ${groupTitle}`
               }
               disabled={isLoading}
               data-prevent-open-on-enter
@@ -1491,8 +1897,11 @@ export default function App() {
                   )}
                 </svg>
               </span>
-              <span className="list-section-title">{formatGroupTitle(groupMode, key)}</span>
-              <span className="list-section-count">{groupFiles.length}</span>
+              <span className="list-section-text">
+                <span className="list-section-title">{groupTitle}</span>
+                {groupMeta && <span className="list-section-meta">{groupMeta}</span>}
+              </span>
+              <span className="list-section-count">{countLabel}</span>
             </button>
             {!isGroupCollapsed && (
               <div className="list-section-items">
@@ -1573,27 +1982,33 @@ export default function App() {
       return renderTreeNodes(tree.children, 0, groupId);
     };
 
-    if (groupMode === "none") {
+    if (effectiveGroupMode === "none") {
       return { items: renderTreeForFiles(visibleFiles, null) };
     }
 
-    const { groups, keys } = groupFilesByMode(groupMode, visibleFiles);
+    const { groups, keys } = groupFilesByMode(effectiveGroupMode, visibleFiles);
     const items: JSX.Element[] = [];
     keys.forEach((key) => {
       const groupFiles = groups.get(key);
       if (!groupFiles || groupFiles.length === 0) {
         return;
       }
-      const groupId = `${groupMode}:${key}`;
+      const groupId = `${effectiveGroupMode}:${key}`;
       const isGroupCollapsed = Boolean(collapsedGroups[groupId]);
+      const groupTitle = formatGroupTitle(effectiveGroupMode, key, groupFiles);
+      const groupMeta = isDuplicateGrouping ? formatDuplicateGroupMeta(groupFiles) : null;
+      const countLabel = isDuplicateGrouping ? `${groupFiles.length} copies` : `${groupFiles.length}`;
       items.push(
-        <div key={`${groupMode}-${key}`} className="list-section">
+        <div
+          key={`${effectiveGroupMode}-${key}`}
+          className={`list-section${isDuplicateGrouping ? " list-section-duplicates" : ""}`}
+        >
           <button
             type="button"
             className="list-section-toggle"
             onClick={() => toggleGroupCollapse(groupId)}
             aria-expanded={!isGroupCollapsed}
-            aria-label={isGroupCollapsed ? `Expand ${formatGroupTitle(groupMode, key)}` : `Collapse ${formatGroupTitle(groupMode, key)}`}
+            aria-label={isGroupCollapsed ? `Expand ${groupTitle}` : `Collapse ${groupTitle}`}
             disabled={isLoading}
             data-prevent-open-on-enter
           >
@@ -1606,8 +2021,11 @@ export default function App() {
                 )}
               </svg>
             </span>
-            <span className="list-section-title">{formatGroupTitle(groupMode, key)}</span>
-            <span className="list-section-count">{groupFiles.length}</span>
+            <span className="list-section-text">
+              <span className="list-section-title">{groupTitle}</span>
+              {groupMeta && <span className="list-section-meta">{groupMeta}</span>}
+            </span>
+            <span className="list-section-count">{countLabel}</span>
           </button>
           {!isGroupCollapsed && (
             <div className="list-section-items">
@@ -1621,7 +2039,8 @@ export default function App() {
   }, [
     visibleFiles,
     isLoading,
-    groupMode,
+    effectiveGroupMode,
+    isDuplicateFilter,
     openFileInFinder,
     currentFolder,
     viewMode,
@@ -1637,10 +2056,10 @@ export default function App() {
   const visibleFileOrder = useMemo(() => {
     const order: string[] = [];
     if (viewMode === "list") {
-      if (groupMode === "none") {
+      if (effectiveGroupMode === "none") {
         return sortedFiles.map((file) => file.id);
       }
-      const { groups, keys } = groupFilesByMode(groupMode, sortedFiles);
+      const { groups, keys } = groupFilesByMode(effectiveGroupMode, sortedFiles);
       keys.forEach((key) => {
         const groupFiles = groups.get(key);
         if (!groupFiles || groupFiles.length === 0) {
@@ -1672,24 +2091,24 @@ export default function App() {
       collectTreeNodes(tree.children, groupId);
     };
 
-    if (groupMode === "none") {
+    if (effectiveGroupMode === "none") {
       collectTreeForFiles(sortedFiles, null);
       return order;
     }
 
-    const { groups, keys } = groupFilesByMode(groupMode, sortedFiles);
+    const { groups, keys } = groupFilesByMode(effectiveGroupMode, sortedFiles);
 
     keys.forEach((key) => {
       const groupFiles = groups.get(key);
       if (!groupFiles || groupFiles.length === 0) {
         return;
       }
-      const groupId = `${groupMode}:${key}`;
+      const groupId = `${effectiveGroupMode}:${key}`;
       collectTreeForFiles(groupFiles, groupId);
     });
 
     return order;
-  }, [sortedFiles, groupMode, currentFolder, viewMode]);
+  }, [sortedFiles, effectiveGroupMode, currentFolder, viewMode]);
 
   useEffect(() => {
     visibleFileOrderRef.current = visibleFileOrder;
@@ -1699,7 +2118,7 @@ export default function App() {
     if (!currentFile) {
       return;
     }
-    const groupId = getGroupIdForFile(groupMode, currentFile);
+    const groupId = getGroupIdForFile(effectiveGroupMode, currentFile);
     if (groupId) {
       setCollapsedGroups((prev) => {
         if (!prev[groupId]) {
@@ -1730,7 +2149,7 @@ export default function App() {
       });
       return next;
     });
-  }, [currentFile, currentFolder, groupMode]);
+  }, [currentFile, currentFolder, effectiveGroupMode]);
 
   useEffect(() => {
     const previousId = previousActiveFileIdRef.current;
@@ -1749,7 +2168,7 @@ export default function App() {
       }
     }
     previousActiveFileIdRef.current = currentFile?.id ?? null;
-  }, [currentFile?.id, renderCount, collapsedGroups, collapsedFolders, groupMode, viewMode]);
+  }, [currentFile?.id, renderCount, collapsedGroups, collapsedFolders, effectiveGroupMode, viewMode]);
 
   useEffect(() => {
     if (!currentFile) {
@@ -1784,12 +2203,37 @@ export default function App() {
       : null;
   const totalFiles = files.length;
   const filteredCount = sortedFiles.length;
+
+  useEffect(() => {
+    syncScrollHints(fileListScrollRef.current, fileListFrameRef.current);
+  }, [
+    syncScrollHints,
+    viewMode,
+    effectiveGroupMode,
+    listDensity,
+    renderCount,
+    filteredCount,
+    collapsedGroups,
+    collapsedFolders,
+    isLoading,
+    isExtensionsCollapsed,
+  ]);
+
+  useEffect(() => {
+    syncScrollHints(previewScrollRef.current, previewFrameRef.current);
+  }, [
+    syncScrollHints,
+    previewFile?.id,
+    isLoading,
+    archiveStatus,
+    officePreviewStatus,
+    archiveEntries.length,
+  ]);
   const folderLabel = currentFolder ? formatPathLabel(currentFolder) : "No folder selected";
   const folderSizeBytes = useMemo(
     () => files.reduce((total, file) => total + file.sizeBytes, 0),
     [files]
   );
-  const previewExtension = previewFile ? getExtension(previewFile.name) : "none";
 
   return (
     <div className={`app-shell ${isLoading ? "is-loading" : ""} ${isSidebarCollapsed ? "sidebar-collapsed" : ""}`}>
@@ -1929,13 +2373,14 @@ export default function App() {
                 <div className="toolbar-control">
                   <span className="control-label">Group</span>
                   <select
-                    value={groupMode}
+                    value={displayGroupMode}
                     onChange={(event) => setGroupMode(event.target.value as GroupMode)}
-                    disabled={isLoading}
+                    disabled={isLoading || isDuplicateFilter}
                   >
                     <option value="none">None</option>
                     <option value="type">Type</option>
                     <option value="extension">Extension</option>
+                    {isDuplicateFilter && <option value="duplicates">Duplicate sets</option>}
                   </select>
                 </div>
                 <div className="toolbar-control">
@@ -1951,25 +2396,28 @@ export default function App() {
                 </div>
               </div>
             </div>
-            <div
-              className={`file-list ${isLoading ? "loading" : ""} ${
-                listDensity === "compact" ? "density-compact" : "density-comfortable"
-              }`}
-            >
-              {hasFiles ? (
-                listItems
-              ) : isLoading ? (
-                <div className="skeleton-list" aria-hidden="true">
-                  {Array.from({ length: 8 }).map((_, index) => (
-                    <div key={`skeleton-${index}`} className="skeleton-item" />
-                  ))}
-                </div>
-              ) : (
-                <div className="empty">
-                  {totalFiles === 0 ? "No files loaded." : "No files match the selected extensions."}
-                </div>
-              )}
-              {isRenderingList && <div className="list-progress">Showing {renderCount} of {filteredCount}</div>}
+            <div className="file-list-frame scroll-hints" ref={fileListFrameRef}>
+              <div
+                ref={fileListScrollRef}
+                className={`file-list ${isLoading ? "loading" : ""} ${
+                  listDensity === "compact" ? "density-compact" : "density-comfortable"
+                }`}
+              >
+                {hasFiles ? (
+                  listItems
+                ) : isLoading ? (
+                  <div className="skeleton-list" aria-hidden="true">
+                    {Array.from({ length: 8 }).map((_, index) => (
+                      <div key={`skeleton-${index}`} className="skeleton-item" />
+                    ))}
+                  </div>
+                ) : (
+                  <div className="empty">
+                    {totalFiles === 0 ? "No files loaded." : "No files match the selected extensions."}
+                  </div>
+                )}
+                {isRenderingList && <div className="list-progress">Showing {renderCount} of {filteredCount}</div>}
+              </div>
             </div>
             <div className="list-footer">
               <div className="list-footer-header">
@@ -2004,6 +2452,7 @@ export default function App() {
                             type="checkbox"
                             checked={allExtensionsSelected}
                             onChange={(event) => {
+                              hasUserAdjustedExtensionsRef.current = true;
                               setSelectedExtensions(event.target.checked ? allExtensions : []);
                             }}
                             disabled={isLoading}
@@ -2018,6 +2467,7 @@ export default function App() {
                               type="checkbox"
                               checked={selectedExtensions.includes(extension)}
                               onChange={() => {
+                                hasUserAdjustedExtensionsRef.current = true;
                                 setSelectedExtensions((current) =>
                                   current.includes(extension)
                                     ? current.filter((value) => value !== extension)
@@ -2039,7 +2489,8 @@ export default function App() {
         )}
 
         <main className="content">
-          <section className="preview-panel">
+          <div className="preview-frame scroll-hints" ref={previewFrameRef}>
+            <section className="preview-panel" ref={previewScrollRef}>
           {isLoading ? (
             <div className="loading-state">
               <div className="spinner" />
@@ -2050,28 +2501,159 @@ export default function App() {
             <div className="preview-content">
               <div className="preview-layout">
                 <div className="preview-media" onWheel={handlePreviewWheel}>
-                  {(previewFile.kind === "image" || previewFile.kind === "video") && (
-                    <div className="preview-zoom" style={{ transform: `scale(${previewZoom})` }}>
+                  {isMediaPreview && (
+                    <div
+                      className={`preview-zoom${previewFile.kind === "image" ? " is-draggable" : ""}${
+                        isPreviewPanning ? " is-panning" : ""
+                      }`}
+                      style={{
+                        transform:
+                          previewFile.kind === "image"
+                            ? `translate(${previewPan.x}px, ${previewPan.y}px) scale(${previewZoom})`
+                            : `scale(${previewZoom})`,
+                      }}
+                      onPointerDown={handlePreviewPanStart}
+                      onPointerMove={handlePreviewPanMove}
+                      onPointerUp={handlePreviewPanEnd}
+                      onPointerCancel={handlePreviewPanEnd}
+                    >
                       {previewFile.kind === "image" && (
-                        <img src={buildMediaUrl(previewFile.id)} alt={previewFile.name} />
+                        <img
+                          src={buildMediaUrl(previewFile.id)}
+                          alt={previewFile.name}
+                          draggable={false}
+                          onDragStart={(event) => event.preventDefault()}
+                        />
                       )}
                       {previewFile.kind === "video" && (
                         <video ref={videoRef} controls src={buildMediaUrl(previewFile.id)} />
                       )}
                     </div>
                   )}
-                  {previewFile.kind === "audio" && (
+                  {isAudioPreview && (
                     <audio controls src={buildMediaUrl(previewFile.id)} />
                   )}
-                  {previewFile.kind !== "image" &&
-                    previewFile.kind !== "video" &&
-                    previewFile.kind !== "audio" && (
-                      <div className="preview-message">
-                        <div className="placeholder">No preview available for this file type.</div>
+                  {isDocumentPreview && (
+                    <div className="preview-document">
+                      <iframe
+                        title={`Preview of ${previewFile.name}`}
+                        src={buildMediaUrl(previewFile.id)}
+                      />
+                    </div>
+                  )}
+                  {isOfficePreview && (
+                    <div className="preview-office">
+                      <div className="preview-office-preview">
+                        {officePreviewStatus === "loading" && (
+                          <div className="preview-office-status">Generating preview...</div>
+                        )}
+                        {officePreviewStatus === "error" && (
+                          <div className="preview-office-status">Preview unavailable.</div>
+                        )}
+                        {officePreviewStatus === "idle" && officePreviewId && (
+                          <img
+                            src={buildMediaUrl(officePreviewId)}
+                            alt={`Preview of ${previewFile.name}`}
+                          />
+                        )}
                       </div>
-                    )}
-                  <div className="caption" aria-hidden="true" />
+                    </div>
+                  )}
+                  {isArchivePreview && (
+                    <div className="preview-archive">
+                      <div className="preview-archive-header">
+                        <div className="preview-archive-title">Archive contents</div>
+                        {archiveStatus === "loading" && (
+                          <div className="preview-archive-status">Loading...</div>
+                        )}
+                      </div>
+                      {archiveStatus === "error" && (
+                        <div className="preview-archive-status">
+                          {archiveError ?? "Preview unavailable for this archive."}
+                        </div>
+                      )}
+                      {archiveStatus === "idle" && (
+                        <>
+                          {archiveEntries.length > 0 ? (
+                            <ul className="preview-archive-list">
+                              {archiveEntries.map((entry, index) => (
+                                <li key={`${entry}-${index}`} className="preview-archive-item">
+                                  {entry}
+                                </li>
+                              ))}
+                            </ul>
+                          ) : (
+                            <div className="preview-archive-empty">No entries found.</div>
+                          )}
+                          {archiveTruncated && (
+                            <div className="preview-archive-note">
+                              Showing first {archiveEntries.length} items.
+                            </div>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  )}
+                  {isFallbackPreview && (
+                    <div className="preview-fallback">
+                      <div className="preview-fallback-icon">
+                        {previewExtension === "none" ? "FILE" : previewExtension.toUpperCase()}
+                      </div>
+                      <div className="preview-fallback-label">
+                        {formatKindLabel(previewFile.kind)}
+                      </div>
+                      <div className="preview-fallback-hint">No rich preview available.</div>
+                    </div>
+                  )}
                 </div>
+                <div className="preview-actions">
+                  <button
+                    type="button"
+                    className="preview-action-button"
+                    onClick={() => void openFileInSystem(previewFile)}
+                  >
+                    Open file
+                  </button>
+                  <div className="preview-zoom-controls">
+                    <button
+                      type="button"
+                      className="icon-button"
+                      onClick={handleZoomOut}
+                      disabled={!isZoomablePreview}
+                      aria-label="Zoom out"
+                      title="Zoom out"
+                    >
+                      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                        <path d="M5 11h14v2H5z" />
+                      </svg>
+                    </button>
+                    <button
+                      type="button"
+                      className="icon-button preview-zoom-reset"
+                      onClick={handleZoomReset}
+                      disabled={!isZoomablePreview}
+                      aria-label="Reset zoom"
+                      title="Reset zoom"
+                    >
+                      <span className="preview-zoom-value">
+                        {Math.round(previewZoom * 100)}%
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      className="icon-button"
+                      onClick={handleZoomIn}
+                      disabled={!isZoomablePreview}
+                      aria-label="Zoom in"
+                      title="Zoom in"
+                    >
+                      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                        <path d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6z" />
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+                <div className="caption" aria-hidden="true" />
                 <aside className="preview-details" aria-label="File details">
                   <div className="file-meta">
                     <div>
@@ -2131,7 +2713,8 @@ export default function App() {
               <div className="placeholder">Select a folder to preview files.</div>
             </div>
           )}
-          </section>
+            </section>
+          </div>
         </main>
 
         <footer className="actions">
@@ -2311,9 +2894,136 @@ export default function App() {
                 </label>
               </div>
             </div>
-            <div className="modal-footer">
+            <div className="modal-footer modal-footer-settings">
+              <button type="button" className="help-button" onClick={() => setIsHelpOpen(true)}>
+                Help & Shortcuts
+              </button>
               <button type="button" onClick={() => setIsSettingsOpen(false)}>
                 Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {isHelpOpen && (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onClick={(event) => {
+            if (event.target === event.currentTarget) {
+              setIsHelpOpen(false);
+            }
+          }}
+        >
+          <div className="modal-panel help-modal" role="dialog" aria-modal="true" aria-labelledby="help-title">
+            <div className="modal-header">
+              <h2 id="help-title" className="modal-title">
+                Help & Shortcuts
+              </h2>
+              <button
+                type="button"
+                className="icon-button"
+                onClick={() => setIsHelpOpen(false)}
+                aria-label="Close help"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                  <path d="M18.3 5.7a1 1 0 0 0-1.4 0L12 10.6 7.1 5.7a1 1 0 1 0-1.4 1.4L10.6 12l-4.9 4.9a1 1 0 1 0 1.4 1.4L12 13.4l4.9 4.9a1 1 0 0 0 1.4-1.4L13.4 12l4.9-4.9a1 1 0 0 0 0-1.4Z" />
+                </svg>
+              </button>
+            </div>
+            <div className="modal-body help-body">
+              <div className="help-grid">
+                <section className="help-section">
+                  <h3 className="help-section-title">Quick Start</h3>
+                  <ul className="help-list">
+                    <li>Select a folder, then click the search icon to scan it.</li>
+                    <li>Pick a filter mode to focus on images, docs, or other file types.</li>
+                    <li>Click a file to preview it; double-click to reveal it in your file manager.</li>
+                    <li>Use the extensions list to narrow the scan to specific suffixes.</li>
+                  </ul>
+                </section>
+                <section className="help-section">
+                  <h3 className="help-section-title">Views & Sorting</h3>
+                  <ul className="help-list">
+                    <li>Sort by name, size, date, type, or extension.</li>
+                    <li>Group the list by type or extension, then collapse sections as needed.</li>
+                    <li>Switch between list and tree views to browse folders.</li>
+                    <li>Use the expand-all toggle when browsing tree view folders.</li>
+                  </ul>
+                </section>
+                <section className="help-section">
+                  <h3 className="help-section-title">Preview & Details</h3>
+                  <ul className="help-list">
+                    <li>Images and videos support zoom controls and smooth zooming.</li>
+                    <li>Drag to pan images and use the zoom reset to snap back.</li>
+                    <li>Text, PDF, Office, and archive previews render when available.</li>
+                    <li>Use Open file to launch the file in its default app.</li>
+                  </ul>
+                </section>
+                <section className="help-section">
+                  <h3 className="help-section-title">Move & Clean Up</h3>
+                  <ul className="help-list">
+                    <li>Set destination slots 1-5 to move files with one click.</li>
+                    <li>Use Prev and Next to step through the list quickly.</li>
+                    <li>Trash removes the current file; Undo restores the last action.</li>
+                    <li>In tree view, trash an entire folder from its trash button.</li>
+                  </ul>
+                </section>
+                <section className="help-section">
+                  <h3 className="help-section-title">Settings</h3>
+                  <ul className="help-list">
+                    <li>Include subfolders to scan nested directories.</li>
+                    <li>Include hidden items to scan dotfiles and hidden folders.</li>
+                    <li>Toggle trash confirmation and switch between light and dark mode.</li>
+                    <li>Adjust list density for a roomier or compact list.</li>
+                  </ul>
+                </section>
+                <section className="help-section help-section-wide">
+                  <h3 className="help-section-title">Shortcuts</h3>
+                  <div className="help-shortcuts">
+                    <div className="help-shortcut">
+                      <span className="help-key">Arrow Left</span>
+                      <span>Previous file</span>
+                    </div>
+                    <div className="help-shortcut">
+                      <span className="help-key">Arrow Right</span>
+                      <span>Next file</span>
+                    </div>
+                    <div className="help-shortcut">
+                      <span className="help-key">Arrow Up</span>
+                      <span>Trash current file</span>
+                    </div>
+                    <div className="help-shortcut">
+                      <span className="help-key">Arrow Down</span>
+                      <span>Undo last action</span>
+                    </div>
+                    <div className="help-shortcut">
+                      <span className="help-key">Enter</span>
+                      <span>Reveal in file manager</span>
+                    </div>
+                    <div className="help-shortcut">
+                      <span className="help-key">1-5</span>
+                      <span>Move to destination slot</span>
+                    </div>
+                    <div className="help-shortcut">
+                      <span className="help-key">Space</span>
+                      <span>Play or pause video</span>
+                    </div>
+                    <div className="help-shortcut">
+                      <span className="help-key">Ctrl + Scroll</span>
+                      <span>Zoom images and videos</span>
+                    </div>
+                    <div className="help-shortcut">
+                      <span className="help-key">Esc</span>
+                      <span>Close settings or help</span>
+                    </div>
+                  </div>
+                </section>
+              </div>
+            </div>
+            <div className="modal-footer">
+              <button type="button" onClick={() => setIsHelpOpen(false)}>
+                Close
               </button>
             </div>
           </div>

@@ -17,6 +17,12 @@ walkdir = "2.5"
 mime_guess = "2.0"
 uuid = { version = "1", features = ["v4"] }
 tauri-plugin-dialog = "2"
+zip = "0.6"
+tar = "0.4"
+flate2 = "1"
+bzip2 = "0.4"
+xz2 = "0.1"
+sha2 = "0.10"
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]

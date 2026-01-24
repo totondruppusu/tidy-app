@@ -16,6 +16,7 @@
   --color-border-subtle: rgba(255, 255, 255, 0.38);
   --color-border-faint: rgba(255, 255, 255, 0.24);
   --color-border-card: rgba(255, 255, 255, 0.55);
+  --color-drawer-backdrop: rgba(15, 23, 42, 0.35);
   --color-icon: #334155;
   --color-accent: #2f6bff;
   --color-accent-soft: rgba(47, 107, 255, 0.12);
@@ -87,6 +88,7 @@
   --color-border-subtle: rgba(148, 163, 184, 0.16);
   --color-border-faint: rgba(148, 163, 184, 0.1);
   --color-border-card: rgba(148, 163, 184, 0.24);
+  --color-drawer-backdrop: rgba(2, 6, 23, 0.6);
   --color-icon: #d0d7e2;
   --color-accent: #7aa7ff;
   --color-accent-soft: rgba(122, 167, 255, 0.18);
@@ -231,6 +233,17 @@ input {
   z-index: 3;
 }
 
+.drawer-backdrop {
+  position: fixed;
+  top: var(--titlebar-offset);
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: var(--color-drawer-backdrop);
+  cursor: pointer;
+  z-index: 2;
+}
+
 .app-grid {
   display: grid;
   grid-template-columns: var(--layout-sidebar-width) 1fr;
@@ -239,6 +252,7 @@ input {
   min-height: 0;
   gap: var(--layout-gap);
   padding: calc(var(--layout-pad) + var(--titlebar-offset)) var(--layout-pad) var(--layout-pad);
+  z-index: auto;
 }
 
 .app-grid .toolbar {
@@ -1733,32 +1747,37 @@ input {
 @media (max-width: 900px) {
   .app-grid {
     grid-template-columns: 1fr;
-    grid-template-rows: auto auto 1fr auto;
+    grid-template-rows: auto 1fr auto;
     padding: calc(12px + var(--titlebar-offset)) 12px 12px;
     gap: 12px;
   }
 
   .list-panel {
-    grid-column: 1;
-    grid-row: 1;
-    max-height: 240px;
-    border-right: none;
-    border-bottom: none;
+    position: fixed;
+    top: var(--titlebar-offset);
+    left: 0;
+    bottom: 0;
+    width: var(--layout-sidebar-width);
+    max-width: 100%;
+    margin: 0;
+    border-radius: 0 18px 18px 0;
+    border-left: none;
+    z-index: 3;
   }
 
   .app-grid .toolbar {
     grid-column: 1;
-    grid-row: 2;
+    grid-row: 1;
   }
 
   .app-grid .content {
     grid-column: 1;
-    grid-row: 3;
+    grid-row: 2;
   }
 
   .app-grid .actions {
     grid-column: 1;
-    grid-row: 4;
+    grid-row: 3;
   }
 
   .preview-layout {
@@ -1775,6 +1794,20 @@ input {
 
   .actions {
     margin: 0;
+  }
+
+  .list-header-controls {
+    flex-wrap: nowrap;
+    gap: 6px;
+  }
+
+  .list-header-controls .toolbar-control {
+    min-width: 0;
+    flex: 1 1 0;
+  }
+
+  .list-header-controls select {
+    width: 100%;
   }
 }
 

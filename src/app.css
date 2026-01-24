@@ -728,6 +728,7 @@ input {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  overflow-x: auto;
   padding: 8px 6px;
   display: flex;
   flex-direction: column;
@@ -958,7 +959,8 @@ input {
   display: flex;
   align-items: center;
   gap: 8px;
-  width: 100%;
+  width: max-content;
+  min-width: 100%;
   border: 0;
   border-radius: 4px;
   padding: 6px 8px;
@@ -979,7 +981,8 @@ input {
   display: flex;
   align-items: center;
   gap: 6px;
-  width: 100%;
+  width: max-content;
+  min-width: 100%;
   border-bottom: 1px solid var(--color-border-faint);
   padding: 6px 8px;
 }
@@ -1066,8 +1069,6 @@ input {
   font-size: 12px;
   font-weight: 600;
   color: var(--color-text-tertiary);
-  overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
@@ -1120,8 +1121,6 @@ input {
 
 .filename {
   flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
 }
 

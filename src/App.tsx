@@ -223,6 +223,54 @@ const formatExtensionLabel = (extension: string) => {
   return `.${extension}`;
 };
 
+const KIND_ORDER: FileEntry["kind"][] = [
+  "image",
+  "video",
+  "audio",
+  "docs",
+  "text",
+  "compressed",
+  "executable",
+  "binary",
+];
+
+const getGroupKey = (mode: GroupMode, file: FileEntry) =>
+  mode === "extension" ? getExtension(file.name) : file.kind;
+
+const getGroupIdForFile = (mode: GroupMode, file: FileEntry) =>
+  mode === "none" ? null : `${mode}:${getGroupKey(mode, file)}`;
+
+const sortGroupKeys = (mode: GroupMode, keys: string[]) => {
+  const sorted = [...keys];
+  sorted.sort((a, b) => {
+    if (mode === "type") {
+      return KIND_ORDER.indexOf(a as FileEntry["kind"]) - KIND_ORDER.indexOf(b as FileEntry["kind"]);
+    }
+    if (a === "none") {
+      return 1;
+    }
+    if (b === "none") {
+      return -1;
+    }
+    return a.localeCompare(b);
+  });
+  return sorted;
+};
+
+const groupFilesByMode = (mode: GroupMode, list: FileEntry[]) => {
+  const groups = new Map<string, FileEntry[]>();
+  list.forEach((file) => {
+    const key = getGroupKey(mode, file);
+    const bucket = groups.get(key);
+    if (bucket) {
+      bucket.push(file);
+    } else {
+      groups.set(key, [file]);
+    }
+  });
+  return { groups, keys: sortGroupKeys(mode, Array.from(groups.keys())) };
+};
+
 type TreeFolderNode = {
   type: "folder";
   name: string;
@@ -237,6 +285,24 @@ type TreeFileNode = {
 };
 
 type TreeNode = TreeFolderNode | TreeFileNode;
+
+const getFolderCollapseKey = (groupId: string | null, path: string) =>
+  groupId ? `${groupId}::${path}` : path;
+
+const sortTreeNodesByIndex = (nodes: TreeNode[], indexMap: Map<string, number>) => {
+  const folders: TreeFolderNode[] = [];
+  const files: TreeFileNode[] = [];
+  nodes.forEach((node) => {
+    if (node.type === "folder") {
+      folders.push(node);
+    } else {
+      files.push(node);
+    }
+  });
+  folders.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+  files.sort((a, b) => (indexMap.get(a.file.id) ?? 0) - (indexMap.get(b.file.id) ?? 0));
+  return [...folders, ...files];
+};
 
 const clampNumber = (value: number, min: number, max: number) =>
   Math.min(max, Math.max(min, value));
@@ -481,6 +547,7 @@ export default function App() {
   const previewDelayTimeoutRef = useRef<number | null>(null);
   const activeScanId = useRef<string | null>(null);
   const listItemRefs = useRef<Map<string, HTMLButtonElement | null>>(new Map());
+  const previousActiveFileIdRef = useRef<string | null>(null);
   const visibleFileOrderRef = useRef<string[]>([]);
   const previousExtensionsRef = useRef<string[]>([]);
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -622,6 +689,11 @@ export default function App() {
     return list;
   }, [files]);
 
+  const selectedExtensionsSet = useMemo(
+    () => new Set(selectedExtensions),
+    [selectedExtensions]
+  );
+
   useEffect(() => {
     setSelectedExtensions((current) => {
       if (allExtensions.length === 0) {
@@ -651,12 +723,11 @@ export default function App() {
   }, [someExtensionsSelected]);
 
   const filteredFiles = useMemo(() => {
-    if (selectedExtensions.length === 0) {
+    if (selectedExtensionsSet.size === 0) {
       return [];
     }
-    const allowed = new Set(selectedExtensions);
-    return files.filter((file) => allowed.has(getExtension(file.name)));
-  }, [files, selectedExtensions]);
+    return files.filter((file) => selectedExtensionsSet.has(getExtension(file.name)));
+  }, [files, selectedExtensionsSet]);
 
   const sortedFiles = useMemo(() => sortFiles(filteredFiles), [filteredFiles, sortFiles]);
   const sortedIndexById = useMemo(() => {
@@ -769,18 +840,18 @@ export default function App() {
         updateStatus("No folder selected.");
         return;
       }
+      const scanId = typeof crypto?.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}`;
+      activeScanId.current = scanId;
+      setIsLoading(true);
+      setScanProgress({ scanId, scanned: 0, matched: 0, total: 0, phase: "indexing" });
+      setFiles([]);
+      setCurrentIndex(0);
+      setRenderCount(0);
+      setUndoStack([]);
+      setCollapsedGroups({});
+      setCollapsedFolders({});
+      updateStatus(includeSubfolders ? "Scanning folders and subfolders..." : "Scanning folder...");
       try {
-        const scanId = typeof crypto?.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}`;
-        activeScanId.current = scanId;
-        setIsLoading(true);
-        setScanProgress({ scanId, scanned: 0, matched: 0, total: 0, phase: "indexing" });
-        setFiles([]);
-        setCurrentIndex(0);
-        setRenderCount(0);
-        setUndoStack([]);
-        setCollapsedGroups({});
-        setCollapsedFolders({});
-        updateStatus(includeSubfolders ? "Scanning folders and subfolders..." : "Scanning folder...");
         const result = await invoke<ScanResult>("scan_folder", {
           folderPath,
           filterMode,
@@ -788,13 +859,23 @@ export default function App() {
           includeHidden,
           scanId
         });
+        if (activeScanId.current !== scanId) {
+          return;
+        }
         setFiles(result.files);
         setCurrentFolder(folderPath);
         updateStatus(`Loaded ${result.files.length} items from ${folderPath}.`);
       } catch (error) {
+        if (activeScanId.current !== scanId) {
+          return;
+        }
         updateStatus(`Scan failed: ${String(error)}`);
       } finally {
-        setIsLoading(false);
+        if (activeScanId.current === scanId) {
+          setIsLoading(false);
+          setScanProgress(null);
+          activeScanId.current = null;
+        }
       }
     },
     [filterMode, includeSubfolders, includeHidden, updateStatus]
@@ -843,8 +924,8 @@ export default function App() {
   const removeFileById = useCallback(
     (removedId: string) => {
       setFiles((prev) => {
-        const allowed = new Set(selectedExtensions);
-        const filterByExtension = (file: FileEntry) => allowed.has(getExtension(file.name));
+        const filterByExtension = (file: FileEntry) =>
+          selectedExtensionsSet.has(getExtension(file.name));
         const sortedPrev = sortFiles(prev.filter(filterByExtension));
         const removedIndex = sortedPrev.findIndex((file) => file.id === removedId);
         const next = prev.filter((file) => file.id !== removedId);
@@ -864,7 +945,7 @@ export default function App() {
         return next;
       });
     },
-    [selectedExtensions, sortFiles]
+    [selectedExtensionsSet, sortFiles]
   );
 
   const removeFilesByIds = useCallback(
@@ -874,8 +955,8 @@ export default function App() {
         return;
       }
       setFiles((prev) => {
-        const allowed = new Set(selectedExtensions);
-        const filterByExtension = (file: FileEntry) => allowed.has(getExtension(file.name));
+        const filterByExtension = (file: FileEntry) =>
+          selectedExtensionsSet.has(getExtension(file.name));
         const sortedPrev = sortFiles(prev.filter(filterByExtension));
         const next = prev.filter((file) => !removedSet.has(file.id));
         const sortedNext = sortFiles(next.filter(filterByExtension));
@@ -900,7 +981,7 @@ export default function App() {
         return next;
       });
     },
-    [selectedExtensions, sortFiles]
+    [selectedExtensionsSet, sortFiles]
   );
 
   const restoreFileEntry = useCallback(
@@ -910,8 +991,8 @@ export default function App() {
           return prev;
         }
         const next = [...prev, restored];
-        const allowed = new Set(selectedExtensions);
-        const filterByExtension = (file: FileEntry) => allowed.has(getExtension(file.name));
+        const filterByExtension = (file: FileEntry) =>
+          selectedExtensionsSet.has(getExtension(file.name));
         const sortedNext = sortFiles(next.filter(filterByExtension));
         const restoredIndex = sortedNext.findIndex((file) => file.id === restored.id);
         if (restoredIndex !== -1) {
@@ -920,7 +1001,7 @@ export default function App() {
         return next;
       });
     },
-    [selectedExtensions, sortFiles]
+    [selectedExtensionsSet, sortFiles]
   );
 
   const pushUndo = useCallback((action: UndoAction) => {
@@ -1298,7 +1379,7 @@ export default function App() {
       if (!path) {
         return;
       }
-      keys.add(groupId ? `${groupId}::${path}` : path);
+      keys.add(getFolderCollapseKey(groupId, path));
     };
     sortedFiles.forEach((file) => {
       const segments = getRelativeSegments(file.path, currentFolder);
@@ -1306,10 +1387,7 @@ export default function App() {
       if (folderSegments.length === 0) {
         return;
       }
-      const groupId =
-        groupMode === "none"
-          ? null
-          : `${groupMode}:${groupMode === "extension" ? getExtension(file.name) : file.kind}`;
+      const groupId = getGroupIdForFile(groupMode, file);
       let currentPath = "";
       folderSegments.forEach((segment) => {
         currentPath = currentPath ? `${currentPath}/${segment}` : segment;
@@ -1352,9 +1430,7 @@ export default function App() {
     const renderButton = (file: FileEntry, index: number, depth?: number) => (
       <button
         key={file.id}
-        className={`file-item ${depth !== undefined ? "tree-item" : ""} ${
-          index === currentIndex ? "active" : ""
-        }`}
+        className={`file-item ${depth !== undefined ? "tree-item" : ""}`}
         onClick={() => setCurrentIndex(index)}
         onDoubleClick={() => void openFileInFinder(file)}
         ref={(node) => listItemRefs.current.set(file.id, node)}
@@ -1378,39 +1454,10 @@ export default function App() {
 
     if (viewMode === "list") {
       if (groupMode === "none") {
-        return { items: visibleFiles.map((file, index) => renderButton(file, index)) };
-      }
+      return { items: visibleFiles.map((file, index) => renderButton(file, index)) };
+    }
 
-      const groups = new Map<string, FileEntry[]>();
-      visibleFiles.forEach((file) => {
-        const key = groupMode === "extension" ? getExtension(file.name) : file.kind;
-        const bucket = groups.get(key) ?? [];
-        bucket.push(file);
-        groups.set(key, bucket);
-      });
-
-      const keys = Array.from(groups.keys()).sort((a, b) => {
-        if (groupMode === "type") {
-          const order = [
-            "image",
-            "video",
-            "audio",
-            "docs",
-            "text",
-            "compressed",
-            "executable",
-            "binary",
-          ];
-          return order.indexOf(a) - order.indexOf(b);
-        }
-        if (a === "none") {
-          return 1;
-        }
-        if (b === "none") {
-          return -1;
-        }
-        return a.localeCompare(b);
-      });
+      const { groups, keys } = groupFilesByMode(groupMode, visibleFiles);
 
       const items: JSX.Element[] = [];
       keys.forEach((key) => {
@@ -1458,28 +1505,8 @@ export default function App() {
       return { items };
     }
 
-    const sortTreeNodes = (nodes: TreeNode[]) => {
-      const folders: TreeFolderNode[] = [];
-      const files: TreeFileNode[] = [];
-      nodes.forEach((node) => {
-        if (node.type === "folder") {
-          folders.push(node);
-        } else {
-          files.push(node);
-        }
-      });
-      folders.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
-      files.sort(
-        (a, b) => (indexMap.get(a.file.id) ?? 0) - (indexMap.get(b.file.id) ?? 0)
-      );
-      return [...folders, ...files];
-    };
-
-    const getFolderCollapseKey = (groupId: string | null, path: string) =>
-      groupId ? `${groupId}::${path}` : path;
-
     const renderTreeNodes = (nodes: TreeNode[], depth: number, groupId: string | null) => {
-      const sortedNodes = sortTreeNodes(nodes);
+      const sortedNodes = sortTreeNodesByIndex(nodes, indexMap);
       return sortedNodes.map((node) => {
         if (node.type === "file") {
           const index = indexMap.get(node.file.id) ?? 0;
@@ -1550,36 +1577,7 @@ export default function App() {
       return { items: renderTreeForFiles(visibleFiles, null) };
     }
 
-    const groups = new Map<string, FileEntry[]>();
-    visibleFiles.forEach((file) => {
-      const key = groupMode === "extension" ? getExtension(file.name) : file.kind;
-      const bucket = groups.get(key) ?? [];
-      bucket.push(file);
-      groups.set(key, bucket);
-    });
-
-    const keys = Array.from(groups.keys()).sort((a, b) => {
-      if (groupMode === "type") {
-        const order = [
-          "image",
-          "video",
-          "audio",
-          "docs",
-          "text",
-          "compressed",
-          "executable",
-          "binary",
-        ];
-        return order.indexOf(a) - order.indexOf(b);
-      }
-      if (a === "none") {
-        return 1;
-      }
-      if (b === "none") {
-        return -1;
-      }
-      return a.localeCompare(b);
-    });
+    const { groups, keys } = groupFilesByMode(groupMode, visibleFiles);
     const items: JSX.Element[] = [];
     keys.forEach((key) => {
       const groupFiles = groups.get(key);
@@ -1622,7 +1620,6 @@ export default function App() {
     return { items };
   }, [
     visibleFiles,
-    currentIndex,
     isLoading,
     groupMode,
     openFileInFinder,
@@ -1643,35 +1640,7 @@ export default function App() {
       if (groupMode === "none") {
         return sortedFiles.map((file) => file.id);
       }
-      const groups = new Map<string, FileEntry[]>();
-      sortedFiles.forEach((file) => {
-        const key = groupMode === "extension" ? getExtension(file.name) : file.kind;
-        const bucket = groups.get(key) ?? [];
-        bucket.push(file);
-        groups.set(key, bucket);
-      });
-      const keys = Array.from(groups.keys()).sort((a, b) => {
-        if (groupMode === "type") {
-          const order = [
-            "image",
-            "video",
-            "audio",
-            "docs",
-            "text",
-            "compressed",
-            "executable",
-            "binary",
-          ];
-          return order.indexOf(a) - order.indexOf(b);
-        }
-        if (a === "none") {
-          return 1;
-        }
-        if (b === "none") {
-          return -1;
-        }
-        return a.localeCompare(b);
-      });
+      const { groups, keys } = groupFilesByMode(groupMode, sortedFiles);
       keys.forEach((key) => {
         const groupFiles = groups.get(key);
         if (!groupFiles || groupFiles.length === 0) {
@@ -1687,25 +1656,8 @@ export default function App() {
       indexMap.set(file.id, index);
     });
 
-    const sortTreeNodes = (nodes: TreeNode[]) => {
-      const folders: TreeFolderNode[] = [];
-      const files: TreeFileNode[] = [];
-      nodes.forEach((node) => {
-        if (node.type === "folder") {
-          folders.push(node);
-        } else {
-          files.push(node);
-        }
-      });
-      folders.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
-      files.sort(
-        (a, b) => (indexMap.get(a.file.id) ?? 0) - (indexMap.get(b.file.id) ?? 0)
-      );
-      return [...folders, ...files];
-    };
-
     const collectTreeNodes = (nodes: TreeNode[], groupId: string | null) => {
-      const sortedNodes = sortTreeNodes(nodes);
+      const sortedNodes = sortTreeNodesByIndex(nodes, indexMap);
       sortedNodes.forEach((node) => {
         if (node.type === "file") {
           order.push(node.file.id);
@@ -1725,36 +1677,7 @@ export default function App() {
       return order;
     }
 
-    const groups = new Map<string, FileEntry[]>();
-    sortedFiles.forEach((file) => {
-      const key = groupMode === "extension" ? getExtension(file.name) : file.kind;
-      const bucket = groups.get(key) ?? [];
-      bucket.push(file);
-      groups.set(key, bucket);
-    });
-
-    const keys = Array.from(groups.keys()).sort((a, b) => {
-      if (groupMode === "type") {
-        const order = [
-          "image",
-          "video",
-          "audio",
-          "docs",
-          "text",
-          "compressed",
-          "executable",
-          "binary",
-        ];
-        return order.indexOf(a) - order.indexOf(b);
-      }
-      if (a === "none") {
-        return 1;
-      }
-      if (b === "none") {
-        return -1;
-      }
-      return a.localeCompare(b);
-    });
+    const { groups, keys } = groupFilesByMode(groupMode, sortedFiles);
 
     keys.forEach((key) => {
       const groupFiles = groups.get(key);
@@ -1776,10 +1699,7 @@ export default function App() {
     if (!currentFile) {
       return;
     }
-    const groupId =
-      groupMode === "none"
-        ? null
-        : `${groupMode}:${groupMode === "extension" ? getExtension(currentFile.name) : currentFile.kind}`;
+    const groupId = getGroupIdForFile(groupMode, currentFile);
     if (groupId) {
       setCollapsedGroups((prev) => {
         if (!prev[groupId]) {
@@ -1800,7 +1720,7 @@ export default function App() {
       let currentPath = "";
       folderSegments.forEach((segment) => {
         currentPath = currentPath ? `${currentPath}/${segment}` : segment;
-        const key = groupId ? `${groupId}::${currentPath}` : currentPath;
+        const key = getFolderCollapseKey(groupId, currentPath);
         if (next[key]) {
           if (next === prev) {
             next = { ...prev };
@@ -1811,6 +1731,25 @@ export default function App() {
       return next;
     });
   }, [currentFile, currentFolder, groupMode]);
+
+  useEffect(() => {
+    const previousId = previousActiveFileIdRef.current;
+    if (previousId && previousId !== currentFile?.id) {
+      const previousNode = listItemRefs.current.get(previousId);
+      if (previousNode) {
+        previousNode.classList.remove("active");
+        previousNode.removeAttribute("aria-current");
+      }
+    }
+    if (currentFile?.id) {
+      const currentNode = listItemRefs.current.get(currentFile.id);
+      if (currentNode) {
+        currentNode.classList.add("active");
+        currentNode.setAttribute("aria-current", "true");
+      }
+    }
+    previousActiveFileIdRef.current = currentFile?.id ?? null;
+  }, [currentFile?.id, renderCount, collapsedGroups, collapsedFolders, groupMode, viewMode]);
 
   useEffect(() => {
     if (!currentFile) {
@@ -1850,6 +1789,7 @@ export default function App() {
     () => files.reduce((total, file) => total + file.sizeBytes, 0),
     [files]
   );
+  const previewExtension = previewFile ? getExtension(previewFile.name) : "none";
 
   return (
     <div className={`app-shell ${isLoading ? "is-loading" : ""} ${isSidebarCollapsed ? "sidebar-collapsed" : ""}`}>
@@ -2145,7 +2085,7 @@ export default function App() {
                     <div>
                       <span className="meta-label">Extension</span>
                       <span className="meta-value">
-                        {previewFile.name.includes(".") ? `.${previewFile.name.split(".").pop()}` : "None"}
+                        {previewExtension === "none" ? "None" : `.${previewExtension}`}
                       </span>
                     </div>
                     <div>

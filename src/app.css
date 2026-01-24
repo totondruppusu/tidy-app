@@ -65,6 +65,12 @@
   --layout-sidebar-width: 320px;
   --layout-gap: 16px;
   --layout-pad: 16px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
   --titlebar-offset: max(env(titlebar-area-height, 0px), env(safe-area-inset-top, 0px), 28px);
   font-family: "SF Pro Display", "SF Pro Text", "SF Pro Rounded", "Helvetica Neue", "Avenir Next",
     "Segoe UI Variable", "Segoe UI", sans-serif;
@@ -327,8 +333,8 @@ input {
 .toolbar {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 12px 16px;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
   flex-wrap: wrap;
   animation: panel-in 0.6s ease both;
   animation-delay: 0.06s;
@@ -337,7 +343,7 @@ input {
 .toolbar-group {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   flex-wrap: wrap;
 }
 
@@ -411,7 +417,7 @@ input {
 .toolbar-control {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
   min-width: 100px;
 }
 
@@ -477,7 +483,7 @@ input {
   margin-top: calc(-1 * (var(--layout-pad) + var(--titlebar-offset)));
   margin-left: calc(-1 * var(--layout-pad));
   margin-bottom: calc(-1 * var(--layout-pad));
-  padding-top: 18px;
+  padding-top: var(--space-4);
   border-top-right-radius: 0;
   border-bottom-right-radius: 0;
   z-index: 6;
@@ -488,8 +494,8 @@ input {
   flex-direction: row;
   align-items: center;
   justify-content: center;
-  gap: 10px;
-  padding: 12px 16px;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
   border-bottom: 1px solid var(--color-border-faint);
   background: transparent;
 }
@@ -507,7 +513,7 @@ input {
   max-width: 240px;
   flex: 1 1 0;
   gap: 0;
-  padding: 3px 8px;
+  padding: var(--space-1) var(--space-2);
   border-radius: 999px;
   border: 1px solid var(--color-border-strong);
   background: linear-gradient(180deg, var(--glass-fill-strong), var(--glass-fill-soft));
@@ -522,7 +528,7 @@ input {
 .searchbar-controls .pill-button {
   flex: 1 1 150px;
   min-width: 0;
-  padding: 3px 8px;
+  padding: var(--space-1) var(--space-2);
   border: 0;
   background: transparent;
   box-shadow: none;
@@ -549,7 +555,7 @@ input {
 .searchbar-controls .toolbar-control {
   min-width: 76px;
   max-width: 110px;
-  padding: 3px 8px;
+  padding: var(--space-1) var(--space-2);
   border-left: 1px solid var(--color-border-faint);
 }
 
@@ -667,13 +673,13 @@ input {
 }
 
 .list-header {
-  padding: 12px 16px;
+  padding: var(--space-3) var(--space-4);
   border-bottom: 1px solid var(--color-border-faint);
   font-weight: 600;
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  gap: 10px;
+  gap: var(--space-2);
   background: transparent;
 }
 
@@ -681,31 +687,35 @@ input {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--space-3);
 }
 
 .list-title {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .list-header-actions {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .list-header-controls {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 10px;
+  gap: var(--space-2);
 }
 
 .list-header-controls .toolbar-control {
   gap: 2px;
   min-width: 84px;
+}
+
+.list-header-controls .view-control {
+  min-width: 64px;
 }
 
 .list-header-controls .control-label {
@@ -721,6 +731,11 @@ input {
   color: var(--color-text-primary);
   box-shadow: inset 0 1px 0 var(--glass-highlight);
   font-size: 11px;
+}
+
+.list-header-controls .view-control select {
+  padding: 4px 6px;
+  min-width: 64px;
 }
 
 .list-header-controls select:hover:not(:disabled) {
@@ -803,7 +818,7 @@ input {
   min-height: 0;
   overflow-y: auto;
   overflow-x: auto;
-  padding: 8px 6px;
+  padding: var(--space-2);
   display: flex;
   flex-direction: column;
   gap: 0;
@@ -835,7 +850,7 @@ input {
 .list-section {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
 }
 
 .list-section-toggle {
@@ -843,7 +858,7 @@ input {
   align-items: center;
   gap: 6px;
   width: 100%;
-  padding: 6px 10px;
+  padding: 6px 8px;
   border-radius: 6px;
   border: 1px solid transparent;
   background: transparent;
@@ -960,11 +975,11 @@ input {
 }
 
 .list-footer {
-  padding: 12px 16px 16px;
+  padding: var(--space-3) var(--space-4) var(--space-4);
   border-top: 1px solid var(--color-border-faint);
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
   background: transparent;
 }
 
@@ -972,7 +987,7 @@ input {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .footer-title {
@@ -1045,7 +1060,7 @@ input {
 .extensions-controls {
   display: flex;
   justify-content: flex-start;
-  margin-bottom: 6px;
+  margin-bottom: var(--space-2);
 }
 
 .extension-filter.extension-toggle {
@@ -1297,7 +1312,7 @@ input {
   display: flex;
   align-items: flex-start;
   justify-content: center;
-  padding: 16px;
+  padding: var(--space-4);
   min-height: 0;
   overflow-y: auto;
   animation: panel-in 0.6s ease both;
@@ -1308,9 +1323,9 @@ input {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 12px;
+  gap: var(--space-3);
   text-align: center;
-  padding: 24px;
+  padding: var(--space-6);
   border-radius: 18px;
   background: var(--glass-fill);
   border: 1px solid var(--color-border-card);
@@ -1371,7 +1386,7 @@ input {
   height: 100%;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: var(--space-4);
 }
 
 .preview-layout {
@@ -1379,7 +1394,7 @@ input {
   display: grid;
   grid-template-columns: minmax(0, 2.2fr) minmax(220px, 0.8fr);
   grid-template-rows: minmax(0, 1fr) auto;
-  gap: 16px;
+  gap: var(--space-4);
   align-items: start;
 }
 
@@ -1389,7 +1404,7 @@ input {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 12px;
+  gap: var(--space-3);
   position: relative;
 }
 
@@ -1398,15 +1413,15 @@ input {
   display: flex;
   justify-content: center;
   align-items: center;
-  gap: 12px;
+  gap: var(--space-3);
   flex-wrap: nowrap;
   align-self: end;
   justify-self: center;
-  margin: auto auto 6px;
+  margin: auto auto var(--space-2);
   position: sticky;
-  bottom: 6px;
+  bottom: var(--space-2);
   z-index: 2;
-  padding: 8px 12px;
+  padding: var(--space-2) var(--space-3);
   min-height: 44px;
   border-radius: 999px;
   background: var(--glass-fill);
@@ -1421,7 +1436,7 @@ input {
 .preview-zoom-controls {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-2);
 }
 
 .preview-zoom-value {
@@ -1466,8 +1481,8 @@ input {
   grid-row: 1 / span 2;
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  padding: 16px;
+  gap: var(--space-3);
+  padding: var(--space-4);
   border-radius: 16px;
   background: var(--glass-fill);
   border: 1px solid var(--color-border-soft);
@@ -1556,17 +1571,17 @@ input {
   border-radius: 12px;
   border: 1px solid var(--color-border-soft);
   background: var(--glass-fill);
-  padding: 16px;
+  padding: var(--space-4);
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-3);
 }
 
 .preview-archive-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--space-3);
 }
 
 .preview-archive-title {
@@ -1606,8 +1621,8 @@ input {
 .preview-office {
   display: flex;
   flex-direction: column;
-  gap: 16px;
-  padding: 16px;
+  gap: var(--space-4);
+  padding: var(--space-4);
   text-align: center;
 }
 
@@ -1641,7 +1656,7 @@ input {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 12px;
+  gap: var(--space-3);
 }
 
 .preview-fallback {
@@ -1650,8 +1665,8 @@ input {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 12px;
-  padding: 24px;
+  gap: var(--space-3);
+  padding: var(--space-6);
   text-align: center;
 }
 
@@ -1738,7 +1753,7 @@ input {
 .actions {
   display: flex;
   justify-content: center;
-  padding: 12px 16px;
+  padding: var(--space-3) var(--space-4);
   margin: 0;
   animation: panel-in 0.6s ease both;
   animation-delay: 0.18s;
@@ -1750,7 +1765,7 @@ input {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: var(--space-4);
   width: 100%;
 }
 
@@ -1758,7 +1773,7 @@ input {
   display: grid;
   grid-template-columns: repeat(3, auto);
   grid-template-rows: auto auto;
-  gap: 10px 12px;
+  gap: var(--space-2) var(--space-3);
   justify-items: center;
   align-items: center;
 }
@@ -1807,7 +1822,7 @@ input {
 
 .destination-row {
   display: flex;
-  gap: 10px;
+  gap: var(--space-2);
   flex-wrap: wrap;
   justify-content: flex-start;
   flex: 1 1 auto;
@@ -1829,8 +1844,8 @@ input {
 .destination-button {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
   border-radius: 10px;
   border: 1px dashed var(--color-border-strong);
   background: var(--glass-fill-soft);
@@ -1922,7 +1937,7 @@ input {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 24px;
+  padding: var(--space-6);
   z-index: 20;
   backdrop-filter: blur(6px);
   -webkit-backdrop-filter: blur(6px);
@@ -1937,10 +1952,10 @@ input {
   border-radius: 20px;
   border: 1px solid var(--color-border-soft);
   box-shadow: var(--shadow-modal);
-  padding: 20px;
+  padding: var(--space-5);
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: var(--space-4);
   backdrop-filter: blur(calc(var(--glass-blur) * 1.1)) saturate(var(--glass-saturation));
   -webkit-backdrop-filter: blur(calc(var(--glass-blur) * 1.1)) saturate(var(--glass-saturation));
 }
@@ -1960,15 +1975,15 @@ input {
 .modal-body {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-3);
 }
 
 .settings-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  gap: 12px;
-  padding: 14px 16px;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
   border-radius: 14px;
   background: var(--glass-fill-soft);
   border: 1px solid var(--color-border-card);
@@ -2065,7 +2080,7 @@ input {
 }
 
 .help-body {
-  gap: 14px;
+  gap: var(--space-3);
   max-height: min(70vh, 560px);
   overflow-y: auto;
   padding-right: 4px;
@@ -2074,14 +2089,14 @@ input {
 .help-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
+  gap: var(--space-3);
 }
 
 .help-section {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 14px 16px;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
   border-radius: 14px;
   background: var(--glass-fill-soft);
   border: 1px solid var(--color-border-card);
@@ -2197,8 +2212,8 @@ input {
   .app-grid {
     grid-template-columns: 1fr;
     grid-template-rows: auto 1fr auto;
-    padding: calc(12px + var(--titlebar-offset)) 12px 12px;
-    gap: 12px;
+    padding: calc(var(--space-3) + var(--titlebar-offset)) var(--space-3) var(--space-3);
+    gap: var(--space-3);
   }
 
   .list-panel {
@@ -2274,7 +2289,7 @@ input {
 
 @media (max-width: 700px) {
   .modal-panel {
-    padding: 16px;
+    padding: var(--space-4);
   }
 
   .settings-row {

@@ -580,6 +580,7 @@ export default function App() {
   const [previewIndex, setPreviewIndex] = useState(0);
   const [, setStatus] = useState("Select a folder to begin.");
   const [filterMode, setFilterMode] = useState<FilterMode>(storedSettings.filterMode ?? "all");
+  const [lastScanFilterMode, setLastScanFilterMode] = useState<FilterMode | null>(null);
   const [includeSubfolders, setIncludeSubfolders] = useState(
     storedSettings.includeSubfolders ?? false
   );
@@ -597,10 +598,20 @@ export default function App() {
   });
   const [confirmTrash, setConfirmTrash] = useState(storedSettings.confirmTrash ?? true);
   const [sortMode, setSortMode] = useState<SortMode>(storedSettings.sortMode ?? "name_asc");
-  const [groupMode, setGroupMode] = useState<GroupMode>(storedSettings.groupMode ?? "none");
+  const initialGroupMode = storedSettings.groupMode ?? "none";
+  const [groupMode, setGroupMode] = useState<GroupMode>(initialGroupMode);
+  const lastNonDuplicateGroupModeRef = useRef<GroupMode>(
+    initialGroupMode === "duplicates" ? "none" : initialGroupMode
+  );
   const isDuplicateFilter = filterMode === "duplicates";
-  const effectiveGroupMode: GroupMode = isDuplicateFilter ? "duplicates" : groupMode;
-  const displayGroupMode: GroupMode = isDuplicateFilter ? "duplicates" : groupMode;
+  const isDuplicateScan = lastScanFilterMode === "duplicates";
+  const shouldGroupDuplicates = isDuplicateFilter && isDuplicateScan;
+  const effectiveGroupMode: GroupMode = shouldGroupDuplicates ? "duplicates" : groupMode;
+  const displayGroupMode: GroupMode = shouldGroupDuplicates
+    ? "duplicates"
+    : groupMode === "duplicates"
+      ? lastNonDuplicateGroupModeRef.current
+      : groupMode;
   const [listDensity, setListDensity] = useState<DensityMode>(
     storedSettings.listDensity ?? "comfortable"
   );
@@ -647,6 +658,27 @@ export default function App() {
   const fileListScrollRef = useRef<HTMLDivElement | null>(null);
   const previewFrameRef = useRef<HTMLDivElement | null>(null);
   const previewScrollRef = useRef<HTMLElement | null>(null);
+  const handleGroupModeChange = useCallback(
+    (value: GroupMode) => {
+      if (value === "duplicates" && !shouldGroupDuplicates) {
+        return;
+      }
+      setGroupMode(value);
+    },
+    [shouldGroupDuplicates]
+  );
+
+  useEffect(() => {
+    if (groupMode !== "duplicates") {
+      lastNonDuplicateGroupModeRef.current = groupMode;
+    }
+  }, [groupMode]);
+
+  useEffect(() => {
+    if (!shouldGroupDuplicates && groupMode === "duplicates") {
+      setGroupMode(lastNonDuplicateGroupModeRef.current);
+    }
+  }, [groupMode, shouldGroupDuplicates]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -1167,6 +1199,7 @@ export default function App() {
         updateStatus("No folder selected.");
         return;
       }
+      setLastScanFilterMode(filterMode);
       const scanId = typeof crypto?.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}`;
       activeScanId.current = scanId;
       setIsLoading(true);
@@ -1821,7 +1854,7 @@ export default function App() {
   }, []);
 
   const listRender = useMemo(() => {
-    const showDuplicateLocation = isDuplicateFilter && viewMode === "list";
+    const showDuplicateLocation = shouldGroupDuplicates && viewMode === "list";
     const renderButton = (file: FileEntry, index: number, depth?: number) => (
       <button
         key={file.id}
@@ -2040,7 +2073,7 @@ export default function App() {
     visibleFiles,
     isLoading,
     effectiveGroupMode,
-    isDuplicateFilter,
+    shouldGroupDuplicates,
     openFileInFinder,
     currentFolder,
     viewMode,
@@ -2341,9 +2374,9 @@ export default function App() {
                       onClick={toggleAllFolders}
                       disabled={!hasFolders || isLoading}
                       data-prevent-open-on-enter
-                      title={hasCollapsedFolders ? "Expand all folders" : "Collapse all folders"}
+                      title={hasCollapsedFolders ? "Unfold all folders" : "Fold all folders"}
                     >
-                      {hasCollapsedFolders ? "Expand all" : "Collapse all"}
+                      {hasCollapsedFolders ? "Unfold all" : "Fold all"}
                     </button>
                   )}
                   {isRenderingList && <span className="rendering">Rendering list...</span>}
@@ -2374,16 +2407,16 @@ export default function App() {
                   <span className="control-label">Group</span>
                   <select
                     value={displayGroupMode}
-                    onChange={(event) => setGroupMode(event.target.value as GroupMode)}
-                    disabled={isLoading || isDuplicateFilter}
+                    onChange={(event) => handleGroupModeChange(event.target.value as GroupMode)}
+                    disabled={isLoading || shouldGroupDuplicates}
                   >
                     <option value="none">None</option>
                     <option value="type">Type</option>
                     <option value="extension">Extension</option>
-                    {isDuplicateFilter && <option value="duplicates">Duplicate sets</option>}
+                    {shouldGroupDuplicates && <option value="duplicates">Duplicates</option>}
                   </select>
                 </div>
-                <div className="toolbar-control">
+                <div className="toolbar-control view-control">
                   <span className="control-label">View</span>
                   <select
                     value={viewMode}

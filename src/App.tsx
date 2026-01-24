@@ -106,6 +106,9 @@ const shouldOpenOnEnter = (target: EventTarget | null) => {
   if (target === document.body || target === document.documentElement) {
     return true;
   }
+  if (target.closest("[data-prevent-open-on-enter]")) {
+    return false;
+  }
   return Boolean(target.closest(".file-list"));
 };
 
@@ -201,6 +204,21 @@ const formatExtensionLabel = (extension: string) => {
   return `.${extension}`;
 };
 
+type TreeFolderNode = {
+  type: "folder";
+  name: string;
+  path: string;
+  children: TreeNode[];
+  fileCount: number;
+};
+
+type TreeFileNode = {
+  type: "file";
+  file: FileEntry;
+};
+
+type TreeNode = TreeFolderNode | TreeFileNode;
+
 const clampNumber = (value: number, min: number, max: number) =>
   Math.min(max, Math.max(min, value));
 
@@ -213,6 +231,48 @@ const formatGroupTitle = (mode: GroupMode, key: string) => {
 
 const DESTINATION_SLOT_COUNT = 5;
 const SETTINGS_KEY = "tidy-settings";
+const TREE_INDENT_PX = 16;
+
+const splitPathSegments = (path: string) => path.split(/[\\/]+/).filter(Boolean);
+
+const getRelativeSegments = (fullPath: string, basePath: string | null) => {
+  const fullSegments = splitPathSegments(fullPath);
+  if (!basePath) {
+    return fullSegments;
+  }
+  const baseSegments = splitPathSegments(basePath);
+  let index = 0;
+  while (index < baseSegments.length && fullSegments[index] === baseSegments[index]) {
+    index += 1;
+  }
+  return fullSegments.slice(index);
+};
+
+const buildFileTree = (list: FileEntry[], basePath: string | null) => {
+  const root: TreeFolderNode = { type: "folder", name: "", path: "", children: [], fileCount: 0 };
+  const folderMap = new Map<string, TreeFolderNode>();
+  folderMap.set("", root);
+  list.forEach((file) => {
+    const segments = getRelativeSegments(file.path, basePath);
+    const folderSegments = segments.length > 1 ? segments.slice(0, -1) : [];
+    let currentPath = "";
+    let parent = root;
+    parent.fileCount += 1;
+    folderSegments.forEach((segment) => {
+      currentPath = currentPath ? `${currentPath}/${segment}` : segment;
+      let folder = folderMap.get(currentPath);
+      if (!folder) {
+        folder = { type: "folder", name: segment, path: currentPath, children: [], fileCount: 0 };
+        folderMap.set(currentPath, folder);
+        parent.children.push(folder);
+      }
+      folder.fileCount += 1;
+      parent = folder;
+    });
+    parent.children.push({ type: "file", file });
+  });
+  return root;
+};
 
 const extractFolder = (path: string) => {
   const match = path.match(/^(.*)[\\/][^\\/]+$/);
@@ -382,11 +442,14 @@ export default function App() {
   const [isExtensionsCollapsed, setIsExtensionsCollapsed] = useState(false);
   const [theme, setTheme] = useState<ThemeMode>(getInitialTheme);
   const [undoStack, setUndoStack] = useState<UndoAction[]>([]);
+  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
+  const [collapsedFolders, setCollapsedFolders] = useState<Record<string, boolean>>({});
   const [previewZoom, setPreviewZoom] = useState(1);
   const previewZoomTargetRef = useRef(1);
   const previewZoomRafRef = useRef<number | null>(null);
   const activeScanId = useRef<string | null>(null);
   const listItemRefs = useRef<Map<string, HTMLButtonElement | null>>(new Map());
+  const visibleFileOrderRef = useRef<string[]>([]);
   const previousExtensionsRef = useRef<string[]>([]);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const selectAllRef = useRef<HTMLInputElement | null>(null);
@@ -538,6 +601,13 @@ export default function App() {
   }, [files, selectedExtensions]);
 
   const sortedFiles = useMemo(() => sortFiles(filteredFiles), [filteredFiles, sortFiles]);
+  const sortedIndexById = useMemo(() => {
+    const map = new Map<string, number>();
+    sortedFiles.forEach((file, index) => {
+      map.set(file.id, index);
+    });
+    return map;
+  }, [sortedFiles]);
   const currentFile = sortedFiles[currentIndex];
   const hasFiles = sortedFiles.length > 0;
 
@@ -623,6 +693,8 @@ export default function App() {
         setCurrentIndex(0);
         setRenderCount(0);
         setUndoStack([]);
+        setCollapsedGroups({});
+        setCollapsedFolders({});
         updateStatus(includeSubfolders ? "Scanning folders and subfolders..." : "Scanning folder...");
         const result = await invoke<ScanResult>("scan_folder", {
           folderPath,
@@ -823,12 +895,38 @@ export default function App() {
   }, [currentFile, openFileInFinder, updateStatus]);
 
   const goNext = useCallback(() => {
-    setCurrentIndex((prev) => (prev < sortedFiles.length - 1 ? prev + 1 : prev));
-  }, [sortedFiles.length]);
+    const order = visibleFileOrderRef.current;
+    if (!currentFile || order.length === 0) {
+      return;
+    }
+    const position = order.indexOf(currentFile.id);
+    if (position === -1 || position >= order.length - 1) {
+      return;
+    }
+    const nextId = order[position + 1];
+    const nextIndex = sortedIndexById.get(nextId);
+    if (nextIndex === undefined) {
+      return;
+    }
+    setCurrentIndex(nextIndex);
+  }, [currentFile, sortedIndexById]);
 
   const goPrev = useCallback(() => {
-    setCurrentIndex((prev) => (prev > 0 ? prev - 1 : prev));
-  }, []);
+    const order = visibleFileOrderRef.current;
+    if (!currentFile || order.length === 0) {
+      return;
+    }
+    const position = order.indexOf(currentFile.id);
+    if (position <= 0) {
+      return;
+    }
+    const prevId = order[position - 1];
+    const prevIndex = sortedIndexById.get(prevId);
+    if (prevIndex === undefined) {
+      return;
+    }
+    setCurrentIndex(prevIndex);
+  }, [currentFile, sortedIndexById]);
 
   const undoLastAction = useCallback(async () => {
     const lastAction = undoStack[0];
@@ -990,30 +1088,155 @@ export default function App() {
 
   const visibleFiles = useMemo(() => sortedFiles.slice(0, renderCount), [sortedFiles, renderCount]);
 
-  const listItems = useMemo(() => {
-    const renderButton = (file: FileEntry, index: number) => (
+  const folderKeys = useMemo(() => {
+    const keys = new Set<string>();
+    const addKey = (groupId: string | null, path: string) => {
+      if (!path) {
+        return;
+      }
+      keys.add(groupId ? `${groupId}::${path}` : path);
+    };
+    sortedFiles.forEach((file) => {
+      const segments = getRelativeSegments(file.path, currentFolder);
+      const folderSegments = segments.length > 1 ? segments.slice(0, -1) : [];
+      if (folderSegments.length === 0) {
+        return;
+      }
+      const groupId =
+        groupMode === "none"
+          ? null
+          : `${groupMode}:${groupMode === "extension" ? getExtension(file.name) : file.kind}`;
+      let currentPath = "";
+      folderSegments.forEach((segment) => {
+        currentPath = currentPath ? `${currentPath}/${segment}` : segment;
+        addKey(groupId, currentPath);
+      });
+    });
+    return Array.from(keys);
+  }, [sortedFiles, groupMode, currentFolder]);
+
+  const hasFolders = folderKeys.length > 0;
+  const hasCollapsedFolders = useMemo(
+    () => folderKeys.some((key) => collapsedFolders[key]),
+    [folderKeys, collapsedFolders]
+  );
+
+  const toggleGroupCollapse = useCallback((groupId: string) => {
+    setCollapsedGroups((prev) => ({ ...prev, [groupId]: !prev[groupId] }));
+  }, []);
+
+  const toggleAllFolders = useCallback(() => {
+    if (!hasFolders) {
+      return;
+    }
+    if (hasCollapsedFolders) {
+      setCollapsedFolders({});
+      return;
+    }
+    const next: Record<string, boolean> = {};
+    folderKeys.forEach((key) => {
+      next[key] = true;
+    });
+    setCollapsedFolders(next);
+  }, [folderKeys, hasCollapsedFolders, hasFolders]);
+
+  const toggleFolderCollapse = useCallback((folderKey: string) => {
+    setCollapsedFolders((prev) => ({ ...prev, [folderKey]: !prev[folderKey] }));
+  }, []);
+
+  const listRender = useMemo(() => {
+    const renderButton = (file: FileEntry, index: number, depth: number) => (
       <button
         key={file.id}
-        className={`file-item ${index === currentIndex ? "active" : ""}`}
+        className={`file-item tree-item ${index === currentIndex ? "active" : ""}`}
         onClick={() => setCurrentIndex(index)}
         onDoubleClick={() => void openFileInFinder(file)}
         ref={(node) => listItemRefs.current.set(file.id, node)}
         type="button"
         disabled={isLoading}
+        style={{ "--tree-indent": `${depth * TREE_INDENT_PX}px` } as React.CSSProperties}
       >
         <span className={`badge badge-${file.kind}`}>{file.kind}</span>
         <span className="filename">{file.name}</span>
       </button>
     );
 
-    if (groupMode === "none") {
-      return visibleFiles.map((file, index) => renderButton(file, index));
-    }
-
     const indexMap = new Map<string, number>();
     visibleFiles.forEach((file, index) => {
       indexMap.set(file.id, index);
     });
+
+    const sortTreeNodes = (nodes: TreeNode[]) => {
+      const folders: TreeFolderNode[] = [];
+      const files: TreeFileNode[] = [];
+      nodes.forEach((node) => {
+        if (node.type === "folder") {
+          folders.push(node);
+        } else {
+          files.push(node);
+        }
+      });
+      folders.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+      files.sort(
+        (a, b) => (indexMap.get(a.file.id) ?? 0) - (indexMap.get(b.file.id) ?? 0)
+      );
+      return [...folders, ...files];
+    };
+
+    const getFolderCollapseKey = (groupId: string | null, path: string) =>
+      groupId ? `${groupId}::${path}` : path;
+
+    const renderTreeNodes = (nodes: TreeNode[], depth: number, groupId: string | null) => {
+      const sortedNodes = sortTreeNodes(nodes);
+      return sortedNodes.map((node) => {
+        if (node.type === "file") {
+          const index = indexMap.get(node.file.id) ?? 0;
+          return renderButton(node.file, index, depth);
+        }
+        const folderKey = getFolderCollapseKey(groupId, node.path);
+        const isCollapsed = Boolean(collapsedFolders[folderKey]);
+        return (
+          <div key={`folder-${folderKey}`} className="tree-node">
+            <button
+              type="button"
+              className="folder-item tree-item"
+              onClick={() => toggleFolderCollapse(folderKey)}
+              aria-expanded={!isCollapsed}
+              aria-label={isCollapsed ? `Expand ${node.name}` : `Collapse ${node.name}`}
+              disabled={isLoading}
+              data-prevent-open-on-enter
+              style={{ "--tree-indent": `${depth * TREE_INDENT_PX}px` } as React.CSSProperties}
+            >
+              <span className="folder-caret" aria-hidden="true">
+                <svg viewBox="0 0 24 24" focusable="false">
+                  {isCollapsed ? (
+                    <path d="M9 5.5 16 12 9 18.5V5.5Z" />
+                  ) : (
+                    <path d="M6 9l6 6 6-6H6Z" />
+                  )}
+                </svg>
+              </span>
+              <span className="folder-name">{node.name}</span>
+              <span className="folder-count">{node.fileCount}</span>
+            </button>
+            {!isCollapsed && (
+              <div className="tree-children">
+                {renderTreeNodes(node.children, depth + 1, groupId)}
+              </div>
+            )}
+          </div>
+        );
+      });
+    };
+
+    const renderTreeForFiles = (entries: FileEntry[], groupId: string | null) => {
+      const tree = buildFileTree(entries, currentFolder);
+      return renderTreeNodes(tree.children, 0, groupId);
+    };
+
+    if (groupMode === "none") {
+      return { items: renderTreeForFiles(visibleFiles, null) };
+    }
 
     const groups = new Map<string, FileEntry[]>();
     visibleFiles.forEach((file) => {
@@ -1051,20 +1274,186 @@ export default function App() {
       if (!groupFiles || groupFiles.length === 0) {
         return;
       }
+      const groupId = `${groupMode}:${key}`;
+      const isGroupCollapsed = Boolean(collapsedGroups[groupId]);
       items.push(
         <div key={`${groupMode}-${key}`} className="list-section">
-          <div className="list-section-title">{formatGroupTitle(groupMode, key)}</div>
-          <div className="list-section-items">
-            {groupFiles.map((file) => {
-              const index = indexMap.get(file.id) ?? 0;
-              return renderButton(file, index);
-            })}
-          </div>
+          <button
+            type="button"
+            className="list-section-toggle"
+            onClick={() => toggleGroupCollapse(groupId)}
+            aria-expanded={!isGroupCollapsed}
+            aria-label={isGroupCollapsed ? `Expand ${formatGroupTitle(groupMode, key)}` : `Collapse ${formatGroupTitle(groupMode, key)}`}
+            disabled={isLoading}
+            data-prevent-open-on-enter
+          >
+            <span className="list-section-caret" aria-hidden="true">
+              <svg viewBox="0 0 24 24" focusable="false">
+                {isGroupCollapsed ? (
+                  <path d="M9 5.5 16 12 9 18.5V5.5Z" />
+                ) : (
+                  <path d="M6 9l6 6 6-6H6Z" />
+                )}
+              </svg>
+            </span>
+            <span className="list-section-title">{formatGroupTitle(groupMode, key)}</span>
+            <span className="list-section-count">{groupFiles.length}</span>
+          </button>
+          {!isGroupCollapsed && (
+            <div className="list-section-items">
+              {renderTreeForFiles(groupFiles, groupId)}
+            </div>
+          )}
         </div>
       );
     });
-    return items;
-  }, [visibleFiles, currentIndex, isLoading, groupMode, openFileInFinder]);
+    return { items };
+  }, [
+    visibleFiles,
+    currentIndex,
+    isLoading,
+    groupMode,
+    openFileInFinder,
+    currentFolder,
+    collapsedGroups,
+    collapsedFolders,
+    toggleGroupCollapse,
+    toggleFolderCollapse,
+  ]);
+
+  const listItems = listRender.items;
+
+  const visibleFileOrder = useMemo(() => {
+    const order: string[] = [];
+    const indexMap = new Map<string, number>();
+    sortedFiles.forEach((file, index) => {
+      indexMap.set(file.id, index);
+    });
+
+    const sortTreeNodes = (nodes: TreeNode[]) => {
+      const folders: TreeFolderNode[] = [];
+      const files: TreeFileNode[] = [];
+      nodes.forEach((node) => {
+        if (node.type === "folder") {
+          folders.push(node);
+        } else {
+          files.push(node);
+        }
+      });
+      folders.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+      files.sort(
+        (a, b) => (indexMap.get(a.file.id) ?? 0) - (indexMap.get(b.file.id) ?? 0)
+      );
+      return [...folders, ...files];
+    };
+
+    const collectTreeNodes = (nodes: TreeNode[], groupId: string | null) => {
+      const sortedNodes = sortTreeNodes(nodes);
+      sortedNodes.forEach((node) => {
+        if (node.type === "file") {
+          order.push(node.file.id);
+          return;
+        }
+        collectTreeNodes(node.children, groupId);
+      });
+    };
+
+    const collectTreeForFiles = (entries: FileEntry[], groupId: string | null) => {
+      const tree = buildFileTree(entries, currentFolder);
+      collectTreeNodes(tree.children, groupId);
+    };
+
+    if (groupMode === "none") {
+      collectTreeForFiles(sortedFiles, null);
+      return order;
+    }
+
+    const groups = new Map<string, FileEntry[]>();
+    sortedFiles.forEach((file) => {
+      const key = groupMode === "extension" ? getExtension(file.name) : file.kind;
+      const bucket = groups.get(key) ?? [];
+      bucket.push(file);
+      groups.set(key, bucket);
+    });
+
+    const keys = Array.from(groups.keys()).sort((a, b) => {
+      if (groupMode === "type") {
+        const order = [
+          "image",
+          "video",
+          "audio",
+          "docs",
+          "text",
+          "compressed",
+          "executable",
+          "binary",
+        ];
+        return order.indexOf(a) - order.indexOf(b);
+      }
+      if (a === "none") {
+        return 1;
+      }
+      if (b === "none") {
+        return -1;
+      }
+      return a.localeCompare(b);
+    });
+
+    keys.forEach((key) => {
+      const groupFiles = groups.get(key);
+      if (!groupFiles || groupFiles.length === 0) {
+        return;
+      }
+      const groupId = `${groupMode}:${key}`;
+      collectTreeForFiles(groupFiles, groupId);
+    });
+
+    return order;
+  }, [sortedFiles, groupMode, currentFolder]);
+
+  useEffect(() => {
+    visibleFileOrderRef.current = visibleFileOrder;
+  }, [visibleFileOrder]);
+
+  useEffect(() => {
+    if (!currentFile) {
+      return;
+    }
+    const groupId =
+      groupMode === "none"
+        ? null
+        : `${groupMode}:${groupMode === "extension" ? getExtension(currentFile.name) : currentFile.kind}`;
+    if (groupId) {
+      setCollapsedGroups((prev) => {
+        if (!prev[groupId]) {
+          return prev;
+        }
+        const next = { ...prev };
+        next[groupId] = false;
+        return next;
+      });
+    }
+    const relativeSegments = getRelativeSegments(currentFile.path, currentFolder);
+    const folderSegments = relativeSegments.length > 1 ? relativeSegments.slice(0, -1) : [];
+    if (folderSegments.length === 0) {
+      return;
+    }
+    setCollapsedFolders((prev) => {
+      let next = prev;
+      let currentPath = "";
+      folderSegments.forEach((segment) => {
+        currentPath = currentPath ? `${currentPath}/${segment}` : segment;
+        const key = groupId ? `${groupId}::${currentPath}` : currentPath;
+        if (next[key]) {
+          if (next === prev) {
+            next = { ...prev };
+          }
+          delete next[key];
+        }
+      });
+      return next;
+    });
+  }, [currentFile, currentFolder, groupMode]);
 
   useEffect(() => {
     if (!currentFile) {
@@ -1077,7 +1466,7 @@ export default function App() {
     requestAnimationFrame(() => {
       node.scrollIntoView({ block: "nearest" });
     });
-  }, [currentFile, renderCount]);
+  }, [currentFile, renderCount, collapsedGroups, collapsedFolders]);
 
   const loadingMessage = useMemo(() => {
     if (!isLoading || !scanProgress) {
@@ -1231,6 +1620,16 @@ export default function App() {
                     <option value="extension">Extension</option>
                   </select>
                 </div>
+                <button
+                  type="button"
+                  className="list-expand-button"
+                  onClick={toggleAllFolders}
+                  disabled={!hasFolders || isLoading}
+                  data-prevent-open-on-enter
+                  title={hasCollapsedFolders ? "Expand all folders" : "Collapse all folders"}
+                >
+                  {hasCollapsedFolders ? "Expand all" : "Collapse all"}
+                </button>
                 {isRenderingList && <span className="rendering">Rendering list...</span>}
               </div>
             </div>

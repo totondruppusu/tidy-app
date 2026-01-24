@@ -1,5 +1,5 @@
 use mime_guess::MimeGuess;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom};
@@ -61,6 +61,13 @@ struct MoveResult {
 #[serde(rename_all = "camelCase")]
 struct TrashResult {
   trash_path: String,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FolderTrashEntry {
+  id: String,
+  relative_path: String,
 }
 
 #[derive(Clone, Serialize)]
@@ -277,6 +284,39 @@ fn trash_file(state: tauri::State<'_, AppState>, id: String) -> Result<TrashResu
 }
 
 #[tauri::command]
+fn trash_folder(
+  state: tauri::State<'_, AppState>,
+  folder_path: String,
+  files: Vec<FolderTrashEntry>,
+) -> Result<TrashResult, String> {
+  let source_path = PathBuf::from(folder_path);
+  if !source_path.exists() {
+    return Err("Folder not found".into());
+  }
+  if !source_path.is_dir() {
+    return Err("Target is not a folder".into());
+  }
+  let folder_name = source_path
+    .file_name()
+    .and_then(|name| name.to_str())
+    .ok_or("Invalid folder name")?;
+  fs::create_dir_all(&state.trash_dir).map_err(|error| error.to_string())?;
+  let target_path = unique_path(&state.trash_dir, folder_name);
+  copy_dir_recursive(&source_path, &target_path)?;
+  if let Err(error) = trash::delete(&source_path) {
+    let _ = fs::remove_dir_all(&target_path);
+    return Err(error.to_string());
+  }
+  let mut map = state.map.lock().expect("map lock");
+  files.iter().for_each(|entry| {
+    map.remove(&entry.id);
+  });
+  Ok(TrashResult {
+    trash_path: target_path.to_string_lossy().to_string(),
+  })
+}
+
+#[tauri::command]
 fn move_file(state: tauri::State<'_, AppState>, id: String) -> Result<MoveResult, String> {
   let destination = state
     .destination
@@ -331,6 +371,32 @@ fn restore_file(
   move_path(&source_path, &destination_path)?;
   let mut map = state.map.lock().expect("map lock");
   map.insert(id, destination_path);
+  Ok(())
+}
+
+#[tauri::command]
+fn restore_folder(
+  state: tauri::State<'_, AppState>,
+  source: String,
+  destination: String,
+  files: Vec<FolderTrashEntry>,
+) -> Result<(), String> {
+  let source_path = PathBuf::from(source);
+  if !source_path.exists() {
+    return Err("Source folder not found.".into());
+  }
+  let destination_path = PathBuf::from(destination);
+  if destination_path.exists() {
+    return Err("Restore target already exists.".into());
+  }
+  if let Some(parent) = destination_path.parent() {
+    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+  }
+  move_dir(&source_path, &destination_path)?;
+  let mut map = state.map.lock().expect("map lock");
+  files.iter().for_each(|entry| {
+    map.insert(entry.id.clone(), destination_path.join(&entry.relative_path));
+  });
   Ok(())
 }
 
@@ -402,6 +468,41 @@ fn move_path(source: &Path, target: &Path) -> Result<(), String> {
       if error.raw_os_error() == Some(18) {
         fs::copy(source, target).map_err(|error| error.to_string())?;
         fs::remove_file(source).map_err(|error| error.to_string())?;
+        Ok(())
+      } else {
+        Err(error.to_string())
+      }
+    }
+  }
+}
+
+fn copy_dir_recursive(source: &Path, target: &Path) -> Result<(), String> {
+  for entry in WalkDir::new(source) {
+    let entry = entry.map_err(|error| error.to_string())?;
+    let relative = entry
+      .path()
+      .strip_prefix(source)
+      .map_err(|error| error.to_string())?;
+    let destination = target.join(relative);
+    if entry.file_type().is_dir() {
+      fs::create_dir_all(&destination).map_err(|error| error.to_string())?;
+    } else {
+      if let Some(parent) = destination.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+      }
+      fs::copy(entry.path(), &destination).map_err(|error| error.to_string())?;
+    }
+  }
+  Ok(())
+}
+
+fn move_dir(source: &Path, target: &Path) -> Result<(), String> {
+  match fs::rename(source, target) {
+    Ok(_) => Ok(()),
+    Err(error) => {
+      if error.raw_os_error() == Some(18) {
+        copy_dir_recursive(source, target)?;
+        fs::remove_dir_all(source).map_err(|error| error.to_string())?;
         Ok(())
       } else {
         Err(error.to_string())
@@ -712,8 +813,10 @@ fn main() {
     .invoke_handler(tauri::generate_handler![
       scan_folder,
       trash_file,
+      trash_folder,
       move_file,
       restore_file,
+      restore_folder,
       set_destination,
       reveal_in_file_manager
     ])

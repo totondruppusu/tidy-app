@@ -89,6 +89,8 @@ type UndoAction =
       trashPath: string;
     };
 
+const MAX_UNDO_STACK = 20;
+
 const isEditableTarget = (target: EventTarget | null) => {
   if (!(target instanceof HTMLElement)) {
     return false;
@@ -377,8 +379,9 @@ export default function App() {
   const [renderCount, setRenderCount] = useState(0);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [isExtensionsCollapsed, setIsExtensionsCollapsed] = useState(false);
   const [theme, setTheme] = useState<ThemeMode>(getInitialTheme);
-  const [lastAction, setLastAction] = useState<UndoAction | null>(null);
+  const [undoStack, setUndoStack] = useState<UndoAction[]>([]);
   const [previewZoom, setPreviewZoom] = useState(1);
   const previewZoomTargetRef = useRef(1);
   const previewZoomRafRef = useRef<number | null>(null);
@@ -619,7 +622,7 @@ export default function App() {
         setFiles([]);
         setCurrentIndex(0);
         setRenderCount(0);
-        setLastAction(null);
+        setUndoStack([]);
         updateStatus(includeSubfolders ? "Scanning folders and subfolders..." : "Scanning folder...");
         const result = await invoke<ScanResult>("scan_folder", {
           folderPath,
@@ -727,6 +730,13 @@ export default function App() {
     [selectedExtensions, sortFiles]
   );
 
+  const pushUndo = useCallback((action: UndoAction) => {
+    setUndoStack((prev) => {
+      const next = [action, ...prev];
+      return next.length > MAX_UNDO_STACK ? next.slice(0, MAX_UNDO_STACK) : next;
+    });
+  }, []);
+
   const trashCurrent = useCallback(async () => {
     if (!currentFile) {
       updateStatus("No file selected.");
@@ -741,7 +751,7 @@ export default function App() {
     try {
       const result = await invoke<TrashResult>("trash_file", { id: currentFile.id });
       removeFileById(currentFile.id);
-      setLastAction({
+      pushUndo({
         kind: "trash",
         file: currentFile,
         fromPath: currentFile.path,
@@ -751,7 +761,7 @@ export default function App() {
     } catch (error) {
       updateStatus(`Trash failed: ${String(error)}`);
     }
-  }, [confirmTrash, currentFile, removeFileById, updateStatus, setLastAction]);
+  }, [confirmTrash, currentFile, removeFileById, updateStatus, pushUndo]);
 
   const moveCurrentToSlot = useCallback(
     async (slotIndex: number, allowPickIfMissing = false) => {
@@ -775,7 +785,7 @@ export default function App() {
         await invoke("set_destination", { destination: destinationPath });
         const result = await invoke<MoveResult>("move_file", { id: currentFile.id });
         removeFileById(currentFile.id);
-        setLastAction({
+        pushUndo({
           kind: "move",
           file: currentFile,
           fromPath: currentFile.path,
@@ -786,7 +796,7 @@ export default function App() {
         updateStatus(`Move failed: ${String(error)}`);
       }
     },
-    [currentFile, destinationSlots, pickDestinationForSlot, removeFileById, updateStatus, setLastAction]
+    [currentFile, destinationSlots, pickDestinationForSlot, removeFileById, updateStatus, pushUndo]
   );
 
   const moveCurrent = useCallback(async () => {
@@ -821,6 +831,7 @@ export default function App() {
   }, []);
 
   const undoLastAction = useCallback(async () => {
+    const lastAction = undoStack[0];
     if (!lastAction) {
       updateStatus("Nothing to undo.");
       return;
@@ -833,12 +844,12 @@ export default function App() {
         destination: lastAction.fromPath,
       });
       restoreFileEntry(lastAction.file);
-      setLastAction(null);
+      setUndoStack((prev) => prev.slice(1));
       updateStatus(`Undid ${lastAction.kind}.`);
     } catch (error) {
       updateStatus(`Undo failed: ${String(error)}`);
     }
-  }, [lastAction, restoreFileEntry, updateStatus, setLastAction]);
+  }, [undoStack, restoreFileEntry, updateStatus]);
 
   const toggleVideoPlayback = useCallback(() => {
     const video = videoRef.current;
@@ -1184,10 +1195,10 @@ export default function App() {
               </div>
             </div>
             <div className="list-header">
-              <span>
-                Files ({filteredCount}
-                {filteredCount !== totalFiles ? `/${totalFiles}` : ""})
-              </span>
+              <div className="list-title">
+                <span>Files</span>
+                <span className="badge badge-text">{totalFiles}</span>
+              </div>
               <div className="list-header-actions">
                 <div className="toolbar-control">
                   <span className="control-label">Sort</span>
@@ -1244,44 +1255,66 @@ export default function App() {
               {isRenderingList && <div className="list-progress">Showing {renderCount} of {filteredCount}</div>}
             </div>
             <div className="list-footer">
-              <div className="footer-title">Extensions</div>
-              {allExtensions.length === 0 ? (
-                <div className="extensions-empty">No extensions found.</div>
-              ) : (
+              <div className="list-footer-header">
+                <div className="footer-title">Extensions</div>
+                <button
+                  type="button"
+                  className="icon-button extensions-toggle"
+                  onClick={() => setIsExtensionsCollapsed((prev) => !prev)}
+                  aria-label={isExtensionsCollapsed ? "Expand extensions" : "Collapse extensions"}
+                  aria-pressed={isExtensionsCollapsed}
+                  title={isExtensionsCollapsed ? "Expand extensions" : "Collapse extensions"}
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                    {isExtensionsCollapsed ? (
+                      <path d="M6 15l6-6 6 6H6Z" />
+                    ) : (
+                      <path d="M6 9l6 6 6-6H6Z" />
+                    )}
+                  </svg>
+                </button>
+              </div>
+              {!isExtensionsCollapsed && (
                 <>
-                  <div className="extensions-controls">
-                    <label className="extension-filter extension-toggle">
-                      <input
-                        ref={selectAllRef}
-                        type="checkbox"
-                        checked={allExtensionsSelected}
-                        onChange={(event) => {
-                          setSelectedExtensions(event.target.checked ? allExtensions : []);
-                        }}
-                        disabled={isLoading}
-                      />
-                      <span>All</span>
-                    </label>
-                  </div>
-                  <div className="extension-filters">
-                    {allExtensions.map((extension) => (
-                      <label key={extension} className="extension-filter">
-                        <input
-                          type="checkbox"
-                          checked={selectedExtensions.includes(extension)}
-                          onChange={() => {
-                            setSelectedExtensions((current) =>
-                              current.includes(extension)
-                                ? current.filter((value) => value !== extension)
-                                : [...current, extension]
-                            );
-                          }}
-                          disabled={isLoading}
-                        />
-                        <span>{formatExtensionLabel(extension)}</span>
-                      </label>
-                    ))}
-                  </div>
+                  {allExtensions.length === 0 ? (
+                    <div className="extensions-empty">No extensions found.</div>
+                  ) : (
+                    <>
+                      <div className="extensions-controls">
+                        <label className="extension-filter extension-toggle">
+                          <input
+                            ref={selectAllRef}
+                            type="checkbox"
+                            checked={allExtensionsSelected}
+                            onChange={(event) => {
+                              setSelectedExtensions(event.target.checked ? allExtensions : []);
+                            }}
+                            disabled={isLoading}
+                          />
+                          <span>All</span>
+                        </label>
+                      </div>
+                      <div className="extension-filters">
+                        {allExtensions.map((extension) => (
+                          <label key={extension} className="extension-filter">
+                            <input
+                              type="checkbox"
+                              checked={selectedExtensions.includes(extension)}
+                              onChange={() => {
+                                setSelectedExtensions((current) =>
+                                  current.includes(extension)
+                                    ? current.filter((value) => value !== extension)
+                                    : [...current, extension]
+                                );
+                              }}
+                              disabled={isLoading}
+                            />
+                            <span>{formatExtensionLabel(extension)}</span>
+                          </label>
+                        ))}
+                      </div>
+                    </>
+                  )}
                 </>
               )}
             </div>
@@ -1417,7 +1450,7 @@ export default function App() {
                 className="action-button action-undo"
                 type="button"
                 onClick={undoLastAction}
-                disabled={!lastAction || isLoading}
+                disabled={undoStack.length === 0 || isLoading}
               >
                 Undo ↓
               </button>

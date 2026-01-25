@@ -70,7 +70,7 @@ struct MoveResult {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct TrashResult {
-  trash_path: String,
+  trash_path: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -104,6 +104,19 @@ struct ScanBatch {
   files: Vec<FileEntry>,
 }
 
+#[derive(Clone, Copy)]
+enum TrashMode {
+  System,
+  Permanent,
+}
+
+fn parse_trash_mode(value: &str) -> TrashMode {
+  match value {
+    "permanent" => TrashMode::Permanent,
+    _ => TrashMode::System,
+  }
+}
+
 #[tauri::command]
 fn set_destination(state: tauri::State<'_, AppState>, destination: String) {
   let mut dest = state.destination.lock().expect("destination lock");
@@ -117,6 +130,8 @@ async fn scan_folder(
   filter_mode: String,
   include_subfolders: bool,
   include_hidden: bool,
+  use_hash_for_duplicates: bool,
+  duplicate_min_size_bytes: u64,
   scan_id: String,
 ) -> Result<ScanResult, String> {
   let app_handle = window.app_handle().clone();
@@ -192,7 +207,11 @@ async fn scan_folder(
 
     let total = paths.len();
     let duplicate_groups = if filter == "duplicates" {
-      Some(find_duplicate_groups(&paths))
+      Some(find_duplicate_groups(
+        &paths,
+        use_hash_for_duplicates,
+        duplicate_min_size_bytes,
+      ))
     } else {
       None
     };
@@ -300,19 +319,36 @@ async fn scan_folder(
 }
 
 #[tauri::command]
-fn trash_file(state: tauri::State<'_, AppState>, id: String) -> Result<TrashResult, String> {
+fn trash_file(
+  state: tauri::State<'_, AppState>,
+  id: String,
+  trash_mode: String,
+) -> Result<TrashResult, String> {
+  let mode = parse_trash_mode(&trash_mode);
   let mut map = state.map.lock().expect("map lock");
   let path = map.remove(&id).ok_or("File not found")?;
   let file_name = path
     .file_name()
     .and_then(|name| name.to_str())
     .ok_or("Invalid file name")?;
-  fs::create_dir_all(&state.trash_dir).map_err(|error| error.to_string())?;
-  let target_path = unique_path(&state.trash_dir, file_name);
-  move_path(&path, &target_path)?;
-  Ok(TrashResult {
-    trash_path: target_path.to_string_lossy().to_string(),
-  })
+  match mode {
+    TrashMode::System => {
+      fs::create_dir_all(&state.trash_dir).map_err(|error| error.to_string())?;
+      let target_path = unique_path(&state.trash_dir, file_name);
+      fs::copy(&path, &target_path).map_err(|error| error.to_string())?;
+      if let Err(error) = trash::delete(&path) {
+        let _ = fs::remove_file(&target_path);
+        return Err(error.to_string());
+      }
+      Ok(TrashResult {
+        trash_path: Some(target_path.to_string_lossy().to_string()),
+      })
+    }
+    TrashMode::Permanent => {
+      fs::remove_file(&path).map_err(|error| error.to_string())?;
+      Ok(TrashResult { trash_path: None })
+    }
+  }
 }
 
 #[tauri::command]
@@ -320,7 +356,9 @@ fn trash_folder(
   state: tauri::State<'_, AppState>,
   folder_path: String,
   files: Vec<FolderTrashEntry>,
+  trash_mode: String,
 ) -> Result<TrashResult, String> {
+  let mode = parse_trash_mode(&trash_mode);
   let source_path = PathBuf::from(folder_path);
   if !source_path.exists() {
     return Err("Folder not found".into());
@@ -332,20 +370,32 @@ fn trash_folder(
     .file_name()
     .and_then(|name| name.to_str())
     .ok_or("Invalid folder name")?;
-  fs::create_dir_all(&state.trash_dir).map_err(|error| error.to_string())?;
-  let target_path = unique_path(&state.trash_dir, folder_name);
-  copy_dir_recursive(&source_path, &target_path)?;
-  if let Err(error) = trash::delete(&source_path) {
-    let _ = fs::remove_dir_all(&target_path);
-    return Err(error.to_string());
+  match mode {
+    TrashMode::System => {
+      fs::create_dir_all(&state.trash_dir).map_err(|error| error.to_string())?;
+      let target_path = unique_path(&state.trash_dir, folder_name);
+      copy_dir_recursive(&source_path, &target_path)?;
+      if let Err(error) = trash::delete(&source_path) {
+        let _ = fs::remove_dir_all(&target_path);
+        return Err(error.to_string());
+      }
+      let mut map = state.map.lock().expect("map lock");
+      files.iter().for_each(|entry| {
+        map.remove(&entry.id);
+      });
+      Ok(TrashResult {
+        trash_path: Some(target_path.to_string_lossy().to_string()),
+      })
+    }
+    TrashMode::Permanent => {
+      fs::remove_dir_all(&source_path).map_err(|error| error.to_string())?;
+      let mut map = state.map.lock().expect("map lock");
+      files.iter().for_each(|entry| {
+        map.remove(&entry.id);
+      });
+      Ok(TrashResult { trash_path: None })
+    }
   }
-  let mut map = state.map.lock().expect("map lock");
-  files.iter().for_each(|entry| {
-    map.remove(&entry.id);
-  });
-  Ok(TrashResult {
-    trash_path: target_path.to_string_lossy().to_string(),
-  })
 }
 
 #[tauri::command]
@@ -721,30 +771,45 @@ fn hash_file(path: &Path) -> Result<String, String> {
   Ok(format!("{:x}", hasher.finalize()))
 }
 
-fn find_duplicate_groups(paths: &[PathBuf]) -> HashMap<PathBuf, String> {
+fn find_duplicate_groups(
+  paths: &[PathBuf],
+  use_hash: bool,
+  min_size_bytes: u64,
+) -> HashMap<PathBuf, String> {
   let mut size_map: HashMap<u64, Vec<PathBuf>> = HashMap::new();
   for path in paths {
     if let Ok(metadata) = fs::metadata(path) {
-      size_map.entry(metadata.len()).or_default().push(path.clone());
+      let size = metadata.len();
+      if size < min_size_bytes {
+        continue;
+      }
+      size_map.entry(size).or_default().push(path.clone());
     }
   }
 
   let mut duplicates = HashMap::new();
-  for group in size_map.values() {
+  for (size, group) in size_map {
     if group.len() < 2 {
       continue;
     }
-    let mut hash_map: HashMap<String, Vec<PathBuf>> = HashMap::new();
-    for path in group {
-      if let Ok(hash) = hash_file(path) {
-        hash_map.entry(hash).or_default().push(path.clone());
-      }
-    }
-    for (hash, files) in hash_map {
-      if files.len() > 1 {
-        for path in files {
-          duplicates.insert(path.clone(), hash.clone());
+    if use_hash {
+      let mut hash_map: HashMap<String, Vec<PathBuf>> = HashMap::new();
+      for path in &group {
+        if let Ok(hash) = hash_file(path) {
+          hash_map.entry(hash).or_default().push(path.clone());
         }
+      }
+      for (hash, files) in hash_map {
+        if files.len() > 1 {
+          for path in files {
+            duplicates.insert(path.clone(), hash.clone());
+          }
+        }
+      }
+    } else {
+      let group_key = format!("size-{}", size);
+      for path in group {
+        duplicates.insert(path.clone(), group_key.clone());
       }
     }
   }

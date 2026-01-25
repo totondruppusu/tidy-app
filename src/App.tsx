@@ -32,6 +32,8 @@ type DensityMode = "comfortable" | "compact";
 type GroupMode = "none" | "type" | "extension" | "duplicates";
 type ThemeMode = "light" | "dark";
 type ViewMode = "tree" | "list";
+type ExtensionFilterMode = "all" | "remember" | "common";
+type TrashBehavior = "system" | "permanent";
 
 type FileEntry = {
   id: string;
@@ -81,7 +83,7 @@ type MoveResult = {
 };
 
 type TrashResult = {
-  trashPath: string;
+  trashPath: string | null;
 };
 
 type FolderTrashEntry = {
@@ -117,6 +119,34 @@ type UndoAction =
 const MAX_UNDO_STACK = 20;
 const PREVIEW_DELAY_MS = 120;
 const OFFICE_PREVIEW_EXTENSIONS = ["doc", "docx", "xlsx", "ppt", "pptx", "key", "odp"];
+const LARGE_PREVIEW_SIZE_BYTES = 50 * 1024 * 1024;
+const COMMON_EXTENSIONS = new Set([
+  "jpg",
+  "jpeg",
+  "png",
+  "gif",
+  "heic",
+  "heif",
+  "webp",
+  "pdf",
+  "doc",
+  "docx",
+  "ppt",
+  "pptx",
+  "xls",
+  "xlsx",
+  "txt",
+  "md",
+  "csv",
+  "json",
+  "mp3",
+  "wav",
+  "mp4",
+  "mov",
+  "mkv",
+  "zip",
+  "rar",
+]);
 const SCROLL_HINT_TOLERANCE = 6;
 
 const updateScrollHint = (scrollNode: HTMLElement, frameNode: HTMLElement) => {
@@ -452,13 +482,23 @@ const getInitialTheme = (): ThemeMode => {
 
 type StoredSettings = {
   filterMode?: FilterMode;
+  autoScanOnPick?: boolean;
+  rememberLastFolder?: boolean;
+  lastFolder?: string;
   includeSubfolders?: boolean;
   includeHidden?: boolean;
+  autoPlayMedia?: boolean;
+  skipLargePreviews?: boolean;
+  useHashForDuplicates?: boolean;
+  duplicateMinSizeBytes?: number;
   confirmTrash?: boolean;
+  trashBehavior?: TrashBehavior;
   sortMode?: SortMode;
   groupMode?: GroupMode;
   listDensity?: DensityMode;
   viewMode?: ViewMode;
+  extensionFilterMode?: ExtensionFilterMode;
+  extensionSelection?: string[];
   destinationSlots?: (string | null)[];
 };
 
@@ -504,6 +544,15 @@ const SORT_MODES: SortMode[] = [
 const GROUP_MODES: GroupMode[] = ["none", "type", "extension", "duplicates"];
 const DENSITY_MODES: DensityMode[] = ["comfortable", "compact"];
 const VIEW_MODES: ViewMode[] = ["tree", "list"];
+const EXTENSION_FILTER_MODES: ExtensionFilterMode[] = ["all", "remember", "common"];
+const TRASH_BEHAVIORS: TrashBehavior[] = ["system", "permanent"];
+const DUPLICATE_MIN_SIZE_OPTIONS = [
+  { value: 0, label: "Any size" },
+  { value: 1024 * 1024, label: "1 MB+" },
+  { value: 5 * 1024 * 1024, label: "5 MB+" },
+  { value: 20 * 1024 * 1024, label: "20 MB+" },
+  { value: 100 * 1024 * 1024, label: "100 MB+" },
+];
 
 const isFilterMode = (value: unknown): value is FilterMode =>
   typeof value === "string" && FILTER_MODES.includes(value as FilterMode);
@@ -519,6 +568,12 @@ const isDensityMode = (value: unknown): value is DensityMode =>
 
 const isViewMode = (value: unknown): value is ViewMode =>
   typeof value === "string" && VIEW_MODES.includes(value as ViewMode);
+
+const isExtensionFilterMode = (value: unknown): value is ExtensionFilterMode =>
+  typeof value === "string" && EXTENSION_FILTER_MODES.includes(value as ExtensionFilterMode);
+
+const isTrashBehavior = (value: unknown): value is TrashBehavior =>
+  typeof value === "string" && TRASH_BEHAVIORS.includes(value as TrashBehavior);
 
 const normalizeDestinationSlots = (value: unknown): (string | null)[] | null => {
   if (!Array.isArray(value)) {
@@ -541,14 +596,40 @@ const getStoredSettings = (): StoredSettings => {
     if (isFilterMode(parsed.filterMode)) {
       settings.filterMode = parsed.filterMode;
     }
+    if (typeof parsed.autoScanOnPick === "boolean") {
+      settings.autoScanOnPick = parsed.autoScanOnPick;
+    }
+    if (typeof parsed.rememberLastFolder === "boolean") {
+      settings.rememberLastFolder = parsed.rememberLastFolder;
+    }
+    if (typeof parsed.lastFolder === "string") {
+      settings.lastFolder = parsed.lastFolder;
+    }
     if (typeof parsed.includeSubfolders === "boolean") {
       settings.includeSubfolders = parsed.includeSubfolders;
     }
     if (typeof parsed.includeHidden === "boolean") {
       settings.includeHidden = parsed.includeHidden;
     }
+    if (typeof parsed.autoPlayMedia === "boolean") {
+      settings.autoPlayMedia = parsed.autoPlayMedia;
+    }
+    if (typeof parsed.skipLargePreviews === "boolean") {
+      settings.skipLargePreviews = parsed.skipLargePreviews;
+    }
+    if (typeof parsed.useHashForDuplicates === "boolean") {
+      settings.useHashForDuplicates = parsed.useHashForDuplicates;
+    }
+    if (typeof parsed.duplicateMinSizeBytes === "number" && Number.isFinite(parsed.duplicateMinSizeBytes)) {
+      settings.duplicateMinSizeBytes = parsed.duplicateMinSizeBytes;
+    }
     if (typeof parsed.confirmTrash === "boolean") {
       settings.confirmTrash = parsed.confirmTrash;
+    }
+    if (isTrashBehavior(parsed.trashBehavior)) {
+      settings.trashBehavior = parsed.trashBehavior;
+    } else if (parsed.trashBehavior === "app") {
+      settings.trashBehavior = "system";
     }
     if (isSortMode(parsed.sortMode)) {
       settings.sortMode = parsed.sortMode;
@@ -561,6 +642,15 @@ const getStoredSettings = (): StoredSettings => {
     }
     if (isViewMode(parsed.viewMode)) {
       settings.viewMode = parsed.viewMode;
+    }
+    if (isExtensionFilterMode(parsed.extensionFilterMode)) {
+      settings.extensionFilterMode = parsed.extensionFilterMode;
+    }
+    if (
+      Array.isArray(parsed.extensionSelection) &&
+      parsed.extensionSelection.every((entry) => typeof entry === "string")
+    ) {
+      settings.extensionSelection = parsed.extensionSelection;
     }
     const storedSlots = normalizeDestinationSlots(parsed.destinationSlots);
     if (storedSlots) {
@@ -581,10 +671,24 @@ export default function App() {
   const [, setStatus] = useState("Select a folder to begin.");
   const [filterMode, setFilterMode] = useState<FilterMode>(storedSettings.filterMode ?? "all");
   const [lastScanFilterMode, setLastScanFilterMode] = useState<FilterMode | null>(null);
+  const [autoScanOnPick, setAutoScanOnPick] = useState(storedSettings.autoScanOnPick ?? false);
+  const [rememberLastFolder, setRememberLastFolder] = useState(
+    storedSettings.rememberLastFolder ?? false
+  );
   const [includeSubfolders, setIncludeSubfolders] = useState(
     storedSettings.includeSubfolders ?? false
   );
   const [includeHidden, setIncludeHidden] = useState(storedSettings.includeHidden ?? false);
+  const [autoPlayMedia, setAutoPlayMedia] = useState(storedSettings.autoPlayMedia ?? false);
+  const [skipLargePreviews, setSkipLargePreviews] = useState(
+    storedSettings.skipLargePreviews ?? false
+  );
+  const [useHashForDuplicates, setUseHashForDuplicates] = useState(
+    storedSettings.useHashForDuplicates ?? true
+  );
+  const [duplicateMinSizeBytes, setDuplicateMinSizeBytes] = useState(
+    storedSettings.duplicateMinSizeBytes ?? 0
+  );
   const [destinationSlots, setDestinationSlots] = useState<(string | null)[]>(() => {
     const storedSlots = storedSettings.destinationSlots;
     if (!storedSlots) {
@@ -597,6 +701,9 @@ export default function App() {
     return normalized;
   });
   const [confirmTrash, setConfirmTrash] = useState(storedSettings.confirmTrash ?? true);
+  const [trashBehavior, setTrashBehavior] = useState<TrashBehavior>(
+    storedSettings.trashBehavior ?? "system"
+  );
   const [sortMode, setSortMode] = useState<SortMode>(storedSettings.sortMode ?? "name_asc");
   const initialGroupMode = storedSettings.groupMode ?? "none";
   const [groupMode, setGroupMode] = useState<GroupMode>(initialGroupMode);
@@ -616,12 +723,50 @@ export default function App() {
     storedSettings.listDensity ?? "comfortable"
   );
   const [viewMode, setViewMode] = useState<ViewMode>(storedSettings.viewMode ?? "tree");
-  const [selectedExtensions, setSelectedExtensions] = useState<string[]>([]);
-  const [currentFolder, setCurrentFolder] = useState<string | null>(null);
+  const initialExtensionFilterMode = storedSettings.extensionFilterMode ?? "all";
+  const [extensionFilterMode, setExtensionFilterMode] = useState<ExtensionFilterMode>(
+    initialExtensionFilterMode
+  );
+  const [selectedExtensions, setSelectedExtensions] = useState<string[]>(
+    initialExtensionFilterMode === "remember" ? storedSettings.extensionSelection ?? [] : []
+  );
+  const [lastFolder, setLastFolder] = useState<string | null>(storedSettings.lastFolder ?? null);
+  const initialFolder = storedSettings.rememberLastFolder ? storedSettings.lastFolder ?? null : null;
+  const [currentFolder, setCurrentFolder] = useState<string | null>(initialFolder);
   const [isLoading, setIsLoading] = useState(false);
   const [scanProgress, setScanProgress] = useState<ScanProgress | null>(null);
   const [renderCount, setRenderCount] = useState(0);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const settingsBodyRef = useRef<HTMLDivElement | null>(null);
+  const settingsFrameRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!isSettingsOpen) {
+      return;
+    }
+    const scrollNode = settingsBodyRef.current;
+    const frameNode = settingsFrameRef.current;
+    if (!scrollNode || !frameNode) {
+      return;
+    }
+    let raf = 0;
+    const handle = () => {
+      if (raf) {
+        cancelAnimationFrame(raf);
+      }
+      raf = requestAnimationFrame(() => updateScrollHint(scrollNode, frameNode));
+    };
+    handle();
+    scrollNode.addEventListener("scroll", handle, { passive: true });
+    const resizeObserver = new ResizeObserver(handle);
+    resizeObserver.observe(scrollNode);
+    return () => {
+      scrollNode.removeEventListener("scroll", handle);
+      resizeObserver.disconnect();
+      if (raf) {
+        cancelAnimationFrame(raf);
+      }
+    };
+  }, [isSettingsOpen]);
   const [isHelpOpen, setIsHelpOpen] = useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isDrawerMode, setIsDrawerMode] = useState(false);
@@ -633,6 +778,7 @@ export default function App() {
   const [previewZoom, setPreviewZoom] = useState(1);
   const [previewPan, setPreviewPan] = useState({ x: 0, y: 0 });
   const [isPreviewPanning, setIsPreviewPanning] = useState(false);
+  const [allowLargePreview, setAllowLargePreview] = useState(false);
   const [officePreviewId, setOfficePreviewId] = useState<string | null>(null);
   const [officePreviewStatus, setOfficePreviewStatus] = useState<"idle" | "loading" | "error">(
     "idle"
@@ -647,6 +793,7 @@ export default function App() {
   const previewPanPointerRef = useRef<{ x: number; y: number } | null>(null);
   const previewDelayTimeoutRef = useRef<number | null>(null);
   const activeScanId = useRef<string | null>(null);
+  const hasAutoLoadedFolderRef = useRef(false);
   const listItemRefs = useRef<Map<string, HTMLButtonElement | null>>(new Map());
   const previousActiveFileIdRef = useRef<string | null>(null);
   const visibleFileOrderRef = useRef<string[]>([]);
@@ -684,6 +831,12 @@ export default function App() {
     document.documentElement.dataset.theme = theme;
     window.localStorage.setItem("tidy-theme", theme);
   }, [theme]);
+
+  useEffect(() => {
+    if (currentFolder) {
+      setLastFolder(currentFolder);
+    }
+  }, [currentFolder]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -771,13 +924,23 @@ export default function App() {
     }
     const snapshot: StoredSettings = {
       filterMode,
+      autoScanOnPick,
+      rememberLastFolder,
+      lastFolder: lastFolder ?? undefined,
       includeSubfolders,
       includeHidden,
+      autoPlayMedia,
+      skipLargePreviews,
+      useHashForDuplicates,
+      duplicateMinSizeBytes,
       confirmTrash,
+      trashBehavior,
       sortMode,
       groupMode,
       listDensity,
       viewMode,
+      extensionFilterMode,
+      extensionSelection: selectedExtensions,
       destinationSlots,
     };
     try {
@@ -787,13 +950,23 @@ export default function App() {
     }
   }, [
     filterMode,
+    autoScanOnPick,
+    rememberLastFolder,
+    lastFolder,
     includeSubfolders,
     includeHidden,
+    autoPlayMedia,
+    skipLargePreviews,
+    useHashForDuplicates,
+    duplicateMinSizeBytes,
     confirmTrash,
+    trashBehavior,
     sortMode,
     groupMode,
     listDensity,
     viewMode,
+    extensionFilterMode,
+    selectedExtensions,
     destinationSlots,
   ]);
 
@@ -881,24 +1054,40 @@ export default function App() {
   );
 
   useEffect(() => {
+    hasUserAdjustedExtensionsRef.current = false;
+  }, [extensionFilterMode]);
+
+  useEffect(() => {
     setSelectedExtensions((current) => {
       if (allExtensions.length === 0) {
         hasUserAdjustedExtensionsRef.current = false;
         return [];
       }
+      if (extensionFilterMode === "remember") {
+        const filtered = current.filter((extension) => allExtensions.includes(extension));
+        return filtered.length > 0 ? filtered : allExtensions;
+      }
       if (!hasUserAdjustedExtensionsRef.current) {
-        return allExtensions;
+        const commonExtensions = allExtensions.filter((extension) => COMMON_EXTENSIONS.has(extension));
+        return extensionFilterMode === "common" && commonExtensions.length > 0
+          ? commonExtensions
+          : allExtensions;
       }
       const prev = previousExtensionsRef.current;
       const hadAllSelected =
-        prev.length > 0 && prev.every((extension) => current.includes(extension)) && current.length >= prev.length;
+        prev.length > 0 &&
+        prev.every((extension) => current.includes(extension)) &&
+        current.length >= prev.length;
       if (current.length === 0 || hadAllSelected) {
-        return allExtensions;
+        const commonExtensions = allExtensions.filter((extension) => COMMON_EXTENSIONS.has(extension));
+        return extensionFilterMode === "common" && commonExtensions.length > 0
+          ? commonExtensions
+          : allExtensions;
       }
       return current.filter((extension) => allExtensions.includes(extension));
     });
     previousExtensionsRef.current = allExtensions;
-  }, [allExtensions]);
+  }, [allExtensions, extensionFilterMode]);
 
   const allExtensionsSelected =
     allExtensions.length > 0 && selectedExtensions.length === allExtensions.length;
@@ -930,16 +1119,25 @@ export default function App() {
   const currentFile = sortedFiles[currentIndex];
   const previewFile = sortedFiles[previewIndex];
   const previewExtension = previewFile ? getExtension(previewFile.name) : "none";
-  const isMediaPreview = previewFile?.kind === "image" || previewFile?.kind === "video";
-  const isAudioPreview = previewFile?.kind === "audio";
-  const isTextPreview = previewFile?.kind === "text";
-  const isPdfPreview = previewFile?.kind === "docs" && previewExtension === "pdf";
+  const isLargePreview =
+    Boolean(previewFile) && previewFile.sizeBytes >= LARGE_PREVIEW_SIZE_BYTES;
+  const isPreviewSuppressed =
+    Boolean(previewFile) && skipLargePreviews && isLargePreview && !allowLargePreview;
+  const canRenderPreview = !isPreviewSuppressed;
+  const isMediaPreview =
+    canRenderPreview && (previewFile?.kind === "image" || previewFile?.kind === "video");
+  const isAudioPreview = canRenderPreview && previewFile?.kind === "audio";
+  const isTextPreview = canRenderPreview && previewFile?.kind === "text";
+  const isPdfPreview = canRenderPreview && previewFile?.kind === "docs" && previewExtension === "pdf";
   const isOfficePreview =
-    previewFile?.kind === "docs" && OFFICE_PREVIEW_EXTENSIONS.includes(previewExtension);
+    canRenderPreview &&
+    previewFile?.kind === "docs" &&
+    OFFICE_PREVIEW_EXTENSIONS.includes(previewExtension);
   const isDocumentPreview = isTextPreview || isPdfPreview;
-  const isArchivePreview = previewFile?.kind === "compressed";
+  const isArchivePreview = canRenderPreview && previewFile?.kind === "compressed";
   const isFallbackPreview =
     Boolean(previewFile) &&
+    canRenderPreview &&
     !isMediaPreview &&
     !isAudioPreview &&
     !isDocumentPreview &&
@@ -1037,12 +1235,16 @@ export default function App() {
     }
   }, [previewFile?.id]);
 
+  useEffect(() => {
+    setAllowLargePreview(false);
+  }, [previewFile?.id, skipLargePreviews]);
+
   const handlePreviewWheel = useCallback(
     (event: React.WheelEvent<HTMLDivElement>) => {
       if (!event.ctrlKey) {
         return;
       }
-      if (previewFile?.kind !== "image" && previewFile?.kind !== "video") {
+      if (!isMediaPreview) {
         return;
       }
       event.preventDefault();
@@ -1072,7 +1274,7 @@ export default function App() {
       };
       previewZoomRafRef.current = requestAnimationFrame(tick);
     },
-    [previewFile]
+    [isMediaPreview]
   );
 
   const setPreviewZoomValue = useCallback((value: number) => {
@@ -1217,6 +1419,8 @@ export default function App() {
           filterMode,
           includeSubfolders,
           includeHidden,
+          useHashForDuplicates,
+          duplicateMinSizeBytes,
           scanId
         });
         if (activeScanId.current !== scanId) {
@@ -1238,7 +1442,7 @@ export default function App() {
         }
       }
     },
-    [filterMode, includeSubfolders, includeHidden, updateStatus]
+    [filterMode, includeSubfolders, includeHidden, useHashForDuplicates, duplicateMinSizeBytes, updateStatus]
   );
 
   const pickFolder = useCallback(async () => {
@@ -1246,14 +1450,29 @@ export default function App() {
       const selected = await open({ directory: true, multiple: false });
       if (typeof selected === "string") {
         setCurrentFolder(selected);
-        updateStatus("Folder selected. Click search to scan.");
+        if (autoScanOnPick) {
+          void handleScan(selected);
+        } else {
+          updateStatus("Folder selected. Click search to scan.");
+        }
       } else {
         updateStatus("No folder selected.");
       }
     } catch (error) {
       updateStatus(`Folder picker failed: ${String(error)}`);
     }
-  }, [handleScan, updateStatus]);
+  }, [autoScanOnPick, handleScan, updateStatus]);
+
+  useEffect(() => {
+    if (hasAutoLoadedFolderRef.current) {
+      return;
+    }
+    if (!initialFolder) {
+      return;
+    }
+    hasAutoLoadedFolderRef.current = true;
+    void handleScan(initialFolder);
+  }, [handleScan, initialFolder]);
 
   const updateDestinationSlot = useCallback((slotIndex: number, destination: string) => {
     setDestinationSlots((prev) => {
@@ -1424,26 +1643,41 @@ export default function App() {
       updateStatus("No file selected.");
       return;
     }
-    const shouldTrash = confirmTrash
-      ? await confirm(`Move ${currentFile.name} to trash?`, { title: "Confirm trash" })
+    const shouldConfirmTrash = confirmTrash || trashBehavior === "permanent";
+    const confirmMessage =
+      trashBehavior === "permanent"
+        ? `Permanently delete ${currentFile.name}? This cannot be undone.`
+        : `Move ${currentFile.name} to system trash?`;
+    const confirmTitle = trashBehavior === "permanent" ? "Confirm delete" : "Confirm trash";
+    const shouldTrash = shouldConfirmTrash
+      ? await confirm(confirmMessage, { title: confirmTitle })
       : true;
     if (!shouldTrash) {
       return;
     }
     try {
-      const result = await invoke<TrashResult>("trash_file", { id: currentFile.id });
-      removeFileById(currentFile.id);
-      pushUndo({
-        kind: "trash",
-        file: currentFile,
-        fromPath: currentFile.path,
-        trashPath: result.trashPath,
+      const result = await invoke<TrashResult>("trash_file", {
+        id: currentFile.id,
+        trashMode: trashBehavior,
       });
-      updateStatus(`Moved ${currentFile.name} to trash.`);
+      removeFileById(currentFile.id);
+      if (result.trashPath) {
+        pushUndo({
+          kind: "trash",
+          file: currentFile,
+          fromPath: currentFile.path,
+          trashPath: result.trashPath,
+        });
+      }
+      const baseMessage =
+        trashBehavior === "permanent"
+          ? `Deleted ${currentFile.name}.`
+          : `Moved ${currentFile.name} to system trash.`;
+      updateStatus(result.trashPath ? baseMessage : `${baseMessage} Undo unavailable.`);
     } catch (error) {
       updateStatus(`Trash failed: ${String(error)}`);
     }
-  }, [confirmTrash, currentFile, removeFileById, updateStatus, pushUndo]);
+  }, [confirmTrash, currentFile, removeFileById, updateStatus, pushUndo, trashBehavior]);
 
   const getFolderFiles = useCallback(
     (folderPath: string) => {
@@ -1475,12 +1709,19 @@ export default function App() {
       }
       const folderSegments = splitPathSegments(folderPath);
       const folderLabel = folderSegments[folderSegments.length - 1] ?? folderPath;
-      const shouldTrash = await confirm(
-        `Move ${folderLabel} and all its contents (${folderFiles.length} item${
-          folderFiles.length === 1 ? "" : "s"
-        }) to trash?`,
-        { title: "Confirm folder trash" }
-      );
+      const shouldConfirmTrash = confirmTrash || trashBehavior === "permanent";
+      const confirmMessage =
+        trashBehavior === "permanent"
+          ? `Permanently delete ${folderLabel} and all its contents (${folderFiles.length} item${
+              folderFiles.length === 1 ? "" : "s"
+            })? This cannot be undone.`
+          : `Move ${folderLabel} and all its contents (${folderFiles.length} item${
+              folderFiles.length === 1 ? "" : "s"
+            }) to system trash?`;
+      const confirmTitle = trashBehavior === "permanent" ? "Confirm delete" : "Confirm folder trash";
+      const shouldTrash = shouldConfirmTrash
+        ? await confirm(confirmMessage, { title: confirmTitle })
+        : true;
       if (!shouldTrash) {
         return;
       }
@@ -1494,20 +1735,27 @@ export default function App() {
         const result = await invoke<TrashResult>("trash_folder", {
           folderPath: fullFolderPath,
           files: items.map((item) => ({ id: item.file.id, relativePath: item.relativePath })),
+          trashMode: trashBehavior,
         });
         removeFilesByIds(folderFiles.map((file) => file.id));
-        pushUndo({
-          kind: "trash-folder",
-          folderPath: fullFolderPath,
-          trashPath: result.trashPath,
-          items,
-        });
-        updateStatus(`Moved ${folderLabel} to trash.`);
+        if (result.trashPath) {
+          pushUndo({
+            kind: "trash-folder",
+            folderPath: fullFolderPath,
+            trashPath: result.trashPath,
+            items,
+          });
+        }
+        const baseMessage =
+          trashBehavior === "permanent"
+            ? `Deleted ${folderLabel}.`
+            : `Moved ${folderLabel} to system trash.`;
+        updateStatus(result.trashPath ? baseMessage : `${baseMessage} Undo unavailable.`);
       } catch (error) {
         updateStatus(`Trash folder failed: ${String(error)}`);
       }
     },
-    [currentFolder, getFolderFiles, updateStatus, removeFilesByIds, pushUndo]
+    [confirmTrash, currentFolder, getFolderFiles, updateStatus, removeFilesByIds, pushUndo, trashBehavior]
   );
 
   const moveCurrentToSlot = useCallback(
@@ -2534,6 +2782,22 @@ export default function App() {
             <div className="preview-content">
               <div className="preview-layout">
                 <div className="preview-media" onWheel={handlePreviewWheel}>
+                  {isPreviewSuppressed && (
+                    <div className="preview-suppressed">
+                      <div className="preview-suppressed-title">Preview paused</div>
+                      <div className="preview-suppressed-subtitle">
+                        This file is {formatBytes(previewFile.sizeBytes)}. Previews over{" "}
+                        {formatBytes(LARGE_PREVIEW_SIZE_BYTES)} are disabled.
+                      </div>
+                      <button
+                        type="button"
+                        className="preview-action-button"
+                        onClick={() => setAllowLargePreview(true)}
+                      >
+                        Load preview
+                      </button>
+                    </div>
+                  )}
                   {isMediaPreview && (
                     <div
                       className={`preview-zoom${previewFile.kind === "image" ? " is-draggable" : ""}${
@@ -2559,12 +2823,17 @@ export default function App() {
                         />
                       )}
                       {previewFile.kind === "video" && (
-                        <video ref={videoRef} controls src={buildMediaUrl(previewFile.id)} />
+                        <video
+                          ref={videoRef}
+                          controls
+                          autoPlay={autoPlayMedia}
+                          src={buildMediaUrl(previewFile.id)}
+                        />
                       )}
                     </div>
                   )}
                   {isAudioPreview && (
-                    <audio controls src={buildMediaUrl(previewFile.id)} />
+                    <audio controls autoPlay={autoPlayMedia} src={buildMediaUrl(previewFile.id)} />
                   )}
                   {isDocumentPreview && (
                     <div className="preview-document">
@@ -2818,7 +3087,12 @@ export default function App() {
             }
           }}
         >
-          <div className="modal-panel" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+          <div
+            className="modal-panel settings-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="settings-title"
+          >
             <div className="modal-header">
               <h2 id="settings-title" className="modal-title">
                 Settings
@@ -2834,23 +3108,105 @@ export default function App() {
                 </svg>
               </button>
             </div>
-            <div className="modal-body">
+            <div className="settings-scroll-frame scroll-hints" ref={settingsFrameRef}>
+              <div className="modal-body" ref={settingsBodyRef}>
               <div className="settings-row">
                 <div className="setting-info">
-                  <div className="setting-title">Filter mode</div>
-                  <div className="setting-subtitle">Choose which files appear in the list.</div>
+                  <div className="setting-title">Start view</div>
+                  <div className="setting-subtitle">Choose the default file list layout.</div>
                 </div>
                 <select
-                  value={filterMode}
-                  onChange={(event) => setFilterMode(event.target.value as FilterMode)}
+                  value={viewMode}
+                  onChange={(event) => setViewMode(event.target.value as ViewMode)}
                   disabled={isLoading}
                 >
-                  {FILTER_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
+                  <option value="tree">Tree</option>
+                  <option value="list">List</option>
                 </select>
+              </div>
+              <div className="settings-row">
+                <div className="setting-info">
+                  <div className="setting-title">Default sort</div>
+                  <div className="setting-subtitle">Set the initial sort order.</div>
+                </div>
+                <select
+                  value={sortMode}
+                  onChange={(event) => setSortMode(event.target.value as SortMode)}
+                  disabled={isLoading}
+                >
+                  <option value="none">None</option>
+                  <option value="name_asc">Name (A-Z)</option>
+                  <option value="name_desc">Name (Z-A)</option>
+                  <option value="size_desc">Size (Largest)</option>
+                  <option value="size_asc">Size (Smallest)</option>
+                  <option value="date_desc">Date (Newest)</option>
+                  <option value="date_asc">Date (Oldest)</option>
+                  <option value="type_asc">Type (A-Z)</option>
+                  <option value="type_desc">Type (Z-A)</option>
+                  <option value="extension_asc">Extension (A-Z)</option>
+                  <option value="extension_desc">Extension (Z-A)</option>
+                </select>
+              </div>
+              <div className="settings-row">
+                <div className="setting-info">
+                  <div className="setting-title">Default grouping</div>
+                  <div className="setting-subtitle">Choose how files are grouped on load.</div>
+                </div>
+                <select
+                  value={displayGroupMode}
+                  onChange={(event) => handleGroupModeChange(event.target.value as GroupMode)}
+                  disabled={isLoading || shouldGroupDuplicates}
+                >
+                  <option value="none">None</option>
+                  <option value="type">Type</option>
+                  <option value="extension">Extension</option>
+                  {shouldGroupDuplicates && <option value="duplicates">Duplicates</option>}
+                </select>
+              </div>
+              <div className="settings-row">
+                <div className="setting-info">
+                  <div className="setting-title">Extension defaults</div>
+                  <div className="setting-subtitle">Set the initial extension filter selection.</div>
+                </div>
+                <select
+                  value={extensionFilterMode}
+                  onChange={(event) => setExtensionFilterMode(event.target.value as ExtensionFilterMode)}
+                  disabled={isLoading}
+                >
+                  <option value="all">All extensions</option>
+                  <option value="remember">Remember last selection</option>
+                  <option value="common">Common types</option>
+                </select>
+              </div>
+              <div className="settings-row">
+                <div className="setting-info">
+                  <div className="setting-title">Auto-scan on pick</div>
+                  <div className="setting-subtitle">Start scanning as soon as a folder is chosen.</div>
+                </div>
+                <label className="setting-toggle">
+                  <input
+                    type="checkbox"
+                    checked={autoScanOnPick}
+                    onChange={(event) => setAutoScanOnPick(event.target.checked)}
+                    disabled={isLoading}
+                  />
+                  <span>{autoScanOnPick ? "On" : "Off"}</span>
+                </label>
+              </div>
+              <div className="settings-row">
+                <div className="setting-info">
+                  <div className="setting-title">Remember last folder</div>
+                  <div className="setting-subtitle">Reopen the most recent folder at launch.</div>
+                </div>
+                <label className="setting-toggle">
+                  <input
+                    type="checkbox"
+                    checked={rememberLastFolder}
+                    onChange={(event) => setRememberLastFolder(event.target.checked)}
+                    disabled={isLoading}
+                  />
+                  <span>{rememberLastFolder ? "On" : "Off"}</span>
+                </label>
               </div>
               <div className="settings-row">
                 <div className="setting-info">
@@ -2884,8 +3240,90 @@ export default function App() {
               </div>
               <div className="settings-row">
                 <div className="setting-info">
+                  <div className="setting-title">Duplicate matching</div>
+                  <div className="setting-subtitle">Use hashes for accurate duplicate detection.</div>
+                </div>
+                <label className="setting-toggle">
+                  <input
+                    type="checkbox"
+                    checked={useHashForDuplicates}
+                    onChange={(event) => setUseHashForDuplicates(event.target.checked)}
+                    disabled={isLoading}
+                  />
+                  <span>{useHashForDuplicates ? "On" : "Off"}</span>
+                </label>
+              </div>
+              <div className="settings-row">
+                <div className="setting-info">
+                  <div className="setting-title">Duplicate size threshold</div>
+                  <div className="setting-subtitle">Ignore files smaller than this size.</div>
+                </div>
+                <select
+                  value={duplicateMinSizeBytes}
+                  onChange={(event) => setDuplicateMinSizeBytes(Number(event.target.value))}
+                  disabled={isLoading}
+                >
+                  {DUPLICATE_MIN_SIZE_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="settings-row">
+                <div className="setting-info">
+                  <div className="setting-title">Auto-play media</div>
+                  <div className="setting-subtitle">Start videos and audio automatically.</div>
+                </div>
+                <label className="setting-toggle">
+                  <input
+                    type="checkbox"
+                    checked={autoPlayMedia}
+                    onChange={(event) => setAutoPlayMedia(event.target.checked)}
+                    disabled={isLoading}
+                  />
+                  <span>{autoPlayMedia ? "On" : "Off"}</span>
+                </label>
+              </div>
+              <div className="settings-row">
+                <div className="setting-info">
+                  <div className="setting-title">Skip large previews</div>
+                  <div className="setting-subtitle">
+                    Disable previews over {formatBytes(LARGE_PREVIEW_SIZE_BYTES)}.
+                  </div>
+                </div>
+                <label className="setting-toggle">
+                  <input
+                    type="checkbox"
+                    checked={skipLargePreviews}
+                    onChange={(event) => setSkipLargePreviews(event.target.checked)}
+                    disabled={isLoading}
+                  />
+                  <span>{skipLargePreviews ? "On" : "Off"}</span>
+                </label>
+              </div>
+              <div className="settings-row">
+                <div className="setting-info">
+                  <div className="setting-title">Trash behavior</div>
+                  <div className="setting-subtitle">System trash supports up to 20 undo actions.</div>
+                </div>
+                <select
+                  value={trashBehavior}
+                  onChange={(event) => setTrashBehavior(event.target.value as TrashBehavior)}
+                  disabled={isLoading}
+                >
+                  <option value="system">System trash (undoable)</option>
+                  <option value="permanent">Permanent delete</option>
+                </select>
+              </div>
+              <div className="settings-row">
+                <div className="setting-info">
                   <div className="setting-title">Trash alert</div>
-                  <div className="setting-subtitle">Show a confirmation dialog before deleting.</div>
+                  <div className="setting-subtitle">
+                    {trashBehavior === "permanent"
+                      ? "Permanent delete always asks for confirmation."
+                      : "Show a confirmation dialog before deleting."}
+                  </div>
                 </div>
                 <label className={`setting-toggle${confirmTrash ? "" : " is-warning"}`}>
                   <input
@@ -2926,13 +3364,11 @@ export default function App() {
                   <span>{theme === "dark" ? "On" : "Off"}</span>
                 </label>
               </div>
+              </div>
             </div>
             <div className="modal-footer modal-footer-settings">
               <button type="button" className="help-button" onClick={() => setIsHelpOpen(true)}>
                 Help & Shortcuts
-              </button>
-              <button type="button" onClick={() => setIsSettingsOpen(false)}>
-                Done
               </button>
             </div>
           </div>

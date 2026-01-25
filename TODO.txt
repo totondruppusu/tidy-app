@@ -25,12 +25,14 @@ FEAT
 .Default start view: choose Tree vs List on launch.
 .Auto‑scan on folder pick: skip the manual scan button.
 .Remember last folder: reopen the most recent folder at launch.
-File preview behavior: auto‑play videos/audio, or disable auto‑preview for large files.
-Duplicate detection: toggle hash-based scan, or set minimum size for duplicate checks.
+.File preview behavior: auto‑play videos/audio, or disable auto‑preview for large files.
+.Duplicate detection: toggle hash-based scan, or set minimum size for duplicate checks.
 .Extension filter defaults: “select all”, “remember last”, or “only common types”.
 .Trash behavior: use system Trash vs permanent delete (with warning).
-Sorting defaults: pick default sort + group mode on launch.
-microsoft windows support
+.Sorting defaults: pick default sort + group mode on launch.
+.microsoft windows support
+auto updater
+license managment
 
 BUG
 .next and prev absoute

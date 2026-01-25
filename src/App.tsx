@@ -179,7 +179,12 @@ const shouldOpenOnEnter = (target: EventTarget | null) => {
   return Boolean(target.closest(".file-list"));
 };
 
-const buildMediaUrl = (id: string) => `media://localhost/${id}`;
+const buildMediaUrl = (id: string) => {
+  if (isTauri() && /windows/i.test(navigator.userAgent)) {
+    return `http://media.localhost/${id}`;
+  }
+  return `media://localhost/${id}`;
+};
 
 const formatBytes = (bytes: number) => {
   if (!Number.isFinite(bytes)) {

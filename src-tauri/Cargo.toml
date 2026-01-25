@@ -25,4 +25,5 @@ xz2 = "0.1"
 sha2 = "0.10"
 
 [features]
+default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]

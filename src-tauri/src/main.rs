@@ -53,6 +53,7 @@ struct AppState {
 }
 
 const MAX_ARCHIVE_ENTRIES: usize = 200;
+const MAX_RANGE_CHUNK_BYTES: u64 = 1_048_576;
 
 #[derive(Serialize)]
 struct ScanResult {
@@ -1002,17 +1003,24 @@ fn list_tar_entries<R: Read>(reader: R) -> Result<ArchivePreview, String> {
   Ok(ArchivePreview { entries, truncated })
 }
 
-fn parse_range(range: &str, size: u64) -> Option<(u64, u64)> {
+fn parse_range(range: &str, size: u64, max_length: Option<u64>) -> Option<(u64, u64)> {
   if !range.starts_with("bytes=") {
     return None;
   }
   let range = range.trim_start_matches("bytes=");
   let mut parts = range.split('-');
   let start = parts.next()?.trim().parse::<u64>().ok()?;
-  let end = parts
-    .next()
-    .and_then(|value| value.trim().parse::<u64>().ok())
-    .unwrap_or_else(|| std::cmp::min(start + 1_048_576, size).saturating_sub(1));
+  let end = match parts.next().map(|value| value.trim()) {
+    Some("") | None => {
+      let mut end = size.saturating_sub(1);
+      if let Some(max_length) = max_length {
+        let capped = start.saturating_add(max_length.saturating_sub(1));
+        end = std::cmp::min(capped, end);
+      }
+      end
+    }
+    Some(value) => value.parse::<u64>().ok()?,
+  };
   if start > end || start >= size {
     return None;
   }
@@ -1077,7 +1085,12 @@ fn protocol_response(
 
   if let Some(range_value) = request.headers().get("range") {
     if let Ok(range_str) = range_value.to_str() {
-      if let Some((start, end)) = parse_range(range_str, size) {
+      let max_range_length = if content_type.starts_with("image/") {
+        None
+      } else {
+        Some(MAX_RANGE_CHUNK_BYTES)
+      };
+      if let Some((start, end)) = parse_range(range_str, size, max_range_length) {
         let length = end - start + 1;
         file.seek(SeekFrom::Start(start))?;
         let mut buffer = vec![0u8; length as usize];

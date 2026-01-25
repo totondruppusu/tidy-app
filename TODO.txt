@@ -30,6 +30,7 @@ Duplicate detection: toggle hash-based scan, or set minimum size for duplicate c
 .Extension filter defaults: “select all”, “remember last”, or “only common types”.
 .Trash behavior: use system Trash vs permanent delete (with warning).
 Sorting defaults: pick default sort + group mode on launch.
+microsoft windows support
 
 BUG
 .next and prev absoute

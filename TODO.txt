@@ -1,0 +1,38 @@
+FEAT
+.file tree
+.file group collapsable
+.manage extensions - toggle?
+.zoom
+.pan
+.remove shadow preview card
+.undo stack of 20
+.files title style
+.sort by none
+.faster file movement
+.view mode
+.folder elimination
+.navigation drawer
+?tutorial
+.help page
+.preview of text
+.preview of pdf
+.preview of docx, xlsx, ppt
+.preview of archives
+.blur scrollabe
+?initial dashboard for different sub application
+.duplicates check
+.duplicates grouping
+.Default start view: choose Tree vs List on launch.
+.Auto‑scan on folder pick: skip the manual scan button.
+.Remember last folder: reopen the most recent folder at launch.
+File preview behavior: auto‑play videos/audio, or disable auto‑preview for large files.
+Duplicate detection: toggle hash-based scan, or set minimum size for duplicate checks.
+.Extension filter defaults: “select all”, “remember last”, or “only common types”.
+.Trash behavior: use system Trash vs permanent delete (with warning).
+Sorting defaults: pick default sort + group mode on launch.
+
+BUG
+.next and prev absoute
+.extension collapsed by default
+.ext all selected by default
+.file type and group selection

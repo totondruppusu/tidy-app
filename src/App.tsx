@@ -795,6 +795,7 @@ export default function App() {
   const activeScanId = useRef<string | null>(null);
   const hasAutoLoadedFolderRef = useRef(false);
   const listItemRefs = useRef<Map<string, HTMLButtonElement | null>>(new Map());
+  const currentFileIdRef = useRef<string | null>(null);
   const previousActiveFileIdRef = useRef<string | null>(null);
   const visibleFileOrderRef = useRef<string[]>([]);
   const previousExtensionsRef = useRef<string[]>([]);
@@ -1147,6 +1148,31 @@ export default function App() {
   const isZoomablePreview = isMediaPreview;
 
   useEffect(() => {
+    if (sortedFiles.length === 0) {
+      currentFileIdRef.current = null;
+      if (currentIndex !== 0) {
+        setCurrentIndex(0);
+      }
+      return;
+    }
+    const currentId = currentFileIdRef.current;
+    if (currentId) {
+      const nextIndex = sortedIndexById.get(currentId);
+      if (nextIndex !== undefined) {
+        if (nextIndex !== currentIndex) {
+          setCurrentIndex(nextIndex);
+        }
+        return;
+      }
+    }
+    const boundedIndex = Math.min(currentIndex, sortedFiles.length - 1);
+    if (boundedIndex !== currentIndex) {
+      setCurrentIndex(boundedIndex);
+    }
+    currentFileIdRef.current = sortedFiles[boundedIndex]?.id ?? null;
+  }, [sortedFiles, sortedIndexById, currentIndex]);
+
+  useEffect(() => {
     if (!previewFile || !isOfficePreview) {
       setOfficePreviewId(null);
       setOfficePreviewStatus("idle");
@@ -1359,18 +1385,6 @@ export default function App() {
 
   useEffect(() => {
     if (sortedFiles.length === 0) {
-      if (currentIndex !== 0) {
-        setCurrentIndex(0);
-      }
-      return;
-    }
-    if (currentIndex >= sortedFiles.length) {
-      setCurrentIndex(sortedFiles.length - 1);
-    }
-  }, [currentIndex, sortedFiles.length]);
-
-  useEffect(() => {
-    if (sortedFiles.length === 0) {
       setPreviewIndex(0);
       return;
     }
@@ -1407,6 +1421,7 @@ export default function App() {
       setIsLoading(true);
       setScanProgress({ scanId, scanned: 0, matched: 0, total: 0, phase: "indexing" });
       setFiles([]);
+      currentFileIdRef.current = null;
       setCurrentIndex(0);
       setRenderCount(0);
       setUndoStack([]);
@@ -1555,6 +1570,7 @@ export default function App() {
             return current;
           }
           if (sortedPrev.length === 0) {
+            currentFileIdRef.current = null;
             return 0;
           }
           const boundedCurrent = Math.min(current, sortedPrev.length - 1);
@@ -1562,12 +1578,19 @@ export default function App() {
           // Keep selection aligned with the visible order when removing files.
           const targetId = getNextVisibleId(currentId, orderSnapshot, removedSet);
           if (!targetId) {
-            return sortedNext.length === 0 ? 0 : Math.min(boundedCurrent, sortedNext.length - 1);
+            const nextIndex =
+              sortedNext.length === 0 ? 0 : Math.min(boundedCurrent, sortedNext.length - 1);
+            currentFileIdRef.current = sortedNext[nextIndex]?.id ?? null;
+            return nextIndex;
           }
           const nextIndex = sortedNext.findIndex((file) => file.id === targetId);
           if (nextIndex === -1) {
-            return sortedNext.length === 0 ? 0 : Math.min(boundedCurrent, sortedNext.length - 1);
+            const fallbackIndex =
+              sortedNext.length === 0 ? 0 : Math.min(boundedCurrent, sortedNext.length - 1);
+            currentFileIdRef.current = sortedNext[fallbackIndex]?.id ?? null;
+            return fallbackIndex;
           }
+          currentFileIdRef.current = targetId;
           return nextIndex;
         });
         return next;
@@ -1591,18 +1614,26 @@ export default function App() {
         const orderSnapshot = getOrderSnapshot(sortedPrev);
         setCurrentIndex((current) => {
           if (sortedPrev.length === 0) {
+            currentFileIdRef.current = null;
             return 0;
           }
           const boundedCurrent = Math.min(current, sortedPrev.length - 1);
           const currentId = sortedPrev[boundedCurrent]?.id ?? null;
           const targetId = getNextVisibleId(currentId, orderSnapshot, removedSet);
           if (!targetId) {
-            return sortedNext.length === 0 ? 0 : Math.min(boundedCurrent, sortedNext.length - 1);
+            const nextIndex =
+              sortedNext.length === 0 ? 0 : Math.min(boundedCurrent, sortedNext.length - 1);
+            currentFileIdRef.current = sortedNext[nextIndex]?.id ?? null;
+            return nextIndex;
           }
           const nextIndex = sortedNext.findIndex((file) => file.id === targetId);
           if (nextIndex === -1) {
-            return sortedNext.length === 0 ? 0 : Math.min(boundedCurrent, sortedNext.length - 1);
+            const fallbackIndex =
+              sortedNext.length === 0 ? 0 : Math.min(boundedCurrent, sortedNext.length - 1);
+            currentFileIdRef.current = sortedNext[fallbackIndex]?.id ?? null;
+            return fallbackIndex;
           }
+          currentFileIdRef.current = targetId;
           return nextIndex;
         });
         return next;
@@ -1623,6 +1654,7 @@ export default function App() {
         const sortedNext = sortFiles(next.filter(filterByExtension));
         const restoredIndex = sortedNext.findIndex((file) => file.id === restored.id);
         if (restoredIndex !== -1) {
+          currentFileIdRef.current = restored.id;
           setCurrentIndex(restoredIndex);
         }
         return next;
@@ -1842,6 +1874,7 @@ export default function App() {
     if (nextIndex === undefined) {
       return;
     }
+    currentFileIdRef.current = nextId;
     setCurrentIndex(nextIndex);
   }, [currentFile, sortedIndexById]);
 
@@ -1859,6 +1892,7 @@ export default function App() {
     if (prevIndex === undefined) {
       return;
     }
+    currentFileIdRef.current = prevId;
     setCurrentIndex(prevIndex);
   }, [currentFile, sortedIndexById]);
 
@@ -2107,7 +2141,10 @@ export default function App() {
       <button
         key={file.id}
         className={`file-item ${depth !== undefined ? "tree-item" : ""}`}
-        onClick={() => setCurrentIndex(index)}
+        onClick={() => {
+          currentFileIdRef.current = file.id;
+          setCurrentIndex(index);
+        }}
         onDoubleClick={() => void openFileInFinder(file)}
         ref={(node) => listItemRefs.current.set(file.id, node)}
         type="button"

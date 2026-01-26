@@ -739,6 +739,7 @@ export default function App() {
   const initialFolder = storedSettings.rememberLastFolder ? storedSettings.lastFolder ?? null : null;
   const [currentFolder, setCurrentFolder] = useState<string | null>(initialFolder);
   const [isLoading, setIsLoading] = useState(false);
+  const [isCancellingScan, setIsCancellingScan] = useState(false);
   const [scanProgress, setScanProgress] = useState<ScanProgress | null>(null);
   const [renderCount, setRenderCount] = useState(0);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -982,7 +983,7 @@ export default function App() {
         return;
       }
       try {
-        await getCurrentWindow().setTheme(theme === "dark" ? "Dark" : "Light");
+        await getCurrentWindow().setTheme(theme === "dark" ? "dark" : "light");
       } catch (error) {
         console.warn("Failed to sync window theme.", error);
       }
@@ -1423,6 +1424,7 @@ export default function App() {
       setLastScanFilterMode(filterMode);
       const scanId = typeof crypto?.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}`;
       activeScanId.current = scanId;
+      setIsCancellingScan(false);
       setIsLoading(true);
       setScanProgress({ scanId, scanned: 0, matched: 0, total: 0, phase: "indexing" });
       setFiles([]);
@@ -1453,17 +1455,38 @@ export default function App() {
         if (activeScanId.current !== scanId) {
           return;
         }
-        updateStatus(`Scan failed: ${String(error)}`);
+        const message = String(error);
+        if (message.toLowerCase().includes("scan cancelled")) {
+          updateStatus("Scan cancelled.");
+          return;
+        }
+        updateStatus(`Scan failed: ${message}`);
       } finally {
         if (activeScanId.current === scanId) {
           setIsLoading(false);
           setScanProgress(null);
           activeScanId.current = null;
+          setIsCancellingScan(false);
         }
       }
     },
     [filterMode, includeSubfolders, includeHidden, useHashForDuplicates, duplicateMinSizeBytes, updateStatus]
   );
+
+  const cancelActiveScan = useCallback(async () => {
+    const scanId = activeScanId.current;
+    if (!scanId || isCancellingScan) {
+      return;
+    }
+    setIsCancellingScan(true);
+    updateStatus("Stopping scan...");
+    try {
+      await invoke("cancel_scan", { scanId });
+    } catch (error) {
+      setIsCancellingScan(false);
+      updateStatus(`Failed to stop scan: ${String(error)}`);
+    }
+  }, [isCancellingScan, updateStatus]);
 
   const pickFolder = useCallback(async () => {
     try {
@@ -1502,45 +1525,6 @@ export default function App() {
     });
   }, []);
 
-  const getOrderSnapshot = useCallback((sortedPrev: FileEntry[]) => {
-    const order = visibleFileOrderRef.current;
-    if (order.length === 0) {
-      return sortedPrev.map((file) => file.id);
-    }
-    const idSet = new Set(sortedPrev.map((file) => file.id));
-    const filtered = order.filter((id) => idSet.has(id));
-    return filtered.length > 0 ? filtered : sortedPrev.map((file) => file.id);
-  }, [visibleFileOrderRef]);
-
-  const getNextVisibleId = useCallback(
-    (currentId: string | null, order: string[], removedSet: Set<string>) => {
-      if (!currentId) {
-        return null;
-      }
-      if (!removedSet.has(currentId)) {
-        return currentId;
-      }
-      const position = order.indexOf(currentId);
-      if (position === -1) {
-        return null;
-      }
-      for (let i = position + 1; i < order.length; i += 1) {
-        const candidate = order[i];
-        if (!removedSet.has(candidate)) {
-          return candidate;
-        }
-      }
-      for (let i = position - 1; i >= 0; i -= 1) {
-        const candidate = order[i];
-        if (!removedSet.has(candidate)) {
-          return candidate;
-        }
-      }
-      return null;
-    },
-    []
-  );
-
   const pickDestinationForSlot = useCallback(
     async (slotIndex: number) => {
       try {
@@ -1565,43 +1549,63 @@ export default function App() {
         const filterByExtension = (file: FileEntry) =>
           selectedExtensionsSet.has(getExtension(file.name));
         const sortedPrev = sortFiles(prev.filter(filterByExtension));
-        const orderSnapshot = getOrderSnapshot(sortedPrev);
-        const removedSet = new Set([removedId]);
-        const removedIndex = sortedPrev.findIndex((file) => file.id === removedId);
         const next = prev.filter((file) => file.id !== removedId);
         const sortedNext = sortFiles(next.filter(filterByExtension));
+        
+        // Get the visible file order (the exact order shown in the UI)
+        const visibleOrder = visibleFileOrderRef.current;
+        const removedIndexInVisible = visibleOrder.indexOf(removedId);
+        
         setCurrentIndex((current) => {
-          if (removedIndex === -1) {
-            return current;
-          }
           if (sortedPrev.length === 0) {
             currentFileIdRef.current = null;
             return 0;
           }
+          
+          // If the removed file is in the visible order, select the next one
+          if (removedIndexInVisible !== -1) {
+            // Find the next file after the removed one in the visible order
+            let nextVisibleId: string | null = null;
+            for (let i = removedIndexInVisible + 1; i < visibleOrder.length; i++) {
+              const candidateId = visibleOrder[i];
+              // Make sure this file still exists and matches the extension filter
+              if (next.some((file) => file.id === candidateId && filterByExtension(file))) {
+                nextVisibleId = candidateId;
+                break;
+              }
+            }
+            
+            // If no next file found, try the previous one
+            if (!nextVisibleId) {
+              for (let i = removedIndexInVisible - 1; i >= 0; i--) {
+                const candidateId = visibleOrder[i];
+                if (next.some((file) => file.id === candidateId && filterByExtension(file))) {
+                  nextVisibleId = candidateId;
+                  break;
+                }
+              }
+            }
+            
+            if (nextVisibleId) {
+              const nextIndex = sortedNext.findIndex((file) => file.id === nextVisibleId);
+              if (nextIndex !== -1) {
+                currentFileIdRef.current = nextVisibleId;
+                return nextIndex;
+              }
+            }
+          }
+          
+          // Fallback: use current index if still valid, otherwise use 0 or last index
           const boundedCurrent = Math.min(current, sortedPrev.length - 1);
-          const currentId = sortedPrev[boundedCurrent]?.id ?? null;
-          // Keep selection aligned with the visible order when removing files.
-          const targetId = getNextVisibleId(currentId, orderSnapshot, removedSet);
-          if (!targetId) {
-            const nextIndex =
-              sortedNext.length === 0 ? 0 : Math.min(boundedCurrent, sortedNext.length - 1);
-            currentFileIdRef.current = sortedNext[nextIndex]?.id ?? null;
-            return nextIndex;
-          }
-          const nextIndex = sortedNext.findIndex((file) => file.id === targetId);
-          if (nextIndex === -1) {
-            const fallbackIndex =
-              sortedNext.length === 0 ? 0 : Math.min(boundedCurrent, sortedNext.length - 1);
-            currentFileIdRef.current = sortedNext[fallbackIndex]?.id ?? null;
-            return fallbackIndex;
-          }
-          currentFileIdRef.current = targetId;
-          return nextIndex;
+          const fallbackIndex =
+            sortedNext.length === 0 ? 0 : Math.min(boundedCurrent, sortedNext.length - 1);
+          currentFileIdRef.current = sortedNext[fallbackIndex]?.id ?? null;
+          return fallbackIndex;
         });
         return next;
       });
     },
-    [selectedExtensionsSet, sortFiles, getOrderSnapshot, getNextVisibleId]
+    [selectedExtensionsSet, sortFiles]
   );
 
   const removeFilesByIds = useCallback(
@@ -1616,35 +1620,68 @@ export default function App() {
         const sortedPrev = sortFiles(prev.filter(filterByExtension));
         const next = prev.filter((file) => !removedSet.has(file.id));
         const sortedNext = sortFiles(next.filter(filterByExtension));
-        const orderSnapshot = getOrderSnapshot(sortedPrev);
+        
+        // Get the visible file order (the exact order shown in the UI)
+        const visibleOrder = visibleFileOrderRef.current;
+        // Find the first removed file in the visible order to determine next selection
+        let firstRemovedIndex = -1;
+        for (let i = 0; i < visibleOrder.length; i++) {
+          if (removedSet.has(visibleOrder[i])) {
+            firstRemovedIndex = i;
+            break;
+          }
+        }
+        
         setCurrentIndex((current) => {
           if (sortedPrev.length === 0) {
             currentFileIdRef.current = null;
             return 0;
           }
+          
+          // If we found a removed file in the visible order, select the next one
+          if (firstRemovedIndex !== -1) {
+            // Find the next file after the first removed one in the visible order
+            let nextVisibleId: string | null = null;
+            for (let i = firstRemovedIndex + 1; i < visibleOrder.length; i++) {
+              const candidateId = visibleOrder[i];
+              // Make sure this file still exists, wasn't removed, and matches the extension filter
+              if (!removedSet.has(candidateId) && next.some((file) => file.id === candidateId && filterByExtension(file))) {
+                nextVisibleId = candidateId;
+                break;
+              }
+            }
+            
+            // If no next file found, try the previous one
+            if (!nextVisibleId) {
+              for (let i = firstRemovedIndex - 1; i >= 0; i--) {
+                const candidateId = visibleOrder[i];
+                if (!removedSet.has(candidateId) && next.some((file) => file.id === candidateId && filterByExtension(file))) {
+                  nextVisibleId = candidateId;
+                  break;
+                }
+              }
+            }
+            
+            if (nextVisibleId) {
+              const nextIndex = sortedNext.findIndex((file) => file.id === nextVisibleId);
+              if (nextIndex !== -1) {
+                currentFileIdRef.current = nextVisibleId;
+                return nextIndex;
+              }
+            }
+          }
+          
+          // Fallback: use current index if still valid, otherwise use 0 or last index
           const boundedCurrent = Math.min(current, sortedPrev.length - 1);
-          const currentId = sortedPrev[boundedCurrent]?.id ?? null;
-          const targetId = getNextVisibleId(currentId, orderSnapshot, removedSet);
-          if (!targetId) {
-            const nextIndex =
-              sortedNext.length === 0 ? 0 : Math.min(boundedCurrent, sortedNext.length - 1);
-            currentFileIdRef.current = sortedNext[nextIndex]?.id ?? null;
-            return nextIndex;
-          }
-          const nextIndex = sortedNext.findIndex((file) => file.id === targetId);
-          if (nextIndex === -1) {
-            const fallbackIndex =
-              sortedNext.length === 0 ? 0 : Math.min(boundedCurrent, sortedNext.length - 1);
-            currentFileIdRef.current = sortedNext[fallbackIndex]?.id ?? null;
-            return fallbackIndex;
-          }
-          currentFileIdRef.current = targetId;
-          return nextIndex;
+          const fallbackIndex =
+            sortedNext.length === 0 ? 0 : Math.min(boundedCurrent, sortedNext.length - 1);
+          currentFileIdRef.current = sortedNext[fallbackIndex]?.id ?? null;
+          return fallbackIndex;
         });
         return next;
       });
     },
-    [selectedExtensionsSet, sortFiles, getOrderSnapshot, getNextVisibleId]
+    [selectedExtensionsSet, sortFiles]
   );
 
   const restoreFileEntry = useCallback(
@@ -1716,6 +1753,31 @@ export default function App() {
     }
   }, [confirmTrash, currentFile, removeFileById, updateStatus, pushUndo, trashBehavior]);
 
+  const permanentlyDeleteCurrent = useCallback(async () => {
+    if (!currentFile) {
+      updateStatus("No file selected.");
+      return;
+    }
+    const confirmMessage = `Permanently delete ${currentFile.name}? This cannot be undone.`;
+    const shouldDelete = confirmTrash
+      ? await confirm(confirmMessage, { title: "Confirm permanent delete" })
+      : true;
+    if (!shouldDelete) {
+      return;
+    }
+    try {
+      await invoke<TrashResult>("trash_file", {
+        id: currentFile.id,
+        trashMode: "permanent",
+      });
+      removeFileById(currentFile.id);
+      // Permanent delete doesn't create a trash path, so no undo
+      updateStatus(`Permanently deleted ${currentFile.name}.`);
+    } catch (error) {
+      updateStatus(`Delete failed: ${String(error)}`);
+    }
+  }, [confirmTrash, currentFile, removeFileById, updateStatus]);
+
   const getFolderFiles = useCallback(
     (folderPath: string) => {
       const folderSegments = splitPathSegments(folderPath);
@@ -1768,10 +1830,14 @@ export default function App() {
         file,
         relativePath: getRelativeSegments(file.path, fullFolderPath).join("/"),
       }));
+      const entries: FolderTrashEntry[] = items.map((item) => ({
+        id: item.file.id,
+        relativePath: item.relativePath,
+      }));
       try {
         const result = await invoke<TrashResult>("trash_folder", {
           folderPath: fullFolderPath,
-          files: items.map((item) => ({ id: item.file.id, relativePath: item.relativePath })),
+          files: entries,
           trashMode: trashBehavior,
         });
         removeFilesByIds(folderFiles.map((file) => file.id));
@@ -1830,10 +1896,6 @@ export default function App() {
     },
     [currentFile, destinationSlots, pickDestinationForSlot, removeFileById, updateStatus, pushUndo]
   );
-
-  const moveCurrent = useCallback(async () => {
-    await moveCurrentToSlot(0, true);
-  }, [moveCurrentToSlot]);
 
   const openFileInFinder = useCallback(
     async (file: FileEntry) => {
@@ -1992,7 +2054,11 @@ export default function App() {
           break;
         case "ArrowUp":
           event.preventDefault();
-          void trashCurrent();
+          if (event.shiftKey) {
+            void permanentlyDeleteCurrent();
+          } else {
+            void trashCurrent();
+          }
           break;
         case "ArrowDown":
           event.preventDefault();
@@ -2019,6 +2085,7 @@ export default function App() {
     isSettingsOpen,
     moveCurrentToSlot,
     openCurrentInFinder,
+    permanentlyDeleteCurrent,
     toggleVideoPlayback,
     trashCurrent,
     undoLastAction,
@@ -2520,10 +2587,6 @@ export default function App() {
   }, [isLoading, scanProgress]);
 
   const isRenderingList = renderCount < sortedFiles.length;
-  const progressPercent =
-    isLoading && scanProgress && scanProgress.total
-      ? Math.min(100, Math.round((scanProgress.scanned / scanProgress.total) * 100))
-      : null;
   const totalFiles = files.length;
   const filteredCount = sortedFiles.length;
 
@@ -2819,6 +2882,14 @@ export default function App() {
               <div className="spinner" />
               <div className="loading-title">Scanning files</div>
               <div className="loading-subtitle">{loadingMessage ?? "Collecting file list..."}</div>
+              <button
+                type="button"
+                className="preview-action-button"
+                onClick={() => void cancelActiveScan()}
+                disabled={isCancellingScan}
+              >
+                {isCancellingScan ? "Stopping..." : "Stop scan"}
+              </button>
             </div>
           ) : previewFile ? (
             <div className="preview-content">

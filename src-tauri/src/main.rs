@@ -6,7 +6,8 @@ use std::fs::{self, File};
 use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::UNIX_EPOCH;
 use tauri::http::header::{HeaderMap, HeaderName, HeaderValue};
 use tauri::http::{Response, StatusCode};
@@ -49,6 +50,7 @@ struct AppState {
   map: Mutex<HashMap<String, PathBuf>>,
   preview_map: Mutex<HashMap<String, String>>,
   destination: Mutex<Option<PathBuf>>,
+  scan_cancellations: Mutex<HashMap<String, Arc<AtomicBool>>>,
   trash_dir: PathBuf,
 }
 
@@ -125,6 +127,38 @@ fn set_destination(state: tauri::State<'_, AppState>, destination: String) {
 }
 
 #[tauri::command]
+fn cancel_scan(state: tauri::State<'_, AppState>, scan_id: String) -> Result<(), String> {
+  let cancellations = state
+    .scan_cancellations
+    .lock()
+    .expect("scan cancellations lock");
+  if let Some(flag) = cancellations.get(&scan_id) {
+    flag.store(true, Ordering::Relaxed);
+  }
+  Ok(())
+}
+
+struct ScanCancelGuard {
+  app_handle: AppHandle,
+  scan_id: String,
+}
+
+impl ScanCancelGuard {
+  fn new(app_handle: AppHandle, scan_id: String) -> Self {
+    Self { app_handle, scan_id }
+  }
+}
+
+impl Drop for ScanCancelGuard {
+  fn drop(&mut self) {
+    let state = self.app_handle.state::<AppState>();
+    if let Ok(mut cancellations) = state.scan_cancellations.lock() {
+      cancellations.remove(&self.scan_id);
+    };
+  }
+}
+
+#[tauri::command]
 async fn scan_folder(
   window: tauri::Window,
   folder_path: String,
@@ -137,7 +171,17 @@ async fn scan_folder(
 ) -> Result<ScanResult, String> {
   let app_handle = window.app_handle().clone();
   let window = window.clone();
+  let cancel_flag = Arc::new(AtomicBool::new(false));
+  {
+    let state = app_handle.state::<AppState>();
+    let mut cancellations = state
+      .scan_cancellations
+      .lock()
+      .expect("scan cancellations lock");
+    cancellations.insert(scan_id.clone(), cancel_flag.clone());
+  }
   tauri::async_runtime::spawn_blocking(move || {
+    let _cancel_guard = ScanCancelGuard::new(app_handle.clone(), scan_id.clone());
     let state = app_handle.state::<AppState>();
     let mut entries = Vec::new();
     let mut map = state.map.lock().expect("map lock");
@@ -176,6 +220,9 @@ async fn scan_folder(
     let mut scanned = 0usize;
     let mut last_emit = 0usize;
     for path in iterator {
+      if cancel_flag.load(Ordering::Relaxed) {
+        return Err("Scan cancelled".into());
+      }
       scanned += 1;
       paths.push(path);
       if scanned.saturating_sub(last_emit) >= 300 {
@@ -208,11 +255,15 @@ async fn scan_folder(
 
     let total = paths.len();
     let duplicate_groups = if filter == "duplicates" {
+      if cancel_flag.load(Ordering::Relaxed) {
+        return Err("Scan cancelled".into());
+      }
       Some(find_duplicate_groups(
         &paths,
         use_hash_for_duplicates,
         duplicate_min_size_bytes,
-      ))
+        Some(&cancel_flag),
+      )?)
     } else {
       None
     };
@@ -221,6 +272,9 @@ async fn scan_folder(
     let mut matched = 0usize;
     let mut batch = Vec::with_capacity(100);
     for path in paths {
+      if cancel_flag.load(Ordering::Relaxed) {
+        return Err("Scan cancelled".into());
+      }
       scanned += 1;
       let kind = classify_file(&path);
       let is_match = if let Some(duplicates) = duplicate_groups.as_ref() {
@@ -776,9 +830,15 @@ fn find_duplicate_groups(
   paths: &[PathBuf],
   use_hash: bool,
   min_size_bytes: u64,
-) -> HashMap<PathBuf, String> {
+  cancel_flag: Option<&Arc<AtomicBool>>,
+) -> Result<HashMap<PathBuf, String>, String> {
   let mut size_map: HashMap<u64, Vec<PathBuf>> = HashMap::new();
   for path in paths {
+    if let Some(flag) = cancel_flag {
+      if flag.load(Ordering::Relaxed) {
+        return Err("Scan cancelled".into());
+      }
+    }
     if let Ok(metadata) = fs::metadata(path) {
       let size = metadata.len();
       if size < min_size_bytes {
@@ -790,12 +850,22 @@ fn find_duplicate_groups(
 
   let mut duplicates = HashMap::new();
   for (size, group) in size_map {
+    if let Some(flag) = cancel_flag {
+      if flag.load(Ordering::Relaxed) {
+        return Err("Scan cancelled".into());
+      }
+    }
     if group.len() < 2 {
       continue;
     }
     if use_hash {
       let mut hash_map: HashMap<String, Vec<PathBuf>> = HashMap::new();
       for path in &group {
+        if let Some(flag) = cancel_flag {
+          if flag.load(Ordering::Relaxed) {
+            return Err("Scan cancelled".into());
+          }
+        }
         if let Ok(hash) = hash_file(path) {
           hash_map.entry(hash).or_default().push(path.clone());
         }
@@ -814,7 +884,7 @@ fn find_duplicate_groups(
       }
     }
   }
-  duplicates
+  Ok(duplicates)
 }
 
 fn is_hidden_entry(path: &Path, root: &Path) -> bool {
@@ -1131,6 +1201,7 @@ fn main() {
         map: Mutex::new(HashMap::new()),
         preview_map: Mutex::new(HashMap::new()),
         destination: Mutex::new(None),
+        scan_cancellations: Mutex::new(HashMap::new()),
         trash_dir,
       });
       Ok(())
@@ -1147,6 +1218,7 @@ fn main() {
     })
     .invoke_handler(tauri::generate_handler![
       scan_folder,
+      cancel_scan,
       trash_file,
       trash_folder,
       move_file,

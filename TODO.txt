@@ -33,9 +33,17 @@ FEAT
 .microsoft windows support
 auto updater
 license managment
+.shift+up to permanently delete
+ctrl+left or right to skip/back 10s in vid and music
+spinner if the delete/move ops takes time
+.possibility to stop a long scan
 
 BUG
 .next and prev absoute
+.next absoute when moving/deleting
 .extension collapsed by default
 .ext all selected by default
 .file type and group selection
+win doc
+odp files crash
+sorting size bugged in tree view

@@ -54,6 +54,8 @@ struct AppState {
   trash_dir: PathBuf,
 }
 
+static TRASH_CLEANED: AtomicBool = AtomicBool::new(false);
+
 const MAX_ARCHIVE_ENTRIES: usize = 200;
 const MAX_RANGE_CHUNK_BYTES: u64 = 1_048_576;
 
@@ -117,6 +119,33 @@ fn parse_trash_mode(value: &str) -> TrashMode {
   match value {
     "permanent" => TrashMode::Permanent,
     _ => TrashMode::System,
+  }
+}
+
+fn clear_trash_dir(trash_dir: &Path) -> std::io::Result<()> {
+  if !trash_dir.exists() {
+    return Ok(());
+  }
+  for entry in fs::read_dir(trash_dir)? {
+    let entry = entry?;
+    let file_type = entry.file_type()?;
+    let entry_path = entry.path();
+    if file_type.is_dir() {
+      fs::remove_dir_all(entry_path)?;
+    } else {
+      fs::remove_file(entry_path)?;
+    }
+  }
+  Ok(())
+}
+
+fn clear_trash_dir_best_effort(trash_dir: &Path) {
+  if let Err(error) = clear_trash_dir(trash_dir) {
+    eprintln!(
+      "Failed to clear trash directory {}: {}",
+      trash_dir.display(),
+      error
+    );
   }
 }
 
@@ -1189,6 +1218,7 @@ fn protocol_response(
 }
 
 fn main() {
+  let context = tauri::generate_context!();
   tauri::Builder::default()
     .setup(|app| {
       let trash_dir = app
@@ -1197,6 +1227,7 @@ fn main() {
         .map_err(|error| error.to_string())?
         .join("trash");
       fs::create_dir_all(&trash_dir).map_err(|error| error.to_string())?;
+      clear_trash_dir_best_effort(&trash_dir);
       app.manage(AppState {
         map: Mutex::new(HashMap::new()),
         preview_map: Mutex::new(HashMap::new()),
@@ -1229,6 +1260,44 @@ fn main() {
       generate_preview,
       reveal_in_file_manager
     ])
-    .run(tauri::generate_context!())
-    .expect("error while running tauri application");
+    .build(context)
+    .expect("error while building tauri application")
+    .run(|app_handle, event| {
+      match event {
+        tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
+          let already_cleaned =
+            TRASH_CLEANED.swap(true, Ordering::Relaxed);
+          if already_cleaned {
+            return;
+          }
+          let trash_dir = app_handle.state::<AppState>().trash_dir.clone();
+          clear_trash_dir_best_effort(&trash_dir);
+        }
+        _ => {}
+      }
+    });
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn clear_trash_dir_removes_contents() {
+    let base = std::env::temp_dir().join(format!("tidy-trash-test-{}", Uuid::new_v4()));
+    fs::create_dir_all(base.join("nested")).unwrap();
+    fs::write(base.join("a.txt"), b"hi").unwrap();
+    fs::write(base.join("nested").join("b.txt"), b"hi").unwrap();
+
+    clear_trash_dir(&base).unwrap();
+
+    assert!(fs::read_dir(&base).unwrap().next().is_none());
+    let _ = fs::remove_dir_all(&base);
+  }
+
+  #[test]
+  fn clear_trash_dir_missing_is_ok() {
+    let base = std::env::temp_dir().join(format!("tidy-trash-test-missing-{}", Uuid::new_v4()));
+    clear_trash_dir(&base).unwrap();
+  }
 }

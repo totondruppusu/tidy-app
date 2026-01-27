@@ -739,6 +739,10 @@ export default function App() {
   const initialFolder = storedSettings.rememberLastFolder ? storedSettings.lastFolder ?? null : null;
   const [currentFolder, setCurrentFolder] = useState<string | null>(initialFolder);
   const [isLoading, setIsLoading] = useState(false);
+  const [isMutating, setIsMutating] = useState(false);
+  const [mutationSpinnerLabel, setMutationSpinnerLabel] = useState<string | null>(null);
+  const mutationSpinnerTimeoutRef = useRef<number | null>(null);
+  const isMutatingRef = useRef(false);
   const [isCancellingScan, setIsCancellingScan] = useState(false);
   const [scanProgress, setScanProgress] = useState<ScanProgress | null>(null);
   const [renderCount, setRenderCount] = useState(0);
@@ -993,6 +997,43 @@ export default function App() {
 
   const updateStatus = useCallback((message: string) => {
     setStatus(message);
+  }, []);
+
+  const runMutationWithSpinner = useCallback(
+    async (spinnerLabel: string, operation: () => Promise<void>) => {
+      if (isMutatingRef.current) {
+        return;
+      }
+      isMutatingRef.current = true;
+      setIsMutating(true);
+      if (mutationSpinnerTimeoutRef.current) {
+        window.clearTimeout(mutationSpinnerTimeoutRef.current);
+      }
+      mutationSpinnerTimeoutRef.current = window.setTimeout(() => {
+        setMutationSpinnerLabel(spinnerLabel);
+      }, 250);
+      try {
+        await operation();
+      } finally {
+        isMutatingRef.current = false;
+        setIsMutating(false);
+        if (mutationSpinnerTimeoutRef.current) {
+          window.clearTimeout(mutationSpinnerTimeoutRef.current);
+          mutationSpinnerTimeoutRef.current = null;
+        }
+        setMutationSpinnerLabel(null);
+      }
+    },
+    []
+  );
+
+  useEffect(() => {
+    return () => {
+      if (mutationSpinnerTimeoutRef.current) {
+        window.clearTimeout(mutationSpinnerTimeoutRef.current);
+        mutationSpinnerTimeoutRef.current = null;
+      }
+    };
   }, []);
 
   const sortFiles = useCallback(
@@ -1729,29 +1770,34 @@ export default function App() {
     if (!shouldTrash) {
       return;
     }
-    try {
-      const result = await invoke<TrashResult>("trash_file", {
-        id: currentFile.id,
-        trashMode: trashBehavior,
-      });
-      removeFileById(currentFile.id);
-      if (result.trashPath) {
-        pushUndo({
-          kind: "trash",
-          file: currentFile,
-          fromPath: currentFile.path,
-          trashPath: result.trashPath,
-        });
+    await runMutationWithSpinner(
+      trashBehavior === "permanent" ? "Deleting…" : "Trashing…",
+      async () => {
+        try {
+          const result = await invoke<TrashResult>("trash_file", {
+            id: currentFile.id,
+            trashMode: trashBehavior,
+          });
+          removeFileById(currentFile.id);
+          if (result.trashPath) {
+            pushUndo({
+              kind: "trash",
+              file: currentFile,
+              fromPath: currentFile.path,
+              trashPath: result.trashPath,
+            });
+          }
+          const baseMessage =
+            trashBehavior === "permanent"
+              ? `Deleted ${currentFile.name}.`
+              : `Moved ${currentFile.name} to system trash.`;
+          updateStatus(result.trashPath ? baseMessage : `${baseMessage} Undo unavailable.`);
+        } catch (error) {
+          updateStatus(`Trash failed: ${String(error)}`);
+        }
       }
-      const baseMessage =
-        trashBehavior === "permanent"
-          ? `Deleted ${currentFile.name}.`
-          : `Moved ${currentFile.name} to system trash.`;
-      updateStatus(result.trashPath ? baseMessage : `${baseMessage} Undo unavailable.`);
-    } catch (error) {
-      updateStatus(`Trash failed: ${String(error)}`);
-    }
-  }, [confirmTrash, currentFile, removeFileById, updateStatus, pushUndo, trashBehavior]);
+    );
+  }, [confirmTrash, currentFile, removeFileById, updateStatus, pushUndo, trashBehavior, runMutationWithSpinner]);
 
   const permanentlyDeleteCurrent = useCallback(async () => {
     if (!currentFile) {
@@ -1765,18 +1811,20 @@ export default function App() {
     if (!shouldDelete) {
       return;
     }
-    try {
-      await invoke<TrashResult>("trash_file", {
-        id: currentFile.id,
-        trashMode: "permanent",
-      });
-      removeFileById(currentFile.id);
-      // Permanent delete doesn't create a trash path, so no undo
-      updateStatus(`Permanently deleted ${currentFile.name}.`);
-    } catch (error) {
-      updateStatus(`Delete failed: ${String(error)}`);
-    }
-  }, [confirmTrash, currentFile, removeFileById, updateStatus]);
+    await runMutationWithSpinner("Deleting…", async () => {
+      try {
+        await invoke<TrashResult>("trash_file", {
+          id: currentFile.id,
+          trashMode: "permanent",
+        });
+        removeFileById(currentFile.id);
+        // Permanent delete doesn't create a trash path, so no undo
+        updateStatus(`Permanently deleted ${currentFile.name}.`);
+      } catch (error) {
+        updateStatus(`Delete failed: ${String(error)}`);
+      }
+    });
+  }, [confirmTrash, currentFile, removeFileById, updateStatus, runMutationWithSpinner]);
 
   const getFolderFiles = useCallback(
     (folderPath: string) => {
@@ -1834,31 +1882,45 @@ export default function App() {
         id: item.file.id,
         relativePath: item.relativePath,
       }));
-      try {
-        const result = await invoke<TrashResult>("trash_folder", {
-          folderPath: fullFolderPath,
-          files: entries,
-          trashMode: trashBehavior,
-        });
-        removeFilesByIds(folderFiles.map((file) => file.id));
-        if (result.trashPath) {
-          pushUndo({
-            kind: "trash-folder",
-            folderPath: fullFolderPath,
-            trashPath: result.trashPath,
-            items,
-          });
+      await runMutationWithSpinner(
+        trashBehavior === "permanent" ? "Deleting…" : "Trashing…",
+        async () => {
+          try {
+            const result = await invoke<TrashResult>("trash_folder", {
+              folderPath: fullFolderPath,
+              files: entries,
+              trashMode: trashBehavior,
+            });
+            removeFilesByIds(folderFiles.map((file) => file.id));
+            if (result.trashPath) {
+              pushUndo({
+                kind: "trash-folder",
+                folderPath: fullFolderPath,
+                trashPath: result.trashPath,
+                items,
+              });
+            }
+            const baseMessage =
+              trashBehavior === "permanent"
+                ? `Deleted ${folderLabel}.`
+                : `Moved ${folderLabel} to system trash.`;
+            updateStatus(result.trashPath ? baseMessage : `${baseMessage} Undo unavailable.`);
+          } catch (error) {
+            updateStatus(`Trash folder failed: ${String(error)}`);
+          }
         }
-        const baseMessage =
-          trashBehavior === "permanent"
-            ? `Deleted ${folderLabel}.`
-            : `Moved ${folderLabel} to system trash.`;
-        updateStatus(result.trashPath ? baseMessage : `${baseMessage} Undo unavailable.`);
-      } catch (error) {
-        updateStatus(`Trash folder failed: ${String(error)}`);
-      }
+      );
     },
-    [confirmTrash, currentFolder, getFolderFiles, updateStatus, removeFilesByIds, pushUndo, trashBehavior]
+    [
+      confirmTrash,
+      currentFolder,
+      getFolderFiles,
+      updateStatus,
+      removeFilesByIds,
+      pushUndo,
+      trashBehavior,
+      runMutationWithSpinner,
+    ]
   );
 
   const moveCurrentToSlot = useCallback(
@@ -1879,22 +1941,32 @@ export default function App() {
       if (!destinationPath) {
         return;
       }
-      try {
-        await invoke("set_destination", { destination: destinationPath });
-        const result = await invoke<MoveResult>("move_file", { id: currentFile.id });
-        removeFileById(currentFile.id);
-        pushUndo({
-          kind: "move",
-          file: currentFile,
-          fromPath: currentFile.path,
-          toPath: result.targetPath,
-        });
-        updateStatus(`Moved to ${result.targetPath}.`);
-      } catch (error) {
-        updateStatus(`Move failed: ${String(error)}`);
-      }
+      await runMutationWithSpinner("Moving…", async () => {
+        try {
+          await invoke("set_destination", { destination: destinationPath });
+          const result = await invoke<MoveResult>("move_file", { id: currentFile.id });
+          removeFileById(currentFile.id);
+          pushUndo({
+            kind: "move",
+            file: currentFile,
+            fromPath: currentFile.path,
+            toPath: result.targetPath,
+          });
+          updateStatus(`Moved to ${result.targetPath}.`);
+        } catch (error) {
+          updateStatus(`Move failed: ${String(error)}`);
+        }
+      });
     },
-    [currentFile, destinationSlots, pickDestinationForSlot, removeFileById, updateStatus, pushUndo]
+    [
+      currentFile,
+      destinationSlots,
+      pickDestinationForSlot,
+      removeFileById,
+      updateStatus,
+      pushUndo,
+      runMutationWithSpinner,
+    ]
   );
 
   const openFileInFinder = useCallback(
@@ -1970,37 +2042,41 @@ export default function App() {
       return;
     }
     if (lastAction.kind === "trash-folder") {
-      try {
-        await invoke("restore_folder", {
-          source: lastAction.trashPath,
-          destination: lastAction.folderPath,
-          files: lastAction.items.map((item) => ({
-            id: item.file.id,
-            relativePath: item.relativePath,
-          })),
-        });
-        lastAction.items.forEach((item) => restoreFileEntry(item.file));
-        setUndoStack((prev) => prev.slice(1));
-        updateStatus(`Restored ${lastAction.items.length} items.`);
-      } catch (error) {
-        updateStatus(`Undo failed: ${String(error)}`);
-      }
+      await runMutationWithSpinner("Restoring…", async () => {
+        try {
+          await invoke("restore_folder", {
+            source: lastAction.trashPath,
+            destination: lastAction.folderPath,
+            files: lastAction.items.map((item) => ({
+              id: item.file.id,
+              relativePath: item.relativePath,
+            })),
+          });
+          lastAction.items.forEach((item) => restoreFileEntry(item.file));
+          setUndoStack((prev) => prev.slice(1));
+          updateStatus(`Restored ${lastAction.items.length} items.`);
+        } catch (error) {
+          updateStatus(`Undo failed: ${String(error)}`);
+        }
+      });
       return;
     }
     const sourcePath = lastAction.kind === "move" ? lastAction.toPath : lastAction.trashPath;
-    try {
-      await invoke("restore_file", {
-        id: lastAction.file.id,
-        source: sourcePath,
-        destination: lastAction.fromPath,
-      });
-      restoreFileEntry(lastAction.file);
-      setUndoStack((prev) => prev.slice(1));
-      updateStatus(`Undid ${lastAction.kind}.`);
-    } catch (error) {
-      updateStatus(`Undo failed: ${String(error)}`);
-    }
-  }, [undoStack, restoreFileEntry, updateStatus]);
+    await runMutationWithSpinner("Restoring…", async () => {
+      try {
+        await invoke("restore_file", {
+          id: lastAction.file.id,
+          source: sourcePath,
+          destination: lastAction.fromPath,
+        });
+        restoreFileEntry(lastAction.file);
+        setUndoStack((prev) => prev.slice(1));
+        updateStatus(`Undid ${lastAction.kind}.`);
+      } catch (error) {
+        updateStatus(`Undo failed: ${String(error)}`);
+      }
+    });
+  }, [undoStack, restoreFileEntry, updateStatus, runMutationWithSpinner]);
 
   const toggleVideoPlayback = useCallback(() => {
     const video = videoRef.current;
@@ -2014,10 +2090,10 @@ export default function App() {
     }
   }, []);
 
-  useEffect(() => {
-    const handler = (event: KeyboardEvent) => {
-      if (isHelpOpen) {
-        if (event.key === "Escape") {
+	  useEffect(() => {
+	    const handler = (event: KeyboardEvent) => {
+	      if (isHelpOpen) {
+	        if (event.key === "Escape") {
           event.preventDefault();
           setIsHelpOpen(false);
         }
@@ -2030,14 +2106,17 @@ export default function App() {
         }
         return;
       }
-      if (isEditableTarget(event.target)) {
-        return;
-      }
-      if ((event.code === "Space" || event.key === " ") && currentFile?.kind === "video") {
-        event.preventDefault();
-        toggleVideoPlayback();
-        return;
-      }
+	      if (isEditableTarget(event.target)) {
+	        return;
+	      }
+	      if (isMutating) {
+	        return;
+	      }
+	      if ((event.code === "Space" || event.key === " ") && currentFile?.kind === "video") {
+	        event.preventDefault();
+	        toggleVideoPlayback();
+	        return;
+	      }
       if (event.key >= "1" && event.key <= "5") {
         event.preventDefault();
         void moveCurrentToSlot(Number(event.key) - 1);
@@ -2077,15 +2156,16 @@ export default function App() {
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [
-    currentFile,
-    goNext,
-    goPrev,
-    isHelpOpen,
-    isSettingsOpen,
-    moveCurrentToSlot,
-    openCurrentInFinder,
-    permanentlyDeleteCurrent,
+	  }, [
+	    currentFile,
+	    goNext,
+	    goPrev,
+	    isHelpOpen,
+	    isMutating,
+	    isSettingsOpen,
+	    moveCurrentToSlot,
+	    openCurrentInFinder,
+	    permanentlyDeleteCurrent,
     toggleVideoPlayback,
     trashCurrent,
     undoLastAction,
@@ -2207,10 +2287,10 @@ export default function App() {
     setCollapsedFolders((prev) => ({ ...prev, [folderKey]: !prev[folderKey] }));
   }, []);
 
-  const listRender = useMemo(() => {
-    const showDuplicateLocation = shouldGroupDuplicates && viewMode === "list";
-    const renderButton = (file: FileEntry, index: number, depth?: number) => (
-      <button
+	  const listRender = useMemo(() => {
+	    const showDuplicateLocation = shouldGroupDuplicates && viewMode === "list";
+	    const renderButton = (file: FileEntry, index: number, depth?: number) => (
+	      <button
         key={file.id}
         className={`file-item ${depth !== undefined ? "tree-item" : ""}`}
         onClick={() => {
@@ -2218,14 +2298,14 @@ export default function App() {
           setCurrentIndex(index);
         }}
         onDoubleClick={() => void openFileInFinder(file)}
-        ref={(node) => listItemRefs.current.set(file.id, node)}
-        type="button"
-        disabled={isLoading}
-        style={
-          depth !== undefined
-            ? ({ "--tree-indent": `${depth * TREE_INDENT_PX}px` } as React.CSSProperties)
-            : undefined
-        }
+	        ref={(node) => listItemRefs.current.set(file.id, node)}
+	        type="button"
+	        disabled={isLoading || isMutating}
+	        style={
+	          depth !== undefined
+	            ? ({ "--tree-indent": `${depth * TREE_INDENT_PX}px` } as React.CSSProperties)
+	            : undefined
+	        }
       >
         <span className={`badge badge-${file.kind}`}>{file.kind}</span>
         <span className="file-content">
@@ -2347,11 +2427,11 @@ export default function App() {
                   event.stopPropagation();
                   void trashFolder(node.path);
                 }}
-                aria-label={`Trash ${node.name}`}
-                title={`Trash ${node.name}`}
-                disabled={isLoading}
-                data-prevent-open-on-enter
-              >
+	                aria-label={`Trash ${node.name}`}
+	                title={`Trash ${node.name}`}
+	                disabled={isLoading || isMutating}
+	                data-prevent-open-on-enter
+	              >
                 <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                   <path d="M9 4h6l1 2h4v2H4V6h4l1-2Zm1 6h2v8h-2v-8Zm4 0h2v8h-2v-8ZM7 10h2v8H7v-8Z" />
                 </svg>
@@ -2426,13 +2506,14 @@ export default function App() {
       );
     });
     return { items };
-  }, [
-    visibleFiles,
-    isLoading,
-    effectiveGroupMode,
-    shouldGroupDuplicates,
-    openFileInFinder,
-    currentFolder,
+	  }, [
+	    visibleFiles,
+	    isLoading,
+	    isMutating,
+	    effectiveGroupMode,
+	    shouldGroupDuplicates,
+	    openFileInFinder,
+	    currentFolder,
     viewMode,
     collapsedGroups,
     collapsedFolders,
@@ -3134,17 +3215,17 @@ export default function App() {
 
         <footer className="actions">
           <div className="actions-row">
-            <div className="destination-row" aria-label="Move destinations">
-              {destinationSlots.map((destinationPath, index) => (
-                <button
+	            <div className="destination-row" aria-label="Move destinations">
+	              {destinationSlots.map((destinationPath, index) => (
+	                <button
                   key={`destination-${index}`}
                   type="button"
-                  className={`destination-button ${destinationPath ? "is-set" : "is-empty"}`}
-                  onClick={() => void pickDestinationForSlot(index)}
-                  disabled={isLoading}
-                  title={destinationPath ?? `Set destination ${index + 1}`}
-                  aria-label={`Set destination ${index + 1}`}
-                >
+	                  className={`destination-button ${destinationPath ? "is-set" : "is-empty"}`}
+	                  onClick={() => void pickDestinationForSlot(index)}
+	                  disabled={isLoading || isMutating}
+	                  title={destinationPath ?? `Set destination ${index + 1}`}
+	                  aria-label={`Set destination ${index + 1}`}
+	                >
                   <span className="destination-index">{index + 1}</span>
                   <span className="destination-label">
                     {destinationPath ? formatPathLabel(destinationPath) : "Set folder…"}
@@ -3152,42 +3233,48 @@ export default function App() {
                 </button>
               ))}
             </div>
-            <div className="action-row">
-              <button
-                className="action-button action-prev"
-                type="button"
-                onClick={goPrev}
-                disabled={!hasFiles || currentIndex === 0 || isLoading}
-              >
-                Prev ←
-              </button>
-              <button
-                className="action-button action-undo"
-                type="button"
-                onClick={undoLastAction}
-                disabled={undoStack.length === 0 || isLoading}
-              >
-                Undo ↓
-              </button>
-              <button
-                className="action-button action-next"
-                type="button"
-                onClick={goNext}
-                disabled={!hasFiles || currentIndex >= filteredCount - 1 || isLoading}
-              >
-                Next →
-              </button>
-              <button
-                className="action-button action-trash"
-                type="button"
-                onClick={trashCurrent}
-                disabled={!hasFiles || isLoading}
-              >
-                Trash ↑
-              </button>
-            </div>
-          </div>
-        </footer>
+	            <div className="action-row">
+	              {mutationSpinnerLabel && (
+	                <div className="action-progress" role="status" aria-live="polite">
+	                  <div className="spinner" aria-hidden="true" />
+	                  <span className="action-progress-label">{mutationSpinnerLabel}</span>
+	                </div>
+	              )}
+	              <button
+	                className="action-button action-prev"
+	                type="button"
+	                onClick={goPrev}
+	                disabled={!hasFiles || currentIndex === 0 || isLoading || isMutating}
+	              >
+	                Prev ←
+	              </button>
+	              <button
+	                className="action-button action-undo"
+	                type="button"
+	                onClick={undoLastAction}
+	                disabled={undoStack.length === 0 || isLoading || isMutating}
+	              >
+	                Undo ↓
+	              </button>
+	              <button
+	                className="action-button action-next"
+	                type="button"
+	                onClick={goNext}
+	                disabled={!hasFiles || currentIndex >= filteredCount - 1 || isLoading || isMutating}
+	              >
+	                Next →
+	              </button>
+	              <button
+	                className="action-button action-trash"
+	                type="button"
+	                onClick={trashCurrent}
+	                disabled={!hasFiles || isLoading || isMutating}
+	              >
+	                Trash ↑
+	              </button>
+	            </div>
+	          </div>
+	        </footer>
       </div>
 
       {isSettingsOpen && (

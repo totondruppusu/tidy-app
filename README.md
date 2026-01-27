@@ -92,3 +92,4 @@ npm run tauri build
 
 - Tauri uses `npm run build` before packaging (`src-tauri/tauri.conf.json`), so `npm run tauri build` is usually all you need for release builds.
 - The app uses a local settings store to remember filters, destinations, and UI preferences per machine.
+- Undo stores temporary backup copies in the app data directory and clears them when the app exits.

@@ -35,8 +35,9 @@ auto updater
 license managment
 .shift+up to permanently delete
 ctrl+left or right to skip/back 10s in vid and music
-spinner if the delete/move ops takes time
+.spinner if the delete/move ops takes time
 .possibility to stop a long scan
+?add a bookmark to a certain file/list view
 
 BUG
 .next and prev absoute
@@ -44,6 +45,7 @@ BUG
 .extension collapsed by default
 .ext all selected by default
 .file type and group selection
-win doc
+no preview of windows doc
 odp files crash
 sorting size bugged in tree view
+.app trash does not clean up after exiting

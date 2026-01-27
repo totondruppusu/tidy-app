@@ -9,6 +9,20 @@
     "devUrl": "http://localhost:1420",
     "frontendDist": "../dist"
   },
+  "bundle": {
+    "active": true,
+    "icon": [
+      "icons/icon.icns",
+      "icons/icon.png",
+      "icons/icon.ico"
+    ],
+    "targets": [
+      "app"
+    ],
+    "category": "public.app-category.productivity",
+    "shortDescription": "File triage desktop tool",
+    "longDescription": "Tidy-app lets you scan folders, preview files, and quickly move or delete clutter."
+  },
   "app": {
     "windows": [
       {

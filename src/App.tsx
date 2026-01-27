@@ -811,6 +811,7 @@ export default function App() {
   const previousExtensionsRef = useRef<string[]>([]);
   const hasUserAdjustedExtensionsRef = useRef(false);
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
   const selectAllRef = useRef<HTMLInputElement | null>(null);
   const fileListFrameRef = useRef<HTMLDivElement | null>(null);
   const fileListScrollRef = useRef<HTMLDivElement | null>(null);
@@ -2090,10 +2091,28 @@ export default function App() {
     }
   }, []);
 
-	  useEffect(() => {
-	    const handler = (event: KeyboardEvent) => {
-	      if (isHelpOpen) {
-	        if (event.key === "Escape") {
+  const seekMediaBy = useCallback(
+    (offsetSeconds: number) => {
+      const media =
+        currentFile?.kind === "video"
+          ? videoRef.current
+          : currentFile?.kind === "audio"
+            ? audioRef.current
+            : null;
+      if (!media) {
+        return;
+      }
+      const duration = Number.isFinite(media.duration) ? media.duration : null;
+      const nextTime = media.currentTime + offsetSeconds;
+      media.currentTime = duration === null ? Math.max(0, nextTime) : Math.min(Math.max(0, nextTime), duration);
+    },
+    [currentFile?.kind]
+  );
+
+  useEffect(() => {
+    const handler = (event: KeyboardEvent) => {
+      if (isHelpOpen) {
+        if (event.key === "Escape") {
           event.preventDefault();
           setIsHelpOpen(false);
         }
@@ -2106,17 +2125,26 @@ export default function App() {
         }
         return;
       }
-	      if (isEditableTarget(event.target)) {
-	        return;
-	      }
-	      if (isMutating) {
-	        return;
-	      }
-	      if ((event.code === "Space" || event.key === " ") && currentFile?.kind === "video") {
-	        event.preventDefault();
-	        toggleVideoPlayback();
-	        return;
-	      }
+      if (isEditableTarget(event.target)) {
+        return;
+      }
+      if (isMutating) {
+        return;
+      }
+      if (
+        (event.ctrlKey || event.metaKey) &&
+        (event.key === "ArrowLeft" || event.key === "ArrowRight") &&
+        (currentFile?.kind === "video" || currentFile?.kind === "audio")
+      ) {
+        event.preventDefault();
+        seekMediaBy(event.key === "ArrowLeft" ? -10 : 10);
+        return;
+      }
+      if ((event.code === "Space" || event.key === " ") && currentFile?.kind === "video") {
+        event.preventDefault();
+        toggleVideoPlayback();
+        return;
+      }
       if (event.key >= "1" && event.key <= "5") {
         event.preventDefault();
         void moveCurrentToSlot(Number(event.key) - 1);
@@ -2156,16 +2184,17 @@ export default function App() {
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-	  }, [
-	    currentFile,
-	    goNext,
-	    goPrev,
-	    isHelpOpen,
-	    isMutating,
-	    isSettingsOpen,
-	    moveCurrentToSlot,
-	    openCurrentInFinder,
-	    permanentlyDeleteCurrent,
+  }, [
+    currentFile,
+    goNext,
+    goPrev,
+    isHelpOpen,
+    isMutating,
+    isSettingsOpen,
+    moveCurrentToSlot,
+    openCurrentInFinder,
+    permanentlyDeleteCurrent,
+    seekMediaBy,
     toggleVideoPlayback,
     trashCurrent,
     undoLastAction,
@@ -3027,7 +3056,12 @@ export default function App() {
                     </div>
                   )}
                   {isAudioPreview && (
-                    <audio controls autoPlay={autoPlayMedia} src={buildMediaUrl(previewFile.id)} />
+                    <audio
+                      ref={audioRef}
+                      controls
+                      autoPlay={autoPlayMedia}
+                      src={buildMediaUrl(previewFile.id)}
+                    />
                   )}
                   {isDocumentPreview && (
                     <div className="preview-document">
@@ -3681,6 +3715,10 @@ export default function App() {
                     <div className="help-shortcut">
                       <span className="help-key">Ctrl + Scroll</span>
                       <span>Zoom images and videos</span>
+                    </div>
+                    <div className="help-shortcut">
+                      <span className="help-key">Ctrl/Cmd + Arrow Left/Right</span>
+                      <span>Skip 10 seconds in video/audio</span>
                     </div>
                     <div className="help-shortcut">
                       <span className="help-key">Esc</span>

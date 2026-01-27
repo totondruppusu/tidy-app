@@ -34,7 +34,7 @@ FEAT
 auto updater
 license managment
 .shift+up to permanently delete
-ctrl+left or right to skip/back 10s in vid and music
+.ctrl+left or right to skip/back 10s in vid and music
 .spinner if the delete/move ops takes time
 .possibility to stop a long scan
 ?add a bookmark to a certain file/list view

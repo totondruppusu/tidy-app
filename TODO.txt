@@ -38,6 +38,8 @@ license managment
 .spinner if the delete/move ops takes time
 .possibility to stop a long scan
 ?add a bookmark to a certain file/list view
+.crash logging
+.crash report via email
 
 BUG
 .next and prev absoute

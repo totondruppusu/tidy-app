@@ -86,6 +86,20 @@ type TrashResult = {
   trashPath: string | null;
 };
 
+type CrashReport = {
+  id: string;
+  createdMs: number;
+  message: string;
+  location?: string | null;
+  thread?: string | null;
+  backtrace?: string | null;
+  appName: string;
+  appVersion: string;
+  os: string;
+  arch: string;
+  reportPath: string;
+};
+
 type FolderTrashEntry = {
   id: string;
   relativePath: string;
@@ -148,6 +162,8 @@ const COMMON_EXTENSIONS = new Set([
   "rar",
 ]);
 const SCROLL_HINT_TOLERANCE = 6;
+const CRASH_REPORT_EMAIL = "<placeholder>@info.com";
+const MAX_CRASH_EMAIL_BODY = 4000;
 
 const updateScrollHint = (scrollNode: HTMLElement, frameNode: HTMLElement) => {
   const maxScroll = scrollNode.scrollHeight - scrollNode.clientHeight;
@@ -251,6 +267,31 @@ const formatGroupLabel = (kind: FileEntry["kind"]) => {
     default:
       return "Other files";
   }
+};
+
+const formatCrashReport = (report: CrashReport) => {
+  const lines = [
+    `App: ${report.appName}`,
+    `Version: ${report.appVersion}`,
+    `OS: ${report.os} (${report.arch})`,
+    `Time: ${new Date(report.createdMs).toISOString()}`,
+    `Message: ${report.message}`,
+    `Location: ${report.location ?? "Unknown"}`,
+    `Thread: ${report.thread ?? "Unknown"}`,
+    `Report path: ${report.reportPath}`,
+    "",
+    "Backtrace:",
+    report.backtrace ?? "Unavailable",
+  ];
+  return lines.join("\n");
+};
+
+const buildCrashEmailBody = (report: CrashReport) => {
+  const body = formatCrashReport(report);
+  if (body.length <= MAX_CRASH_EMAIL_BODY) {
+    return body;
+  }
+  return `${body.slice(0, MAX_CRASH_EMAIL_BODY)}\n\n[Report truncated for email. Full report saved on disk.]`;
 };
 
 const formatPathLabel = (path: string | null) => {
@@ -778,6 +819,8 @@ export default function App() {
     };
   }, [isSettingsOpen]);
   const [isHelpOpen, setIsHelpOpen] = useState(false);
+  const [crashReport, setCrashReport] = useState<CrashReport | null>(null);
+  const [isCrashReportOpen, setIsCrashReportOpen] = useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isDrawerMode, setIsDrawerMode] = useState(false);
   const [isExtensionsCollapsed, setIsExtensionsCollapsed] = useState(true);
@@ -817,6 +860,10 @@ export default function App() {
   const fileListScrollRef = useRef<HTMLDivElement | null>(null);
   const previewFrameRef = useRef<HTMLDivElement | null>(null);
   const previewScrollRef = useRef<HTMLElement | null>(null);
+  const crashReportText = useMemo(
+    () => (crashReport ? formatCrashReport(crashReport) : ""),
+    [crashReport]
+  );
   const handleGroupModeChange = useCallback(
     (value: GroupMode) => {
       if (value === "duplicates" && !shouldGroupDuplicates) {
@@ -870,6 +917,87 @@ export default function App() {
       setIsSidebarCollapsed(true);
     }
   }, [isDrawerMode]);
+
+  useEffect(() => {
+    if (!isTauri()) {
+      return;
+    }
+    let isMounted = true;
+    invoke<CrashReport | null>("get_crash_report")
+      .then((report) => {
+        if (!isMounted || !report) {
+          return;
+        }
+        setCrashReport(report);
+        setIsCrashReportOpen(true);
+      })
+      .catch(() => {});
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isTauri()) {
+      return;
+    }
+    const handleError = (event: ErrorEvent) => {
+      void invoke("log_client_error", {
+        message: event.message || "Unhandled error",
+        stack: event.error?.stack ?? null,
+      });
+    };
+    const handleRejection = (event: PromiseRejectionEvent) => {
+      const reason =
+        event.reason instanceof Error
+          ? event.reason.message
+          : typeof event.reason === "string"
+            ? event.reason
+            : "Unhandled promise rejection";
+      const stack = event.reason instanceof Error ? event.reason.stack : null;
+      void invoke("log_client_error", { message: reason, stack });
+    };
+    window.addEventListener("error", handleError);
+    window.addEventListener("unhandledrejection", handleRejection);
+    return () => {
+      window.removeEventListener("error", handleError);
+      window.removeEventListener("unhandledrejection", handleRejection);
+    };
+  }, []);
+
+  const handleDismissCrashReport = useCallback(() => {
+    setIsCrashReportOpen(false);
+    setCrashReport(null);
+    if (isTauri()) {
+      void invoke("clear_crash_report");
+    }
+  }, []);
+
+  const handleSendCrashReport = useCallback(() => {
+    if (!crashReport) {
+      return;
+    }
+    const subject = `Tidy crash report (${new Date(crashReport.createdMs).toLocaleString()})`;
+    const body = buildCrashEmailBody(crashReport);
+    const mailto = `mailto:${CRASH_REPORT_EMAIL}?subject=${encodeURIComponent(
+      subject
+    )}&body=${encodeURIComponent(body)}`;
+    window.location.href = mailto;
+  }, [crashReport]);
+
+  const handleRevealCrashReport = useCallback(() => {
+    if (!crashReport || !isTauri()) {
+      return;
+    }
+    void invoke("reveal_in_file_manager", { path: crashReport.reportPath, reveal: true });
+  }, [crashReport]);
+
+  const handleCopyCrashReport = useCallback(() => {
+    if (!crashReportText) {
+      return;
+    }
+    void navigator.clipboard.writeText(crashReportText);
+  }, [crashReportText]);
 
   const syncScrollHints = useCallback((scrollNode: HTMLElement | null, frameNode: HTMLElement | null) => {
     if (!scrollNode || !frameNode) {
@@ -3310,6 +3438,76 @@ export default function App() {
 	          </div>
 	        </footer>
       </div>
+
+      {isCrashReportOpen && crashReport && (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onClick={(event) => {
+            if (event.target === event.currentTarget) {
+              handleDismissCrashReport();
+            }
+          }}
+        >
+          <div
+            className="modal-panel crash-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="crash-title"
+          >
+            <div className="modal-header">
+              <h2 id="crash-title" className="modal-title">
+                We recovered from a crash
+              </h2>
+              <button
+                type="button"
+                className="icon-button"
+                onClick={handleDismissCrashReport}
+                aria-label="Dismiss crash report"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                  <path d="M18.3 5.7a1 1 0 0 0-1.4 0L12 10.6 7.1 5.7a1 1 0 1 0-1.4 1.4L10.6 12l-4.9 4.9a1 1 0 1 0 1.4 1.4L12 13.4l4.9 4.9a1 1 0 0 0 1.4-1.4L13.4 12l4.9-4.9a1 1 0 0 0 0-1.4Z" />
+                </svg>
+              </button>
+            </div>
+            <div className="modal-body crash-body">
+              <p className="crash-intro">
+                A crash report was saved. You can send it to {CRASH_REPORT_EMAIL} to help us
+                improve stability.
+              </p>
+              <div className="crash-meta">
+                <div>
+                  <span className="meta-label">Time</span>
+                  <span className="meta-value">{formatTimestamp(crashReport.createdMs)}</span>
+                </div>
+                <div>
+                  <span className="meta-label">Message</span>
+                  <span className="meta-value">{crashReport.message}</span>
+                </div>
+                <div>
+                  <span className="meta-label">Report file</span>
+                  <span className="meta-value mono">{crashReport.reportPath}</span>
+                </div>
+              </div>
+              <pre className="crash-report">{crashReportText}</pre>
+            </div>
+            <div className="modal-footer crash-footer">
+              <button type="button" className="help-button" onClick={handleRevealCrashReport}>
+                Show file
+              </button>
+              <button type="button" className="help-button" onClick={handleCopyCrashReport}>
+                Copy report
+              </button>
+              <button type="button" onClick={handleSendCrashReport}>
+                Send report
+              </button>
+              <button type="button" onClick={handleDismissCrashReport}>
+                Dismiss
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {isSettingsOpen && (
         <div

@@ -1,14 +1,15 @@
 use mime_guess::MimeGuess;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::backtrace::Backtrace;
 use std::collections::HashMap;
-use std::fs::{self, File};
-use std::io::{BufReader, Read, Seek, SeekFrom};
+use std::fs::{self, File, OpenOptions};
+use std::io::{BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::UNIX_EPOCH;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::http::header::{HeaderMap, HeaderName, HeaderValue};
 use tauri::http::{Response, StatusCode};
 use tauri::{AppHandle, Emitter, Manager};
@@ -52,6 +53,22 @@ struct AppState {
   destination: Mutex<Option<PathBuf>>,
   scan_cancellations: Mutex<HashMap<String, Arc<AtomicBool>>>,
   trash_dir: PathBuf,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CrashReport {
+  id: String,
+  created_ms: u64,
+  message: String,
+  location: Option<String>,
+  thread: Option<String>,
+  backtrace: Option<String>,
+  app_name: String,
+  app_version: String,
+  os: String,
+  arch: String,
+  report_path: String,
 }
 
 static TRASH_CLEANED: AtomicBool = AtomicBool::new(false);
@@ -149,10 +166,140 @@ fn clear_trash_dir_best_effort(trash_dir: &Path) {
   }
 }
 
+fn crash_report_dir(app_handle: &AppHandle) -> Result<PathBuf, String> {
+  app_handle
+    .path()
+    .app_data_dir()
+    .map_err(|error| error.to_string())
+    .map(|dir| dir.join("crash-reports"))
+}
+
+fn crash_report_pointer_path(report_dir: &Path) -> PathBuf {
+  report_dir.join("last_crash.json")
+}
+
+fn store_crash_report(report_dir: &Path, report: &CrashReport) -> Result<(), String> {
+  fs::create_dir_all(report_dir).map_err(|error| error.to_string())?;
+  let report_path = PathBuf::from(&report.report_path);
+  let serialized = serde_json::to_string_pretty(report).map_err(|error| error.to_string())?;
+  let mut report_file = File::create(&report_path).map_err(|error| error.to_string())?;
+  report_file
+    .write_all(serialized.as_bytes())
+    .map_err(|error| error.to_string())?;
+  report_file.sync_all().ok();
+  let pointer_path = crash_report_pointer_path(report_dir);
+  let mut pointer_file = File::create(&pointer_path).map_err(|error| error.to_string())?;
+  pointer_file
+    .write_all(serialized.as_bytes())
+    .map_err(|error| error.to_string())?;
+  pointer_file.sync_all().ok();
+  Ok(())
+}
+
+fn install_panic_hook(crash_dir: PathBuf, app_name: String, app_version: String) {
+  let default_hook = std::panic::take_hook();
+  std::panic::set_hook(Box::new(move |panic_info| {
+    let report_id = Uuid::new_v4().to_string();
+    let created_ms = SystemTime::now()
+      .duration_since(UNIX_EPOCH)
+      .unwrap_or_default()
+      .as_millis() as u64;
+    let message = if let Some(message) = panic_info.payload().downcast_ref::<&str>() {
+      (*message).to_string()
+    } else if let Some(message) = panic_info.payload().downcast_ref::<String>() {
+      message.clone()
+    } else {
+      "Unknown panic".to_string()
+    };
+    let location = panic_info
+      .location()
+      .map(|location| format!("{}:{}", location.file(), location.line()));
+    let thread = std::thread::current().name().map(|name| name.to_string());
+    let backtrace = Some(Backtrace::force_capture().to_string());
+    let report_path = crash_dir.join(format!("crash-{}.json", report_id));
+    let report = CrashReport {
+      id: report_id,
+      created_ms,
+      message,
+      location,
+      thread,
+      backtrace,
+      app_name: app_name.clone(),
+      app_version: app_version.clone(),
+      os: std::env::consts::OS.to_string(),
+      arch: std::env::consts::ARCH.to_string(),
+      report_path: report_path.to_string_lossy().to_string(),
+    };
+    if let Err(error) = store_crash_report(&crash_dir, &report) {
+      eprintln!("Failed to store crash report: {}", error);
+    }
+    default_hook(panic_info);
+  }));
+}
+
 #[tauri::command]
 fn set_destination(state: tauri::State<'_, AppState>, destination: String) {
   let mut dest = state.destination.lock().expect("destination lock");
   *dest = Some(PathBuf::from(destination));
+}
+
+#[tauri::command]
+fn get_crash_report(app_handle: AppHandle) -> Result<Option<CrashReport>, String> {
+  let report_dir = crash_report_dir(&app_handle)?;
+  let pointer_path = crash_report_pointer_path(&report_dir);
+  if !pointer_path.exists() {
+    return Ok(None);
+  }
+  let contents = fs::read_to_string(&pointer_path).map_err(|error| error.to_string())?;
+  let report = serde_json::from_str(&contents).map_err(|error| error.to_string())?;
+  Ok(Some(report))
+}
+
+#[tauri::command]
+fn clear_crash_report(app_handle: AppHandle) -> Result<(), String> {
+  let report_dir = crash_report_dir(&app_handle)?;
+  let pointer_path = crash_report_pointer_path(&report_dir);
+  if pointer_path.exists() {
+    fs::remove_file(pointer_path).map_err(|error| error.to_string())?;
+  }
+  Ok(())
+}
+
+#[tauri::command]
+fn log_client_error(
+  app_handle: AppHandle,
+  message: String,
+  stack: Option<String>,
+) -> Result<(), String> {
+  let report_dir = crash_report_dir(&app_handle)?;
+  fs::create_dir_all(&report_dir).map_err(|error| error.to_string())?;
+  let log_path = report_dir.join("client-errors.log");
+  let mut file = OpenOptions::new()
+    .create(true)
+    .append(true)
+    .open(&log_path)
+    .map_err(|error| error.to_string())?;
+  let created_ms = SystemTime::now()
+    .duration_since(UNIX_EPOCH)
+    .unwrap_or_default()
+    .as_millis();
+  let header = format!("{} | {}\n", created_ms, message);
+  file
+    .write_all(header.as_bytes())
+    .map_err(|error| error.to_string())?;
+  if let Some(stack) = stack {
+    file
+      .write_all(stack.as_bytes())
+      .map_err(|error| error.to_string())?;
+    file
+      .write_all(b"\n")
+      .map_err(|error| error.to_string())?;
+  }
+  file
+    .write_all(b"---\n")
+    .map_err(|error| error.to_string())?;
+  file.sync_all().ok();
+  Ok(())
 }
 
 #[tauri::command]
@@ -1221,12 +1368,19 @@ fn main() {
   let context = tauri::generate_context!();
   tauri::Builder::default()
     .setup(|app| {
-      let trash_dir = app
+      let app_data_dir = app
         .path()
         .app_data_dir()
-        .map_err(|error| error.to_string())?
-        .join("trash");
+        .map_err(|error| error.to_string())?;
+      let trash_dir = app_data_dir.join("trash");
+      let crash_dir = app_data_dir.join("crash-reports");
       fs::create_dir_all(&trash_dir).map_err(|error| error.to_string())?;
+      fs::create_dir_all(&crash_dir).map_err(|error| error.to_string())?;
+      install_panic_hook(
+        crash_dir,
+        app.package_info().name.to_string(),
+        app.package_info().version.to_string(),
+      );
       clear_trash_dir_best_effort(&trash_dir);
       app.manage(AppState {
         map: Mutex::new(HashMap::new()),
@@ -1248,6 +1402,9 @@ fn main() {
       responder.respond(response);
     })
     .invoke_handler(tauri::generate_handler![
+      get_crash_report,
+      clear_crash_report,
+      log_client_error,
       scan_folder,
       cancel_scan,
       trash_file,

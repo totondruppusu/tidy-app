@@ -6,6 +6,7 @@ import { listen } from "@tauri-apps/api/event";
 
 import type {
   ArchivePreview,
+  ActivitySnapshot,
   CrashReport,
   DensityMode,
   ExtensionFilterMode,
@@ -31,11 +32,16 @@ import {
   COMMON_EXTENSIONS,
   CRASH_REPORT_EMAIL,
   DESTINATION_SLOT_COUNT,
+  EVENT_LOOP_LAG_WARN_MS,
+  EVENT_LOOP_POLL_MS,
   FILTER_OPTIONS,
+  HEARTBEAT_INTERVAL_MS,
   LARGE_PREVIEW_SIZE_BYTES,
   MAX_UNDO_STACK,
   OFFICE_PREVIEW_EXTENSIONS,
+  OFFICE_PREVIEW_DEBOUNCE_MS,
   PREVIEW_DELAY_MS,
+  ARCHIVE_PREVIEW_DEBOUNCE_MS,
   SETTINGS_KEY,
   TREE_INDENT_PX,
 } from "../constants/appConstants";
@@ -44,6 +50,7 @@ import { buildMediaUrl } from "../lib/media";
 import {
   buildCrashEmailBody,
   formatBytes,
+  formatActivitySummary,
   formatCrashReport,
   formatDuplicateGroupMeta,
   formatExtensionLabel,
@@ -197,12 +204,15 @@ export default function App() {
   const previewPanStartRef = useRef<{ x: number; y: number } | null>(null);
   const previewPanPointerRef = useRef<{ x: number; y: number } | null>(null);
   const previewDelayTimeoutRef = useRef<number | null>(null);
+  const officePreviewTimeoutRef = useRef<number | null>(null);
+  const archivePreviewTimeoutRef = useRef<number | null>(null);
   const activeScanId = useRef<string | null>(null);
   const hasAutoLoadedFolderRef = useRef(false);
   const listItemRefs = useRef<Map<string, HTMLButtonElement | null>>(new Map());
   const currentFileIdRef = useRef<string | null>(null);
   const previousActiveFileIdRef = useRef<string | null>(null);
   const visibleFileOrderRef = useRef<string[]>([]);
+  const visibleIndexByIdRef = useRef<Map<string, number>>(new Map());
   const previousExtensionsRef = useRef<string[]>([]);
   const hasUserAdjustedExtensionsRef = useRef(false);
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -212,10 +222,37 @@ export default function App() {
   const fileListScrollRef = useRef<HTMLDivElement | null>(null);
   const previewFrameRef = useRef<HTMLDivElement | null>(null);
   const previewScrollRef = useRef<HTMLElement | null>(null);
+  const lastStatusRef = useRef<string | null>(null);
+  const lastEventLoopLagRef = useRef<number | null>(null);
   const crashReportText = useMemo(
     () => (crashReport ? formatCrashReport(crashReport) : ""),
     [crashReport]
   );
+  const buildActivitySnapshot = useCallback((): ActivitySnapshot => {
+    const scanId = scanProgress?.scanId ?? activeScanId.current ?? null;
+    return {
+      timestampMs: Date.now(),
+      status: lastStatusRef.current,
+      currentFolder,
+      isLoading,
+      isMutating,
+      isCancellingScan,
+      scanId,
+      scanPhase: scanProgress?.phase ?? null,
+      scanScanned: scanProgress?.scanned ?? null,
+      scanMatched: scanProgress?.matched ?? null,
+      scanTotal: scanProgress?.total ?? null,
+      mutationLabel: mutationSpinnerLabel ?? null,
+      eventLoopLagMs: lastEventLoopLagRef.current ?? null,
+    };
+  }, [
+    currentFolder,
+    isLoading,
+    isMutating,
+    isCancellingScan,
+    scanProgress,
+    mutationSpinnerLabel,
+  ]);
   const handleGroupModeChange = useCallback(
     (value: GroupMode) => {
       if (value === "duplicates" && !shouldGroupDuplicates) {
@@ -293,6 +330,24 @@ export default function App() {
     if (!isTauri()) {
       return;
     }
+    let lastTick = performance.now();
+    const interval = window.setInterval(() => {
+      const now = performance.now();
+      const lag = now - lastTick - EVENT_LOOP_POLL_MS;
+      if (lag > EVENT_LOOP_LAG_WARN_MS) {
+        lastEventLoopLagRef.current = Math.round(lag);
+      }
+      lastTick = now;
+    }, EVENT_LOOP_POLL_MS);
+    return () => {
+      window.clearInterval(interval);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isTauri()) {
+      return;
+    }
     const handleError = (event: ErrorEvent) => {
       void invoke("log_client_error", {
         message: event.message || "Unhandled error",
@@ -316,6 +371,26 @@ export default function App() {
       window.removeEventListener("unhandledrejection", handleRejection);
     };
   }, []);
+
+  useEffect(() => {
+    if (!isTauri()) {
+      return;
+    }
+    let active = true;
+    const tick = () => {
+      if (!active) {
+        return;
+      }
+      const activity = buildActivitySnapshot();
+      void invoke("update_heartbeat", { activity }).catch(() => {});
+    };
+    tick();
+    const interval = window.setInterval(tick, HEARTBEAT_INTERVAL_MS);
+    return () => {
+      active = false;
+      window.clearInterval(interval);
+    };
+  }, [buildActivitySnapshot]);
 
   const handleDismissCrashReport = useCallback(() => {
     setIsCrashReportOpen(false);
@@ -477,6 +552,7 @@ export default function App() {
   }, [theme]);
 
   const updateStatus = useCallback((message: string) => {
+    lastStatusRef.current = message;
     setStatus(message);
   }, []);
 
@@ -701,6 +777,10 @@ export default function App() {
   }, [sortedFiles, sortedIndexById, currentIndex]);
 
   useEffect(() => {
+    if (officePreviewTimeoutRef.current) {
+      window.clearTimeout(officePreviewTimeoutRef.current);
+      officePreviewTimeoutRef.current = null;
+    }
     if (!previewFile || !isOfficePreview) {
       setOfficePreviewId(null);
       setOfficePreviewStatus("idle");
@@ -713,29 +793,43 @@ export default function App() {
     }
     let isActive = true;
     setOfficePreviewId(null);
-    setOfficePreviewStatus("loading");
-    invoke<string>("generate_preview", { id: previewFile.id })
-      .then((previewId) => {
-        if (!isActive) {
-          return;
-        }
-        setOfficePreviewId(previewId);
-        setOfficePreviewStatus("idle");
-      })
-      .catch((error) => {
-        if (!isActive) {
-          return;
-        }
-        console.warn("Failed to generate office preview.", error);
-        setOfficePreviewId(null);
-        setOfficePreviewStatus("error");
-      });
+    setOfficePreviewStatus("idle");
+    officePreviewTimeoutRef.current = window.setTimeout(() => {
+      if (!isActive) {
+        return;
+      }
+      setOfficePreviewStatus("loading");
+      invoke<string>("generate_preview", { id: previewFile.id })
+        .then((previewId) => {
+          if (!isActive) {
+            return;
+          }
+          setOfficePreviewId(previewId);
+          setOfficePreviewStatus("idle");
+        })
+        .catch((error) => {
+          if (!isActive) {
+            return;
+          }
+          console.warn("Failed to generate office preview.", error);
+          setOfficePreviewId(null);
+          setOfficePreviewStatus("error");
+        });
+    }, OFFICE_PREVIEW_DEBOUNCE_MS);
     return () => {
       isActive = false;
+      if (officePreviewTimeoutRef.current) {
+        window.clearTimeout(officePreviewTimeoutRef.current);
+        officePreviewTimeoutRef.current = null;
+      }
     };
   }, [previewFile?.id, isOfficePreview]);
 
   useEffect(() => {
+    if (archivePreviewTimeoutRef.current) {
+      window.clearTimeout(archivePreviewTimeoutRef.current);
+      archivePreviewTimeoutRef.current = null;
+    }
     if (!previewFile || !isArchivePreview) {
       setArchiveEntries([]);
       setArchiveTruncated(false);
@@ -753,29 +847,39 @@ export default function App() {
     let isActive = true;
     setArchiveEntries([]);
     setArchiveTruncated(false);
-    setArchiveStatus("loading");
+    setArchiveStatus("idle");
     setArchiveError(null);
-    invoke<ArchivePreview>("list_archive_entries", { id: previewFile.id })
-      .then((result) => {
-        if (!isActive) {
-          return;
-        }
-        setArchiveEntries(result.entries);
-        setArchiveTruncated(result.truncated);
-        setArchiveStatus("idle");
-      })
-      .catch((error) => {
-        if (!isActive) {
-          return;
-        }
-        console.warn("Failed to load archive preview.", error);
-        setArchiveEntries([]);
-        setArchiveTruncated(false);
-        setArchiveStatus("error");
-        setArchiveError("Preview unavailable for this archive.");
-      });
+    archivePreviewTimeoutRef.current = window.setTimeout(() => {
+      if (!isActive) {
+        return;
+      }
+      setArchiveStatus("loading");
+      invoke<ArchivePreview>("list_archive_entries", { id: previewFile.id })
+        .then((result) => {
+          if (!isActive) {
+            return;
+          }
+          setArchiveEntries(result.entries);
+          setArchiveTruncated(result.truncated);
+          setArchiveStatus("idle");
+        })
+        .catch((error) => {
+          if (!isActive) {
+            return;
+          }
+          console.warn("Failed to load archive preview.", error);
+          setArchiveEntries([]);
+          setArchiveTruncated(false);
+          setArchiveStatus("error");
+          setArchiveError("Preview unavailable for this archive.");
+        });
+    }, ARCHIVE_PREVIEW_DEBOUNCE_MS);
     return () => {
       isActive = false;
+      if (archivePreviewTimeoutRef.current) {
+        window.clearTimeout(archivePreviewTimeoutRef.current);
+        archivePreviewTimeoutRef.current = null;
+      }
     };
   }, [previewFile?.id, isArchivePreview]);
 
@@ -1482,11 +1586,12 @@ export default function App() {
 
   const goNext = useCallback(() => {
     const order = visibleFileOrderRef.current;
-    if (!currentFile || order.length === 0) {
+    const activeId = currentFileIdRef.current ?? currentFile?.id ?? null;
+    if (!activeId || order.length === 0) {
       return;
     }
-    const position = order.indexOf(currentFile.id);
-    if (position === -1 || position >= order.length - 1) {
+    const position = visibleIndexByIdRef.current.get(activeId);
+    if (position === undefined || position >= order.length - 1) {
       return;
     }
     const nextId = order[position + 1];
@@ -1500,11 +1605,12 @@ export default function App() {
 
   const goPrev = useCallback(() => {
     const order = visibleFileOrderRef.current;
-    if (!currentFile || order.length === 0) {
+    const activeId = currentFileIdRef.current ?? currentFile?.id ?? null;
+    if (!activeId || order.length === 0) {
       return;
     }
-    const position = order.indexOf(currentFile.id);
-    if (position <= 0) {
+    const position = visibleIndexByIdRef.current.get(activeId);
+    if (position === undefined || position <= 0) {
       return;
     }
     const prevId = order[position - 1];
@@ -2092,6 +2198,11 @@ export default function App() {
 
   useEffect(() => {
     visibleFileOrderRef.current = visibleFileOrder;
+    const indexMap = new Map<string, number>();
+    visibleFileOrder.forEach((id, index) => {
+      indexMap.set(id, index);
+    });
+    visibleIndexByIdRef.current = indexMap;
   }, [visibleFileOrder]);
 
   useEffect(() => {
@@ -2158,8 +2269,15 @@ export default function App() {
     if (!node) {
       return;
     }
+    const prefersReducedMotion =
+      typeof window !== "undefined" &&
+      typeof window.matchMedia === "function" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     requestAnimationFrame(() => {
-      node.scrollIntoView({ block: "nearest" });
+      node.scrollIntoView({
+        block: "nearest",
+        behavior: prefersReducedMotion ? "auto" : "smooth",
+      });
     });
   }, [currentFile, renderCount, collapsedGroups, collapsedFolders]);
 
@@ -2833,8 +2951,20 @@ export default function App() {
                   <span className="meta-value">{formatTimestamp(crashReport.createdMs)}</span>
                 </div>
                 <div>
+                  <span className="meta-label">Last heartbeat</span>
+                  <span className="meta-value">
+                    {formatTimestamp(crashReport.lastHeartbeatMs ?? null)}
+                  </span>
+                </div>
+                <div>
                   <span className="meta-label">Message</span>
                   <span className="meta-value">{crashReport.message}</span>
+                </div>
+                <div>
+                  <span className="meta-label">Last activity</span>
+                  <span className="meta-value">
+                    {formatActivitySummary(crashReport.lastActivity)}
+                  </span>
                 </div>
                 <div>
                   <span className="meta-label">Report file</span>

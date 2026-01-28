@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::http::header::{HeaderMap, HeaderName, HeaderValue};
 use tauri::http::{Response, StatusCode};
 use tauri::{AppHandle, Emitter, Manager};
@@ -57,6 +57,37 @@ struct AppState {
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct SessionInfo {
+  id: String,
+  started_ms: u64,
+  last_heartbeat_ms: u64,
+  clean_shutdown: bool,
+  app_name: String,
+  app_version: String,
+  os: String,
+  arch: String,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ActivitySnapshot {
+  timestamp_ms: u64,
+  status: Option<String>,
+  current_folder: Option<String>,
+  is_loading: bool,
+  is_mutating: bool,
+  is_cancelling_scan: bool,
+  scan_id: Option<String>,
+  scan_phase: Option<String>,
+  scan_scanned: Option<u64>,
+  scan_matched: Option<u64>,
+  scan_total: Option<u64>,
+  mutation_label: Option<String>,
+  event_loop_lag_ms: Option<u64>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct CrashReport {
   id: String,
   created_ms: u64,
@@ -69,12 +100,16 @@ struct CrashReport {
   os: String,
   arch: String,
   report_path: String,
+  last_activity: Option<ActivitySnapshot>,
+  last_heartbeat_ms: Option<u64>,
 }
 
 static TRASH_CLEANED: AtomicBool = AtomicBool::new(false);
 
 const MAX_ARCHIVE_ENTRIES: usize = 200;
 const MAX_RANGE_CHUNK_BYTES: u64 = 1_048_576;
+const QLMANAGE_TIMEOUT_SECS: u64 = 10;
+const QLMANAGE_POLL_MS: u64 = 100;
 
 #[derive(Serialize)]
 struct ScanResult {
@@ -178,6 +213,14 @@ fn crash_report_pointer_path(report_dir: &Path) -> PathBuf {
   report_dir.join("last_crash.json")
 }
 
+fn session_file_path(report_dir: &Path) -> PathBuf {
+  report_dir.join("last_session.json")
+}
+
+fn activity_file_path(report_dir: &Path) -> PathBuf {
+  report_dir.join("last_activity.json")
+}
+
 fn store_crash_report(report_dir: &Path, report: &CrashReport) -> Result<(), String> {
   fs::create_dir_all(report_dir).map_err(|error| error.to_string())?;
   let report_path = PathBuf::from(&report.report_path);
@@ -196,9 +239,93 @@ fn store_crash_report(report_dir: &Path, report: &CrashReport) -> Result<(), Str
   Ok(())
 }
 
+fn load_last_crash_report(report_dir: &Path) -> Option<CrashReport> {
+  let pointer_path = crash_report_pointer_path(report_dir);
+  let contents = fs::read_to_string(pointer_path).ok()?;
+  serde_json::from_str(&contents).ok()
+}
+
+fn store_activity_snapshot(report_dir: &Path, snapshot: &ActivitySnapshot) -> Result<(), String> {
+  fs::create_dir_all(report_dir).map_err(|error| error.to_string())?;
+  let serialized = serde_json::to_string_pretty(snapshot).map_err(|error| error.to_string())?;
+  let path = activity_file_path(report_dir);
+  let mut file = File::create(&path).map_err(|error| error.to_string())?;
+  file
+    .write_all(serialized.as_bytes())
+    .map_err(|error| error.to_string())?;
+  file.sync_all().ok();
+  Ok(())
+}
+
+fn load_activity_snapshot(report_dir: &Path) -> Option<ActivitySnapshot> {
+  let path = activity_file_path(report_dir);
+  let contents = fs::read_to_string(path).ok()?;
+  serde_json::from_str(&contents).ok()
+}
+
+fn store_session_info(report_dir: &Path, session: &SessionInfo) -> Result<(), String> {
+  fs::create_dir_all(report_dir).map_err(|error| error.to_string())?;
+  let serialized = serde_json::to_string_pretty(session).map_err(|error| error.to_string())?;
+  let path = session_file_path(report_dir);
+  let mut file = File::create(&path).map_err(|error| error.to_string())?;
+  file
+    .write_all(serialized.as_bytes())
+    .map_err(|error| error.to_string())?;
+  file.sync_all().ok();
+  Ok(())
+}
+
+fn load_session_info(report_dir: &Path) -> Option<SessionInfo> {
+  let path = session_file_path(report_dir);
+  let contents = fs::read_to_string(path).ok()?;
+  serde_json::from_str(&contents).ok()
+}
+
+fn create_unclean_shutdown_report(report_dir: &Path, session: &SessionInfo) -> Result<(), String> {
+  let report_id = Uuid::new_v4().to_string();
+  let last_activity = load_activity_snapshot(report_dir);
+  let report_path = report_dir.join(format!("crash-{}.json", report_id));
+  let report = CrashReport {
+    id: report_id,
+    created_ms: session.last_heartbeat_ms.max(session.started_ms),
+    message: "Previous session ended unexpectedly (force quit or hang).".to_string(),
+    location: None,
+    thread: None,
+    backtrace: None,
+    app_name: session.app_name.clone(),
+    app_version: session.app_version.clone(),
+    os: session.os.clone(),
+    arch: session.arch.clone(),
+    report_path: report_path.to_string_lossy().to_string(),
+    last_activity,
+    last_heartbeat_ms: Some(session.last_heartbeat_ms),
+  };
+  store_crash_report(report_dir, &report)
+}
+
+fn mark_session_clean_best_effort(app_handle: &AppHandle) {
+  let report_dir = match crash_report_dir(app_handle) {
+    Ok(dir) => dir,
+    Err(_) => return,
+  };
+  let mut session = match load_session_info(&report_dir) {
+    Some(session) => session,
+    None => return,
+  };
+  let now_ms = SystemTime::now()
+    .duration_since(UNIX_EPOCH)
+    .unwrap_or_default()
+    .as_millis() as u64;
+  session.clean_shutdown = true;
+  session.last_heartbeat_ms = now_ms;
+  let _ = store_session_info(&report_dir, &session);
+}
+
 fn install_panic_hook(crash_dir: PathBuf, app_name: String, app_version: String) {
   let default_hook = std::panic::take_hook();
   std::panic::set_hook(Box::new(move |panic_info| {
+    let last_activity = load_activity_snapshot(&crash_dir);
+    let last_heartbeat_ms = load_session_info(&crash_dir).map(|session| session.last_heartbeat_ms);
     let report_id = Uuid::new_v4().to_string();
     let created_ms = SystemTime::now()
       .duration_since(UNIX_EPOCH)
@@ -229,6 +356,8 @@ fn install_panic_hook(crash_dir: PathBuf, app_name: String, app_version: String)
       os: std::env::consts::OS.to_string(),
       arch: std::env::consts::ARCH.to_string(),
       report_path: report_path.to_string_lossy().to_string(),
+      last_activity,
+      last_heartbeat_ms,
     };
     if let Err(error) = store_crash_report(&crash_dir, &report) {
       eprintln!("Failed to store crash report: {}", error);
@@ -299,6 +428,28 @@ fn log_client_error(
     .write_all(b"---\n")
     .map_err(|error| error.to_string())?;
   file.sync_all().ok();
+  Ok(())
+}
+
+#[tauri::command]
+fn update_heartbeat(
+  app_handle: AppHandle,
+  activity: Option<ActivitySnapshot>,
+) -> Result<(), String> {
+  let report_dir = crash_report_dir(&app_handle)?;
+  let mut session = load_session_info(&report_dir).ok_or("Session not initialized")?;
+  let now_ms = SystemTime::now()
+    .duration_since(UNIX_EPOCH)
+    .unwrap_or_default()
+    .as_millis() as u64;
+  session.last_heartbeat_ms = now_ms;
+  store_session_info(&report_dir, &session)?;
+  if let Some(mut snapshot) = activity {
+    if snapshot.timestamp_ms == 0 {
+      snapshot.timestamp_ms = now_ms;
+    }
+    store_activity_snapshot(&report_dir, &snapshot)?;
+  }
   Ok(())
 }
 
@@ -714,7 +865,7 @@ fn restore_folder(
 }
 
 #[tauri::command]
-fn list_archive_entries(
+async fn list_archive_entries(
   state: tauri::State<'_, AppState>,
   id: String,
 ) -> Result<ArchivePreview, String> {
@@ -726,7 +877,7 @@ fn list_archive_entries(
     return Err("File not found".into());
   }
 
-  match detect_archive_kind(&path) {
+  tauri::async_runtime::spawn_blocking(move || match detect_archive_kind(&path) {
     Some(ArchiveKind::Zip) => list_zip_entries(&path),
     Some(ArchiveKind::Tar) => {
       let file = File::open(&path).map_err(|error| error.to_string())?;
@@ -745,11 +896,13 @@ fn list_archive_entries(
       list_tar_entries(XzDecoder::new(BufReader::new(file)))
     }
     None => Err("Preview not available for this archive format.".into()),
-  }
+  })
+  .await
+  .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-fn generate_preview(
+async fn generate_preview(
   app: AppHandle,
   state: tauri::State<'_, AppState>,
   id: String,
@@ -781,39 +934,15 @@ fn generate_preview(
 
   let cache_dir = app.path().app_cache_dir().map_err(|error| error.to_string())?;
   let preview_root = cache_dir.join("previews");
-  fs::create_dir_all(&preview_root).map_err(|error| error.to_string())?;
   let session_dir = preview_root.join(Uuid::new_v4().to_string());
-  fs::create_dir_all(&session_dir).map_err(|error| error.to_string())?;
-
-  let output = Command::new("qlmanage")
-    .arg("-t")
-    .arg("-s")
-    .arg("1400")
-    .arg("-o")
-    .arg(&session_dir)
-    .arg(&source_path)
-    .output()
-    .map_err(|error| error.to_string())?;
-
-  if !output.status.success() {
-    return Err("Preview generation failed.".into());
-  }
-
-  let preview_path = fs::read_dir(&session_dir)
-    .map_err(|error| error.to_string())?
-    .filter_map(|entry| entry.ok())
-    .map(|entry| entry.path())
-    .find(|path| {
-      path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .map(|ext| match ext.to_ascii_lowercase().as_str() {
-          "png" | "jpg" | "jpeg" => true,
-          _ => false,
-        })
-        .unwrap_or(false)
-    })
-    .ok_or("Preview file not found")?;
+  let source_path_clone = source_path.clone();
+  let preview_path = tauri::async_runtime::spawn_blocking(move || {
+    fs::create_dir_all(&preview_root).map_err(|error| error.to_string())?;
+    fs::create_dir_all(&session_dir).map_err(|error| error.to_string())?;
+    run_qlmanage_preview(&session_dir, &source_path_clone)
+  })
+  .await
+  .map_err(|error| error.to_string())??;
 
   let preview_id = format!("preview:{}", Uuid::new_v4());
   {
@@ -1214,6 +1343,48 @@ fn detect_archive_kind(path: &Path) -> Option<ArchiveKind> {
   None
 }
 
+fn run_qlmanage_preview(session_dir: &Path, source_path: &Path) -> Result<PathBuf, String> {
+  let mut child = Command::new("qlmanage")
+    .arg("-t")
+    .arg("-s")
+    .arg("1400")
+    .arg("-o")
+    .arg(session_dir)
+    .arg(source_path)
+    .spawn()
+    .map_err(|error| error.to_string())?;
+
+  let timeout = Duration::from_secs(QLMANAGE_TIMEOUT_SECS);
+  let start = Instant::now();
+  loop {
+    if let Some(status) = child.try_wait().map_err(|error| error.to_string())? {
+      if !status.success() {
+        return Err("Preview generation failed.".into());
+      }
+      break;
+    }
+    if start.elapsed() >= timeout {
+      let _ = child.kill();
+      let _ = child.wait();
+      return Err("Preview generation timed out.".into());
+    }
+    std::thread::sleep(Duration::from_millis(QLMANAGE_POLL_MS));
+  }
+
+  fs::read_dir(session_dir)
+    .map_err(|error| error.to_string())?
+    .filter_map(|entry| entry.ok())
+    .map(|entry| entry.path())
+    .find(|path| {
+      path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| matches!(ext.to_ascii_lowercase().as_str(), "png" | "jpg" | "jpeg"))
+        .unwrap_or(false)
+    })
+    .ok_or("Preview file not found".into())
+}
+
 fn list_zip_entries(path: &Path) -> Result<ArchivePreview, String> {
   let file = File::open(path).map_err(|error| error.to_string())?;
   let mut archive = ZipArchive::new(file).map_err(|error| error.to_string())?;
@@ -1376,6 +1547,35 @@ fn main() {
       let crash_dir = app_data_dir.join("crash-reports");
       fs::create_dir_all(&trash_dir).map_err(|error| error.to_string())?;
       fs::create_dir_all(&crash_dir).map_err(|error| error.to_string())?;
+      if let Some(previous_session) = load_session_info(&crash_dir) {
+        if !previous_session.clean_shutdown {
+          let skip_report = load_last_crash_report(&crash_dir)
+            .map(|report| report.created_ms >= previous_session.started_ms)
+            .unwrap_or(false);
+          if !skip_report {
+            if let Err(error) = create_unclean_shutdown_report(&crash_dir, &previous_session) {
+              eprintln!("Failed to store unclean shutdown report: {}", error);
+            }
+          }
+        }
+      }
+      let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+      let session = SessionInfo {
+        id: Uuid::new_v4().to_string(),
+        started_ms: now_ms,
+        last_heartbeat_ms: now_ms,
+        clean_shutdown: false,
+        app_name: app.package_info().name.to_string(),
+        app_version: app.package_info().version.to_string(),
+        os: std::env::consts::OS.to_string(),
+        arch: std::env::consts::ARCH.to_string(),
+      };
+      if let Err(error) = store_session_info(&crash_dir, &session) {
+        eprintln!("Failed to store session info: {}", error);
+      }
       install_panic_hook(
         crash_dir,
         app.package_info().name.to_string(),
@@ -1405,6 +1605,7 @@ fn main() {
       get_crash_report,
       clear_crash_report,
       log_client_error,
+      update_heartbeat,
       scan_folder,
       cancel_scan,
       trash_file,
@@ -1422,6 +1623,7 @@ fn main() {
     .run(|app_handle, event| {
       match event {
         tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
+          mark_session_clean_best_effort(&app_handle);
           let already_cleaned =
             TRASH_CLEANED.swap(true, Ordering::Relaxed);
           if already_cleaned {

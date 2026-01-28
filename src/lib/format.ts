@@ -1,5 +1,5 @@
 import { MAX_CRASH_EMAIL_BODY } from "../constants/appConstants";
-import type { CrashReport, FileEntry, GroupMode } from "../types";
+import type { ActivitySnapshot, CrashReport, FileEntry, GroupMode } from "../types";
 
 export const formatBytes = (bytes: number) => {
   if (!Number.isFinite(bytes)) {
@@ -78,10 +78,17 @@ export const formatCrashReport = (report: CrashReport) => {
     `Location: ${report.location ?? "Unknown"}`,
     `Thread: ${report.thread ?? "Unknown"}`,
     `Report path: ${report.reportPath}`,
+    `Last heartbeat: ${
+      report.lastHeartbeatMs ? new Date(report.lastHeartbeatMs).toISOString() : "Unknown"
+    }`,
     "",
     "Backtrace:",
     report.backtrace ?? "Unavailable",
   ];
+  const activityLines = formatActivityDetails(report.lastActivity);
+  if (activityLines.length > 0) {
+    lines.push("", "Last activity:", ...activityLines);
+  }
   return lines.join("\n");
 };
 
@@ -91,6 +98,83 @@ export const buildCrashEmailBody = (report: CrashReport) => {
     return body;
   }
   return `${body.slice(0, MAX_CRASH_EMAIL_BODY)}\n\n[Report truncated for email. Full report saved on disk.]`;
+};
+
+export const formatActivitySummary = (activity?: ActivitySnapshot | null) => {
+  if (!activity) {
+    return "Unavailable";
+  }
+  const parts: string[] = [];
+  if (activity.status) {
+    parts.push(activity.status);
+  }
+  if (activity.mutationLabel) {
+    parts.push(activity.mutationLabel);
+  }
+  if (activity.scanPhase) {
+    let scanPart = `Scan ${activity.scanPhase}`;
+    if (activity.scanScanned != null && activity.scanTotal != null) {
+      scanPart += ` ${activity.scanScanned}/${activity.scanTotal}`;
+    }
+    parts.push(scanPart);
+  }
+  if (activity.isLoading) {
+    parts.push("Loading");
+  }
+  if (activity.isMutating) {
+    parts.push("Mutating");
+  }
+  if (activity.isCancellingScan) {
+    parts.push("Cancelling scan");
+  }
+  if (activity.eventLoopLagMs != null) {
+    parts.push(`Event loop lag ${activity.eventLoopLagMs}ms`);
+  }
+  if (activity.currentFolder) {
+    parts.push(`Folder ${activity.currentFolder}`);
+  }
+  if (parts.length === 0) {
+    return "Idle";
+  }
+  return parts.join(" · ");
+};
+
+export const formatActivityDetails = (activity?: ActivitySnapshot | null) => {
+  if (!activity) {
+    return ["Unavailable"];
+  }
+  const lines: string[] = [`Snapshot: ${new Date(activity.timestampMs).toISOString()}`];
+  if (activity.status) {
+    lines.push(`Status: ${activity.status}`);
+  }
+  if (activity.mutationLabel) {
+    lines.push(`Mutation: ${activity.mutationLabel}`);
+  }
+  if (activity.scanId) {
+    lines.push(`Scan ID: ${activity.scanId}`);
+  }
+  if (activity.scanPhase) {
+    lines.push(`Scan phase: ${activity.scanPhase}`);
+  }
+  if (activity.scanScanned != null) {
+    lines.push(`Scan scanned: ${activity.scanScanned}`);
+  }
+  if (activity.scanMatched != null) {
+    lines.push(`Scan matched: ${activity.scanMatched}`);
+  }
+  if (activity.scanTotal != null) {
+    lines.push(`Scan total: ${activity.scanTotal}`);
+  }
+  lines.push(`Loading: ${activity.isLoading ? "true" : "false"}`);
+  lines.push(`Mutating: ${activity.isMutating ? "true" : "false"}`);
+  lines.push(`Cancelling scan: ${activity.isCancellingScan ? "true" : "false"}`);
+  if (activity.eventLoopLagMs != null) {
+    lines.push(`Event loop lag (ms): ${activity.eventLoopLagMs}`);
+  }
+  if (activity.currentFolder) {
+    lines.push(`Folder: ${activity.currentFolder}`);
+  }
+  return lines;
 };
 
 export const formatPathLabel = (path: string | null) => {

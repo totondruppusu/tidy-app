@@ -40,6 +40,10 @@ license managment
 ?add a bookmark to a certain file/list view
 .crash logging
 .crash report via email
+.Faster next/prev selection 
+.Smooth scrollIntoView
+.Responsive layout clamps
+.Smoother selection highlight transition and stable scroll behavior
 
 BUG
 .next and prev absoute
@@ -52,6 +56,7 @@ odp files crash
 sorting size bugged in tree view
 .app trash does not clean up after exiting
 better responsive settings modal
+.previews that take time hung the application and crashes
 
 REFACTORING
 .refactor app structure in app, components, constansts, lib, styles, types

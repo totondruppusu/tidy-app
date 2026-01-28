@@ -82,6 +82,22 @@ export type TrashResult = {
   trashPath: string | null;
 };
 
+export type ActivitySnapshot = {
+  timestampMs: number;
+  status?: string | null;
+  currentFolder?: string | null;
+  isLoading: boolean;
+  isMutating: boolean;
+  isCancellingScan: boolean;
+  scanId?: string | null;
+  scanPhase?: string | null;
+  scanScanned?: number | null;
+  scanMatched?: number | null;
+  scanTotal?: number | null;
+  mutationLabel?: string | null;
+  eventLoopLagMs?: number | null;
+};
+
 export type CrashReport = {
   id: string;
   createdMs: number;
@@ -94,6 +110,8 @@ export type CrashReport = {
   os: string;
   arch: string;
   reportPath: string;
+  lastActivity?: ActivitySnapshot | null;
+  lastHeartbeatMs?: number | null;
 };
 
 export type FolderTrashEntry = {

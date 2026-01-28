@@ -55,7 +55,7 @@ no preview of windows doc
 odp files crash
 sorting size bugged in tree view
 .app trash does not clean up after exiting
-better responsive settings modal
+.better responsive settings modal
 .previews that take time hung the application and crashes
 
 REFACTORING

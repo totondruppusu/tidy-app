@@ -51,3 +51,7 @@ no preview of windows doc
 odp files crash
 sorting size bugged in tree view
 .app trash does not clean up after exiting
+better responsive settings modal
+
+REFACTORING
+.refactor app structure in app, components, constansts, lib, styles, types

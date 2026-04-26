@@ -71,7 +71,7 @@ export const HelpModal = ({ isOpen, onClose }: HelpModalProps) => {
               <h3 className="help-section-title">Settings</h3>
               <ul className="help-list">
                 <li>Include subfolders to scan nested directories.</li>
-                <li>Include hidden items to scan dotfiles and hidden folders.</li>
+                <li>Include hidden items to scan dotfiles plus hidden/system-marked entries.</li>
                 <li>Toggle trash confirmation and switch between light and dark mode.</li>
                 <li>Adjust list density for a roomier or compact list.</li>
               </ul>

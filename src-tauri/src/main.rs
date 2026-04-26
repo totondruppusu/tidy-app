@@ -21,7 +21,7 @@ use tar::Archive;
 use xz2::read::XzDecoder;
 use zip::ZipArchive;
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum FileKind {
   Image,
@@ -34,7 +34,7 @@ enum FileKind {
   Binary,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct FileEntry {
   id: String,
@@ -110,6 +110,240 @@ const MAX_ARCHIVE_ENTRIES: usize = 200;
 const MAX_RANGE_CHUNK_BYTES: u64 = 1_048_576;
 const QLMANAGE_TIMEOUT_SECS: u64 = 10;
 const QLMANAGE_POLL_MS: u64 = 100;
+const MAX_UNDO_STACK: usize = 20;
+const OPERATION_HISTORY_FILE: &str = "operation-history.jsonl";
+const UNDO_ACTIONS_FILE: &str = "undo-actions.json";
+const APPLIED_BATCHES_DIR: &str = "applied-batches";
+const PARTIAL_HASH_BYTES: usize = 65_536;
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FolderTrashItemPayload {
+  file: FileEntry,
+  relative_path: String,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(tag = "kind")]
+enum UndoActionPayload {
+  #[serde(rename = "move")]
+  Move {
+    file: FileEntry,
+    #[serde(rename = "fromPath")]
+    from_path: String,
+    #[serde(rename = "toPath")]
+    to_path: String,
+  },
+  #[serde(rename = "trash")]
+  Trash {
+    file: FileEntry,
+    #[serde(rename = "fromPath")]
+    from_path: String,
+    #[serde(rename = "trashPath")]
+    trash_path: String,
+  },
+  #[serde(rename = "trash-folder")]
+  TrashFolder {
+    #[serde(rename = "folderPath")]
+    folder_path: String,
+    #[serde(rename = "trashPath")]
+    trash_path: String,
+    items: Vec<FolderTrashItemPayload>,
+  },
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OperationJournalEntry {
+  id: String,
+  timestamp_ms: u64,
+  operation: String,
+  status: String,
+  mode: Option<String>,
+  source: Option<String>,
+  destination: Option<String>,
+  safety_level: Option<String>,
+  message: Option<String>,
+  rollback: Option<serde_json::Value>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OperationHistoryPage {
+  entries: Vec<OperationJournalEntry>,
+  next_cursor: Option<usize>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PreviewCapabilities {
+  platform: String,
+  text_preview: bool,
+  pdf_preview: bool,
+  media_preview: bool,
+  archive_preview: bool,
+  office_rich_preview: bool,
+  office_fallback_preview: bool,
+  notes: Vec<String>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ScanIssue {
+  code: String,
+  message: String,
+  path: Option<String>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ScanStats {
+  indexed: usize,
+  matched: usize,
+  duplicate_groups: usize,
+  duration_ms: u64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ScanResultV2 {
+  files: Vec<FileEntry>,
+  total: usize,
+  stats: ScanStats,
+  issues: Vec<ScanIssue>,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ScanRequestV2 {
+  folder_path: String,
+  filter_mode: String,
+  include_subfolders: bool,
+  include_hidden: bool,
+  use_hash_for_duplicates: bool,
+  duplicate_min_size_bytes: u64,
+  scan_id: Option<String>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum SafetyLevel {
+  Safe,
+  Review,
+  Manual,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SuggestionReason {
+  code: String,
+  message: String,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Suggestion {
+  id: String,
+  action_type: String,
+  source_path: String,
+  destination_path: Option<String>,
+  safety_level: SafetyLevel,
+  reclaimable_bytes: u64,
+  reason: SuggestionReason,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SuggestionSet {
+  generated_ms: u64,
+  folder_path: String,
+  total_reclaimable_bytes: u64,
+  suggestions: Vec<Suggestion>,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SuggestionsRequest {
+  folder_path: String,
+  include_subfolders: bool,
+  include_hidden: bool,
+  max_results: Option<usize>,
+  min_large_file_bytes: Option<u64>,
+  stale_days: Option<u64>,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ActionBatchItem {
+  id: String,
+  action_type: String,
+  source_path: String,
+  destination_path: Option<String>,
+  safety_level: Option<String>,
+  reason: Option<String>,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ActionBatchRequest {
+  actions: Vec<ActionBatchItem>,
+  allow_unsafe: Option<bool>,
+  dry_run: Option<bool>,
+  allow_permanent_delete: Option<bool>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ActionResult {
+  id: String,
+  status: String,
+  message: String,
+  undoable: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ActionBatchResult {
+  batch_id: String,
+  dry_run: bool,
+  applied: usize,
+  blocked: usize,
+  failed: usize,
+  results: Vec<ActionResult>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UndoBatchAction {
+  action_type: String,
+  source_path: String,
+  rollback_source: Option<String>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UndoBatchRecord {
+  batch_id: String,
+  created_ms: u64,
+  actions: Vec<UndoBatchAction>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UndoBatchResult {
+  batch_id: String,
+  restored: usize,
+  failed: usize,
+  messages: Vec<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OfficeFallbackPreview {
+  mode: String,
+  title: String,
+  excerpt: String,
+}
 
 #[derive(Serialize)]
 struct ScanResult {
@@ -172,6 +406,302 @@ fn parse_trash_mode(value: &str) -> TrashMode {
     "permanent" => TrashMode::Permanent,
     _ => TrashMode::System,
   }
+}
+
+fn now_ms() -> u64 {
+  SystemTime::now()
+    .duration_since(UNIX_EPOCH)
+    .unwrap_or_default()
+    .as_millis() as u64
+}
+
+fn history_file_path(app_handle: &AppHandle) -> Result<PathBuf, String> {
+  app_handle
+    .path()
+    .app_data_dir()
+    .map_err(|error| error.to_string())
+    .map(|dir| dir.join(OPERATION_HISTORY_FILE))
+}
+
+fn undo_actions_file_path(app_handle: &AppHandle) -> Result<PathBuf, String> {
+  app_handle
+    .path()
+    .app_data_dir()
+    .map_err(|error| error.to_string())
+    .map(|dir| dir.join(UNDO_ACTIONS_FILE))
+}
+
+fn batch_record_dir(app_handle: &AppHandle) -> Result<PathBuf, String> {
+  app_handle
+    .path()
+    .app_data_dir()
+    .map_err(|error| error.to_string())
+    .map(|dir| dir.join(APPLIED_BATCHES_DIR))
+}
+
+fn append_operation_journal(
+  app_handle: &AppHandle,
+  operation: &str,
+  status: &str,
+  mode: Option<String>,
+  source: Option<String>,
+  destination: Option<String>,
+  safety_level: Option<String>,
+  message: Option<String>,
+  rollback: Option<serde_json::Value>,
+) -> Result<String, String> {
+  let history_path = history_file_path(app_handle)?;
+  if let Some(parent) = history_path.parent() {
+    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+  }
+  let entry_id = Uuid::new_v4().to_string();
+  let entry = OperationJournalEntry {
+    id: entry_id.clone(),
+    timestamp_ms: now_ms(),
+    operation: operation.to_string(),
+    status: status.to_string(),
+    mode,
+    source,
+    destination,
+    safety_level,
+    message,
+    rollback,
+  };
+  let serialized = serde_json::to_string(&entry).map_err(|error| error.to_string())?;
+  let mut file = OpenOptions::new()
+    .create(true)
+    .append(true)
+    .open(&history_path)
+    .map_err(|error| error.to_string())?;
+  file
+    .write_all(serialized.as_bytes())
+    .map_err(|error| error.to_string())?;
+  file.write_all(b"\n").map_err(|error| error.to_string())?;
+  file.sync_all().ok();
+  Ok(entry_id)
+}
+
+fn load_operation_history(app_handle: &AppHandle) -> Result<Vec<OperationJournalEntry>, String> {
+  let history_path = history_file_path(app_handle)?;
+  if !history_path.exists() {
+    return Ok(Vec::new());
+  }
+  let contents = fs::read_to_string(history_path).map_err(|error| error.to_string())?;
+  let mut entries = Vec::new();
+  for line in contents.lines() {
+    if line.trim().is_empty() {
+      continue;
+    }
+    if let Ok(entry) = serde_json::from_str::<OperationJournalEntry>(line) {
+      entries.push(entry);
+    }
+  }
+  entries.reverse();
+  Ok(entries)
+}
+
+fn load_recent_undo_actions(app_handle: &AppHandle) -> Result<Vec<UndoActionPayload>, String> {
+  let path = undo_actions_file_path(app_handle)?;
+  if !path.exists() {
+    return Ok(Vec::new());
+  }
+  let contents = fs::read_to_string(path).map_err(|error| error.to_string())?;
+  serde_json::from_str(&contents).map_err(|error| error.to_string())
+}
+
+fn store_recent_undo_actions_internal(
+  app_handle: &AppHandle,
+  mut actions: Vec<UndoActionPayload>,
+) -> Result<(), String> {
+  if actions.len() > MAX_UNDO_STACK {
+    actions.truncate(MAX_UNDO_STACK);
+  }
+  let path = undo_actions_file_path(app_handle)?;
+  if let Some(parent) = path.parent() {
+    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+  }
+  let serialized = serde_json::to_string_pretty(&actions).map_err(|error| error.to_string())?;
+  fs::write(path, serialized).map_err(|error| error.to_string())
+}
+
+fn is_path_in_subtree(path: &Path, root: &Path) -> bool {
+  let path = path.components().collect::<Vec<_>>();
+  let root = root.components().collect::<Vec<_>>();
+  if root.len() > path.len() {
+    return false;
+  }
+  root.iter().zip(path.iter()).all(|(a, b)| a == b)
+}
+
+fn protected_path_reason(path: &Path) -> Option<String> {
+  let canonical = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+  if cfg!(target_os = "macos") {
+    let protected_roots = ["/System", "/Library", "/Applications"];
+    for root in protected_roots {
+      if is_path_in_subtree(&canonical, Path::new(root)) {
+        return Some(format!("{} is protected by safety policy", root));
+      }
+    }
+  }
+  if cfg!(target_os = "windows") {
+    let lower = canonical.to_string_lossy().to_lowercase();
+    let protected_patterns = [
+      "\\windows",
+      "\\program files",
+      "\\program files (x86)",
+      "\\programdata",
+      "\\$recycle.bin",
+      "\\system volume information",
+    ];
+    if protected_patterns.iter().any(|pattern| lower.contains(pattern)) {
+      return Some("Windows system path is protected by safety policy".to_string());
+    }
+  }
+  let lower = canonical.to_string_lossy().to_lowercase();
+  if lower.contains("/.trash") || lower.contains("\\$recycle.bin") {
+    return Some("Recycle bins are protected by safety policy".to_string());
+  }
+  None
+}
+
+fn ensure_safe_path(path: &Path, allow_unsafe: bool) -> Result<(), String> {
+  if allow_unsafe {
+    return Ok(());
+  }
+  if let Some(reason) = protected_path_reason(path) {
+    return Err(format!("Blocked by safety policy: {}", reason));
+  }
+  Ok(())
+}
+
+fn ensure_existing_path(path: &Path, allow_unsafe: bool) -> Result<(), String> {
+  if !path.exists() {
+    return Err("Path does not exist.".into());
+  }
+  ensure_safe_path(path, allow_unsafe)
+}
+
+fn ensure_destination_writable(destination: &Path, allow_unsafe: bool) -> Result<(), String> {
+  if let Some(parent) = destination.parent() {
+    ensure_safe_path(parent, allow_unsafe)?;
+    if !parent.exists() {
+      fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    let probe_path = parent.join(format!(".tidy-write-check-{}", Uuid::new_v4()));
+    OpenOptions::new()
+      .create_new(true)
+      .write(true)
+      .open(&probe_path)
+      .map_err(|error| format!("Destination is not writable: {}", error))?;
+    let _ = fs::remove_file(probe_path);
+  }
+  Ok(())
+}
+
+fn partial_hash_file(path: &Path) -> Result<String, String> {
+  let mut file = File::open(path).map_err(|error| error.to_string())?;
+  let metadata = file.metadata().map_err(|error| error.to_string())?;
+  let size = metadata.len() as usize;
+  let mut hasher = Sha256::new();
+
+  let mut start_buf = vec![0u8; std::cmp::min(PARTIAL_HASH_BYTES, size)];
+  if !start_buf.is_empty() {
+    file.read_exact(&mut start_buf).map_err(|error| error.to_string())?;
+    hasher.update(&start_buf);
+  }
+  if size > PARTIAL_HASH_BYTES {
+    let end_len = std::cmp::min(PARTIAL_HASH_BYTES, size - PARTIAL_HASH_BYTES);
+    file
+      .seek(SeekFrom::End(-(end_len as i64)))
+      .map_err(|error| error.to_string())?;
+    let mut end_buf = vec![0u8; end_len];
+    file.read_exact(&mut end_buf).map_err(|error| error.to_string())?;
+    hasher.update(&end_buf);
+  }
+  Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn decode_xml_entities(value: &str) -> String {
+  value
+    .replace("&amp;", "&")
+    .replace("&lt;", "<")
+    .replace("&gt;", ">")
+    .replace("&quot;", "\"")
+    .replace("&apos;", "'")
+}
+
+fn extract_text_from_xml(xml: &str) -> String {
+  let mut in_tag = false;
+  let mut output = String::new();
+  for character in xml.chars() {
+    match character {
+      '<' => {
+        in_tag = true;
+        output.push(' ');
+      }
+      '>' => in_tag = false,
+      _ if !in_tag => output.push(character),
+      _ => {}
+    }
+  }
+  decode_xml_entities(&output)
+    .split_whitespace()
+    .collect::<Vec<_>>()
+    .join(" ")
+}
+
+fn read_zip_entry_to_string(archive: &mut ZipArchive<File>, name: &str) -> Result<Option<String>, String> {
+  let mut entry = match archive.by_name(name) {
+    Ok(entry) => entry,
+    Err(_) => return Ok(None),
+  };
+  let mut data = String::new();
+  entry
+    .read_to_string(&mut data)
+    .map_err(|error| error.to_string())?;
+  Ok(Some(data))
+}
+
+fn extract_office_fallback(path: &Path) -> Result<OfficeFallbackPreview, String> {
+  let extension = path
+    .extension()
+    .and_then(|value| value.to_str())
+    .unwrap_or("")
+    .to_lowercase();
+  let title = path
+    .file_name()
+    .and_then(|value| value.to_str())
+    .unwrap_or("Office file")
+    .to_string();
+  let file = File::open(path).map_err(|error| error.to_string())?;
+  let mut archive = ZipArchive::new(file).map_err(|error| error.to_string())?;
+
+  let xml_sources: Vec<&str> = match extension.as_str() {
+    "docx" => vec!["word/document.xml"],
+    "xlsx" => vec!["xl/sharedStrings.xml", "xl/worksheets/sheet1.xml"],
+    "pptx" => vec!["ppt/slides/slide1.xml", "ppt/slides/slide2.xml", "ppt/slides/slide3.xml"],
+    "odp" => vec!["content.xml"],
+    _ => return Err("No fallback extractor for this file type.".into()),
+  };
+  let mut parts = Vec::new();
+  for source in xml_sources {
+    if let Some(xml) = read_zip_entry_to_string(&mut archive, source)? {
+      let text = extract_text_from_xml(&xml);
+      if !text.is_empty() {
+        parts.push(text);
+      }
+    }
+  }
+  if parts.is_empty() {
+    return Err("Could not extract readable fallback text.".into());
+  }
+  let excerpt = parts.join("\n\n");
+  let excerpt = excerpt.chars().take(5000).collect::<String>();
+  Ok(OfficeFallbackPreview {
+    mode: "text-fallback".to_string(),
+    title,
+    excerpt,
+  })
 }
 
 fn clear_trash_dir(trash_dir: &Path) -> std::io::Result<()> {
@@ -429,6 +959,64 @@ fn log_client_error(
     .map_err(|error| error.to_string())?;
   file.sync_all().ok();
   Ok(())
+}
+
+#[tauri::command]
+fn get_operation_history(
+  app_handle: AppHandle,
+  cursor: Option<usize>,
+  limit: Option<usize>,
+) -> Result<OperationHistoryPage, String> {
+  let entries = load_operation_history(&app_handle)?;
+  let start = cursor.unwrap_or(0);
+  let page_size = limit.unwrap_or(50).clamp(1, 200);
+  let paged = entries
+    .iter()
+    .skip(start)
+    .take(page_size)
+    .cloned()
+    .collect::<Vec<_>>();
+  let next_cursor = if start + paged.len() < entries.len() {
+    Some(start + paged.len())
+  } else {
+    None
+  };
+  Ok(OperationHistoryPage {
+    entries: paged,
+    next_cursor,
+  })
+}
+
+#[tauri::command]
+fn get_recent_undo_actions(app_handle: AppHandle) -> Result<Vec<UndoActionPayload>, String> {
+  load_recent_undo_actions(&app_handle)
+}
+
+#[tauri::command]
+fn store_recent_undo_actions(
+  app_handle: AppHandle,
+  actions: Vec<UndoActionPayload>,
+) -> Result<(), String> {
+  store_recent_undo_actions_internal(&app_handle, actions)
+}
+
+#[tauri::command]
+fn get_preview_capabilities() -> PreviewCapabilities {
+  let mut notes = Vec::new();
+  let office_rich = cfg!(target_os = "macos");
+  if !office_rich {
+    notes.push("Rich Office preview is unavailable on this platform; text fallback is used.".to_string());
+  }
+  PreviewCapabilities {
+    platform: std::env::consts::OS.to_string(),
+    text_preview: true,
+    pdf_preview: true,
+    media_preview: true,
+    archive_preview: true,
+    office_rich_preview: office_rich,
+    office_fallback_preview: true,
+    notes,
+  }
 }
 
 #[tauri::command]
@@ -701,14 +1289,71 @@ async fn scan_folder(
 }
 
 #[tauri::command]
+async fn scan_folder_v2(
+  window: tauri::Window,
+  request: ScanRequestV2,
+) -> Result<ScanResultV2, String> {
+  let started = Instant::now();
+  let scan_id = request
+    .scan_id
+    .unwrap_or_else(|| Uuid::new_v4().to_string());
+  let result = scan_folder(
+    window,
+    request.folder_path,
+    request.filter_mode,
+    request.include_subfolders,
+    request.include_hidden,
+    request.use_hash_for_duplicates,
+    request.duplicate_min_size_bytes,
+    scan_id,
+  )
+  .await?;
+  let duplicate_groups = result
+    .files
+    .iter()
+    .filter_map(|entry| entry.duplicate_group.clone())
+    .collect::<std::collections::HashSet<_>>()
+    .len();
+  Ok(ScanResultV2 {
+    total: result.total,
+    stats: ScanStats {
+      indexed: result.total,
+      matched: result.files.len(),
+      duplicate_groups,
+      duration_ms: started.elapsed().as_millis() as u64,
+    },
+    files: result.files,
+    issues: Vec::new(),
+  })
+}
+
+#[tauri::command]
 fn trash_file(
+  app_handle: AppHandle,
   state: tauri::State<'_, AppState>,
   id: String,
   trash_mode: String,
+  allow_unsafe: Option<bool>,
 ) -> Result<TrashResult, String> {
+  let allow_unsafe = allow_unsafe.unwrap_or(false);
   let mode = parse_trash_mode(&trash_mode);
   let mut map = state.map.lock().expect("map lock");
   let path = map.remove(&id).ok_or("File not found")?;
+  if let Err(error) = ensure_existing_path(&path, allow_unsafe) {
+    map.insert(id.clone(), path.clone());
+    let _ = append_operation_journal(
+      &app_handle,
+      "trash_file",
+      "blocked",
+      Some(trash_mode.clone()),
+      Some(path.to_string_lossy().to_string()),
+      None,
+      Some("safe".to_string()),
+      Some(error.clone()),
+      None,
+    );
+    return Err(error);
+  }
   let file_name = path
     .file_name()
     .and_then(|name| name.to_str())
@@ -720,14 +1365,67 @@ fn trash_file(
       fs::copy(&path, &target_path).map_err(|error| error.to_string())?;
       if let Err(error) = trash::delete(&path) {
         let _ = fs::remove_file(&target_path);
+        map.insert(id, path.clone());
+        let _ = append_operation_journal(
+          &app_handle,
+          "trash_file",
+          "error",
+          Some("system".to_string()),
+          Some(path.to_string_lossy().to_string()),
+          Some(target_path.to_string_lossy().to_string()),
+          Some("safe".to_string()),
+          Some(error.to_string()),
+          None,
+        );
         return Err(error.to_string());
       }
+      let _ = append_operation_journal(
+        &app_handle,
+        "trash_file",
+        "success",
+        Some("system".to_string()),
+        Some(path.to_string_lossy().to_string()),
+        Some(target_path.to_string_lossy().to_string()),
+        Some("safe".to_string()),
+        None,
+        Some(serde_json::json!({
+          "rollbackSource": target_path.to_string_lossy().to_string(),
+          "rollbackDestination": path.to_string_lossy().to_string(),
+        })),
+      );
       Ok(TrashResult {
         trash_path: Some(target_path.to_string_lossy().to_string()),
       })
     }
     TrashMode::Permanent => {
+      if !allow_unsafe {
+        map.insert(id, path.clone());
+        let message = "Permanent delete requires advanced override.";
+        let _ = append_operation_journal(
+          &app_handle,
+          "trash_file",
+          "blocked",
+          Some("permanent".to_string()),
+          Some(path.to_string_lossy().to_string()),
+          None,
+          Some("manual".to_string()),
+          Some(message.to_string()),
+          None,
+        );
+        return Err(message.into());
+      }
       fs::remove_file(&path).map_err(|error| error.to_string())?;
+      let _ = append_operation_journal(
+        &app_handle,
+        "trash_file",
+        "success",
+        Some("permanent".to_string()),
+        Some(path.to_string_lossy().to_string()),
+        None,
+        Some("manual".to_string()),
+        None,
+        None,
+      );
       Ok(TrashResult { trash_path: None })
     }
   }
@@ -735,19 +1433,23 @@ fn trash_file(
 
 #[tauri::command]
 fn trash_folder(
+  app_handle: AppHandle,
   state: tauri::State<'_, AppState>,
   folder_path: String,
   files: Vec<FolderTrashEntry>,
   trash_mode: String,
+  allow_unsafe: Option<bool>,
 ) -> Result<TrashResult, String> {
+  let allow_unsafe = allow_unsafe.unwrap_or(false);
   let mode = parse_trash_mode(&trash_mode);
-  let source_path = PathBuf::from(folder_path);
+  let source_path = PathBuf::from(folder_path.clone());
   if !source_path.exists() {
     return Err("Folder not found".into());
   }
   if !source_path.is_dir() {
     return Err("Target is not a folder".into());
   }
+  ensure_safe_path(&source_path, allow_unsafe)?;
   let folder_name = source_path
     .file_name()
     .and_then(|name| name.to_str())
@@ -759,29 +1461,86 @@ fn trash_folder(
       copy_dir_recursive(&source_path, &target_path)?;
       if let Err(error) = trash::delete(&source_path) {
         let _ = fs::remove_dir_all(&target_path);
+        let _ = append_operation_journal(
+          &app_handle,
+          "trash_folder",
+          "error",
+          Some("system".to_string()),
+          Some(folder_path.clone()),
+          Some(target_path.to_string_lossy().to_string()),
+          Some("safe".to_string()),
+          Some(error.to_string()),
+          None,
+        );
         return Err(error.to_string());
       }
       let mut map = state.map.lock().expect("map lock");
       files.iter().for_each(|entry| {
         map.remove(&entry.id);
       });
+      let _ = append_operation_journal(
+        &app_handle,
+        "trash_folder",
+        "success",
+        Some("system".to_string()),
+        Some(folder_path),
+        Some(target_path.to_string_lossy().to_string()),
+        Some("safe".to_string()),
+        None,
+        Some(serde_json::json!({
+          "rollbackSource": target_path.to_string_lossy().to_string(),
+          "rollbackDestination": source_path.to_string_lossy().to_string(),
+          "fileCount": files.len()
+        })),
+      );
       Ok(TrashResult {
         trash_path: Some(target_path.to_string_lossy().to_string()),
       })
     }
     TrashMode::Permanent => {
+      if !allow_unsafe {
+        let _ = append_operation_journal(
+          &app_handle,
+          "trash_folder",
+          "blocked",
+          Some("permanent".to_string()),
+          Some(folder_path),
+          None,
+          Some("manual".to_string()),
+          Some("Permanent delete requires advanced override.".to_string()),
+          None,
+        );
+        return Err("Permanent delete requires advanced override.".into());
+      }
       fs::remove_dir_all(&source_path).map_err(|error| error.to_string())?;
       let mut map = state.map.lock().expect("map lock");
       files.iter().for_each(|entry| {
         map.remove(&entry.id);
       });
+      let _ = append_operation_journal(
+        &app_handle,
+        "trash_folder",
+        "success",
+        Some("permanent".to_string()),
+        Some(source_path.to_string_lossy().to_string()),
+        None,
+        Some("manual".to_string()),
+        None,
+        None,
+      );
       Ok(TrashResult { trash_path: None })
     }
   }
 }
 
 #[tauri::command]
-fn move_file(state: tauri::State<'_, AppState>, id: String) -> Result<MoveResult, String> {
+fn move_file(
+  app_handle: AppHandle,
+  state: tauri::State<'_, AppState>,
+  id: String,
+  allow_unsafe: Option<bool>,
+) -> Result<MoveResult, String> {
+  let allow_unsafe = allow_unsafe.unwrap_or(false);
   let destination = state
     .destination
     .lock()
@@ -791,20 +1550,46 @@ fn move_file(state: tauri::State<'_, AppState>, id: String) -> Result<MoveResult
 
   let mut map = state.map.lock().expect("map lock");
   let source = map.remove(&id).ok_or("File not found")?;
+  if let Err(error) = ensure_existing_path(&source, allow_unsafe) {
+    map.insert(id.clone(), source);
+    return Err(error);
+  }
   let file_name = source
     .file_name()
     .and_then(|name| name.to_str())
     .ok_or("Invalid file name")?;
 
   let target_path = unique_path(&destination, file_name);
+  if let Err(error) = ensure_destination_writable(&target_path, allow_unsafe) {
+    map.insert(id.clone(), source);
+    return Err(error);
+  }
 
-  move_path(&source, &target_path)?;
+  if let Err(error) = move_path(&source, &target_path) {
+    map.insert(id, source);
+    return Err(error);
+  }
 
   let new_name = target_path
     .file_name()
     .and_then(|name| name.to_str())
     .ok_or("Invalid target name")?
     .to_string();
+
+  let _ = append_operation_journal(
+    &app_handle,
+    "move_file",
+    "success",
+    Some("move".to_string()),
+    Some(source.to_string_lossy().to_string()),
+    Some(target_path.to_string_lossy().to_string()),
+    Some("safe".to_string()),
+    None,
+    Some(serde_json::json!({
+      "rollbackSource": target_path.to_string_lossy().to_string(),
+      "rollbackDestination": source.to_string_lossy().to_string(),
+    })),
+  );
 
   Ok(MoveResult {
     new_name,
@@ -814,53 +1599,72 @@ fn move_file(state: tauri::State<'_, AppState>, id: String) -> Result<MoveResult
 
 #[tauri::command]
 fn restore_file(
+  app_handle: AppHandle,
   state: tauri::State<'_, AppState>,
   id: String,
   source: String,
   destination: String,
+  allow_unsafe: Option<bool>,
 ) -> Result<(), String> {
+  let allow_unsafe = allow_unsafe.unwrap_or(false);
   let source_path = PathBuf::from(source);
-  if !source_path.exists() {
-    return Err("Source file not found.".into());
-  }
+  ensure_existing_path(&source_path, allow_unsafe)?;
   let destination_path = PathBuf::from(destination);
   if destination_path.exists() {
     return Err("Restore target already exists.".into());
   }
-  if let Some(parent) = destination_path.parent() {
-    if !parent.exists() {
-      return Err("Restore folder no longer exists.".into());
-    }
-  }
+  ensure_destination_writable(&destination_path, allow_unsafe)?;
   move_path(&source_path, &destination_path)?;
+  let destination_display = destination_path.to_string_lossy().to_string();
   let mut map = state.map.lock().expect("map lock");
   map.insert(id, destination_path);
+  let _ = append_operation_journal(
+    &app_handle,
+    "restore_file",
+    "success",
+    Some("restore".to_string()),
+    Some(source_path.to_string_lossy().to_string()),
+    Some(destination_display),
+    Some("safe".to_string()),
+    None,
+    None,
+  );
   Ok(())
 }
 
 #[tauri::command]
 fn restore_folder(
+  app_handle: AppHandle,
   state: tauri::State<'_, AppState>,
   source: String,
   destination: String,
   files: Vec<FolderTrashEntry>,
+  allow_unsafe: Option<bool>,
 ) -> Result<(), String> {
+  let allow_unsafe = allow_unsafe.unwrap_or(false);
   let source_path = PathBuf::from(source);
-  if !source_path.exists() {
-    return Err("Source folder not found.".into());
-  }
+  ensure_existing_path(&source_path, allow_unsafe)?;
   let destination_path = PathBuf::from(destination);
   if destination_path.exists() {
     return Err("Restore target already exists.".into());
   }
-  if let Some(parent) = destination_path.parent() {
-    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-  }
+  ensure_destination_writable(&destination_path, allow_unsafe)?;
   move_dir(&source_path, &destination_path)?;
   let mut map = state.map.lock().expect("map lock");
   files.iter().for_each(|entry| {
     map.insert(entry.id.clone(), destination_path.join(&entry.relative_path));
   });
+  let _ = append_operation_journal(
+    &app_handle,
+    "restore_folder",
+    "success",
+    Some("restore".to_string()),
+    Some(source_path.to_string_lossy().to_string()),
+    Some(destination_path.to_string_lossy().to_string()),
+    Some("safe".to_string()),
+    None,
+    None,
+  );
   Ok(())
 }
 
@@ -899,6 +1703,23 @@ async fn list_archive_entries(
   })
   .await
   .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn extract_office_fallback_preview(
+  state: tauri::State<'_, AppState>,
+  id: String,
+) -> Result<OfficeFallbackPreview, String> {
+  let path = {
+    let map = state.map.lock().expect("map lock");
+    map.get(&id).cloned().ok_or("File not found")?
+  };
+  if !path.exists() {
+    return Err("File not found".into());
+  }
+  tauri::async_runtime::spawn_blocking(move || extract_office_fallback(&path))
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -988,9 +1809,495 @@ fn reveal_in_file_manager(path: String, reveal: bool) -> Result<(), String> {
 
   match status {
     Ok(status) if status.success() => Ok(()),
-    Ok(status) => Err(format!("File manager exited with {}", status)),
-    Err(error) => Err(error.to_string()),
+    Ok(status) => Err(format!("Could not open file manager (exit code {}).", status)),
+    Err(error) => Err(format!("Could not open file manager: {}", error)),
   }
+}
+
+fn is_temp_or_cache_path(path: &Path) -> bool {
+  let lower = path.to_string_lossy().to_lowercase();
+  lower.contains("/tmp/")
+    || lower.contains("\\temp\\")
+    || lower.contains("/cache/")
+    || lower.contains("\\cache\\")
+}
+
+fn is_downloads_or_installer(path: &Path) -> bool {
+  let lower = path.to_string_lossy().to_lowercase();
+  if lower.contains("/downloads/") || lower.contains("\\downloads\\") {
+    return true;
+  }
+  let extension = path
+    .extension()
+    .and_then(|value| value.to_str())
+    .unwrap_or("")
+    .to_lowercase();
+  matches!(extension.as_str(), "exe" | "msi" | "dmg" | "pkg" | "zip" | "rar" | "7z")
+}
+
+fn file_age_days(path: &Path) -> Option<u64> {
+  let modified = fs::metadata(path).ok()?.modified().ok()?;
+  let elapsed = SystemTime::now().duration_since(modified).ok()?;
+  Some(elapsed.as_secs() / 86_400)
+}
+
+fn collect_scan_paths(
+  folder_path: &str,
+  include_subfolders: bool,
+  include_hidden: bool,
+) -> Result<Vec<PathBuf>, String> {
+  let folder = PathBuf::from(folder_path);
+  if !folder.exists() {
+    return Err("Folder not found".into());
+  }
+  if include_subfolders {
+    Ok(
+      WalkDir::new(&folder)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|entry| include_hidden || !is_hidden_entry(entry.path(), &folder))
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.file_type().is_file())
+        .map(|entry| entry.path().to_path_buf())
+        .collect(),
+    )
+  } else {
+    Ok(
+      fs::read_dir(&folder)
+        .map_err(|error| error.to_string())?
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.file_type().map(|kind| kind.is_file()).unwrap_or(false))
+        .filter(|entry| include_hidden || !is_hidden_entry(&entry.path(), &folder))
+        .map(|entry| entry.path())
+        .collect(),
+    )
+  }
+}
+
+#[tauri::command]
+fn build_cleanup_suggestions(request: SuggestionsRequest) -> Result<SuggestionSet, String> {
+  let max_results = request.max_results.unwrap_or(200).clamp(1, 2000);
+  let min_large_file_bytes = request.min_large_file_bytes.unwrap_or(250 * 1024 * 1024);
+  let stale_days = request.stale_days.unwrap_or(30);
+  let paths = collect_scan_paths(
+    &request.folder_path,
+    request.include_subfolders,
+    request.include_hidden,
+  )?;
+
+  let duplicates = find_duplicate_groups(&paths, true, 1024 * 1024, None)?;
+  let mut groups: HashMap<String, Vec<PathBuf>> = HashMap::new();
+  for (path, group) in duplicates {
+    groups.entry(group).or_default().push(path);
+  }
+
+  let mut suggestions = Vec::new();
+  let mut reclaimable = 0u64;
+
+  for files in groups.values_mut() {
+    if files.len() < 2 {
+      continue;
+    }
+    files.sort_by(|a, b| {
+      let a_time = fs::metadata(a)
+        .ok()
+        .and_then(|meta| meta.modified().ok())
+        .unwrap_or(UNIX_EPOCH);
+      let b_time = fs::metadata(b)
+        .ok()
+        .and_then(|meta| meta.modified().ok())
+        .unwrap_or(UNIX_EPOCH);
+      b_time.cmp(&a_time)
+    });
+    for duplicate in files.iter().skip(1) {
+      let bytes = fs::metadata(duplicate).map(|meta| meta.len()).unwrap_or(0);
+      reclaimable += bytes;
+      suggestions.push(Suggestion {
+        id: Uuid::new_v4().to_string(),
+        action_type: "trash".to_string(),
+        source_path: duplicate.to_string_lossy().to_string(),
+        destination_path: None,
+        safety_level: SafetyLevel::Safe,
+        reclaimable_bytes: bytes,
+        reason: SuggestionReason {
+          code: "duplicate".to_string(),
+          message: "Duplicate file detected (keeping most recent copy).".to_string(),
+        },
+      });
+    }
+  }
+
+  for path in &paths {
+    let metadata = match fs::metadata(path) {
+      Ok(meta) => meta,
+      Err(_) => continue,
+    };
+    if metadata.len() < min_large_file_bytes {
+      continue;
+    }
+    if is_downloads_or_installer(path) && file_age_days(path).unwrap_or(0) >= stale_days {
+      reclaimable += metadata.len();
+      suggestions.push(Suggestion {
+        id: Uuid::new_v4().to_string(),
+        action_type: "trash".to_string(),
+        source_path: path.to_string_lossy().to_string(),
+        destination_path: None,
+        safety_level: SafetyLevel::Review,
+        reclaimable_bytes: metadata.len(),
+        reason: SuggestionReason {
+          code: "stale-large-file".to_string(),
+          message: "Large installer/download has not changed recently.".to_string(),
+        },
+      });
+    } else if is_temp_or_cache_path(path) {
+      reclaimable += metadata.len();
+      suggestions.push(Suggestion {
+        id: Uuid::new_v4().to_string(),
+        action_type: "trash".to_string(),
+        source_path: path.to_string_lossy().to_string(),
+        destination_path: None,
+        safety_level: SafetyLevel::Manual,
+        reclaimable_bytes: metadata.len(),
+        reason: SuggestionReason {
+          code: "temp-cache".to_string(),
+          message: "File appears to be temporary or cache data.".to_string(),
+        },
+      });
+    }
+  }
+
+  if request.include_subfolders {
+    let root = PathBuf::from(&request.folder_path);
+    for entry in WalkDir::new(&root).into_iter().filter_map(|entry| entry.ok()) {
+      if !entry.file_type().is_dir() {
+        continue;
+      }
+      let path = entry.path();
+      if path == root {
+        continue;
+      }
+      let mut iterator = match fs::read_dir(path) {
+        Ok(iter) => iter,
+        Err(_) => continue,
+      };
+      if iterator.next().is_none() && protected_path_reason(path).is_none() {
+        suggestions.push(Suggestion {
+          id: Uuid::new_v4().to_string(),
+          action_type: "remove-empty-folder".to_string(),
+          source_path: path.to_string_lossy().to_string(),
+          destination_path: None,
+          safety_level: SafetyLevel::Safe,
+          reclaimable_bytes: 0,
+          reason: SuggestionReason {
+            code: "empty-folder".to_string(),
+            message: "Folder is empty and can be removed.".to_string(),
+          },
+        });
+      }
+    }
+  }
+
+  if suggestions.len() > max_results {
+    suggestions.truncate(max_results);
+  }
+
+  Ok(SuggestionSet {
+    generated_ms: now_ms(),
+    folder_path: request.folder_path,
+    total_reclaimable_bytes: reclaimable,
+    suggestions,
+  })
+}
+
+fn batch_record_file_path(app_handle: &AppHandle, batch_id: &str) -> Result<PathBuf, String> {
+  let directory = batch_record_dir(app_handle)?;
+  fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+  Ok(directory.join(format!("{}.json", batch_id)))
+}
+
+fn store_batch_record(app_handle: &AppHandle, record: &UndoBatchRecord) -> Result<(), String> {
+  let path = batch_record_file_path(app_handle, &record.batch_id)?;
+  let serialized = serde_json::to_string_pretty(record).map_err(|error| error.to_string())?;
+  fs::write(path, serialized).map_err(|error| error.to_string())
+}
+
+fn load_batch_record(app_handle: &AppHandle, batch_id: &str) -> Result<UndoBatchRecord, String> {
+  let path = batch_record_file_path(app_handle, batch_id)?;
+  let contents = fs::read_to_string(path).map_err(|error| error.to_string())?;
+  serde_json::from_str(&contents).map_err(|error| error.to_string())
+}
+
+fn remove_batch_record(app_handle: &AppHandle, batch_id: &str) -> Result<(), String> {
+  let path = batch_record_file_path(app_handle, batch_id)?;
+  if path.exists() {
+    fs::remove_file(path).map_err(|error| error.to_string())?;
+  }
+  Ok(())
+}
+
+#[tauri::command]
+fn apply_action_batch(
+  app_handle: AppHandle,
+  state: tauri::State<'_, AppState>,
+  request: ActionBatchRequest,
+) -> Result<ActionBatchResult, String> {
+  let allow_unsafe = request.allow_unsafe.unwrap_or(false);
+  let allow_permanent_delete = request.allow_permanent_delete.unwrap_or(false);
+  let dry_run = request.dry_run.unwrap_or(true);
+  let batch_id = Uuid::new_v4().to_string();
+
+  let mut results = Vec::new();
+  let mut applied = 0usize;
+  let mut blocked = 0usize;
+  let mut failed = 0usize;
+  let mut undo_actions = Vec::new();
+
+  for action in request.actions {
+    let source = PathBuf::from(&action.source_path);
+    if let Err(error) = ensure_existing_path(&source, allow_unsafe) {
+      blocked += 1;
+      results.push(ActionResult {
+        id: action.id.clone(),
+        status: "blocked".to_string(),
+        message: error.clone(),
+        undoable: false,
+      });
+      let _ = append_operation_journal(
+        &app_handle,
+        "batch_action",
+        "blocked",
+        Some(action.action_type.clone()),
+        Some(action.source_path.clone()),
+        action.destination_path.clone(),
+        action.safety_level.clone(),
+        Some(error),
+        None,
+      );
+      continue;
+    }
+    if action.action_type == "delete" && !allow_permanent_delete {
+      blocked += 1;
+      let message = "Permanent delete is disabled for batch actions.";
+      results.push(ActionResult {
+        id: action.id.clone(),
+        status: "blocked".to_string(),
+        message: message.to_string(),
+        undoable: false,
+      });
+      continue;
+    }
+    if dry_run {
+      applied += 1;
+      results.push(ActionResult {
+        id: action.id.clone(),
+        status: "planned".to_string(),
+        message: "Dry run: action validated.".to_string(),
+        undoable: matches!(action.action_type.as_str(), "move" | "trash"),
+      });
+      continue;
+    }
+
+    let operation_outcome = (|| -> Result<(bool, String), String> {
+      match action.action_type.as_str() {
+        "move" => {
+          let destination = match action.destination_path.as_ref() {
+            Some(path) => PathBuf::from(path),
+            None => return Err("Move action requires destinationPath.".to_string()),
+          };
+          ensure_destination_writable(&destination, allow_unsafe)?;
+          move_path(&source, &destination)?;
+          undo_actions.push(UndoBatchAction {
+            action_type: "move".to_string(),
+            source_path: destination.to_string_lossy().to_string(),
+            rollback_source: Some(source.to_string_lossy().to_string()),
+          });
+          Ok((true, destination.to_string_lossy().to_string()))
+        }
+        "trash" => {
+          let file_name = source
+            .file_name()
+            .and_then(|value| value.to_str())
+            .ok_or_else(|| "Invalid source path".to_string())?;
+          fs::create_dir_all(&state.trash_dir).map_err(|error| error.to_string())?;
+          let backup_path = unique_path(&state.trash_dir, file_name);
+          if source.is_dir() {
+            copy_dir_recursive(&source, &backup_path)?;
+          } else {
+            fs::copy(&source, &backup_path).map_err(|error| error.to_string())?;
+          }
+          if let Err(error) = trash::delete(&source) {
+            if backup_path.is_dir() {
+              let _ = fs::remove_dir_all(&backup_path);
+            } else {
+              let _ = fs::remove_file(&backup_path);
+            }
+            return Err(error.to_string());
+          }
+          undo_actions.push(UndoBatchAction {
+            action_type: "trash".to_string(),
+            source_path: source.to_string_lossy().to_string(),
+            rollback_source: Some(backup_path.to_string_lossy().to_string()),
+          });
+          Ok((true, backup_path.to_string_lossy().to_string()))
+        }
+        "remove-empty-folder" => {
+          if fs::read_dir(&source)
+            .map_err(|error| error.to_string())?
+            .next()
+            .is_some()
+          {
+            return Err("Folder is not empty.".to_string());
+          }
+          fs::remove_dir(&source).map_err(|error| error.to_string())?;
+          Ok((false, String::new()))
+        }
+        "delete" => {
+          if source.is_dir() {
+            fs::remove_dir_all(&source).map_err(|error| error.to_string())?;
+          } else {
+            fs::remove_file(&source).map_err(|error| error.to_string())?;
+          }
+          Ok((false, String::new()))
+        }
+        _ => Err("Unsupported action type.".to_string()),
+      }
+    })();
+
+    match operation_outcome {
+      Ok((undoable, destination)) => {
+        applied += 1;
+        let message = if destination.is_empty() {
+          "Applied".to_string()
+        } else {
+          format!("Applied -> {}", destination)
+        };
+        let message = if let Some(reason) = action.reason.clone() {
+          format!("{} ({})", message, reason)
+        } else {
+          message
+        };
+        results.push(ActionResult {
+          id: action.id.clone(),
+          status: "applied".to_string(),
+          message: message.clone(),
+          undoable,
+        });
+        let _ = append_operation_journal(
+          &app_handle,
+          "batch_action",
+          "success",
+          Some(action.action_type.clone()),
+          Some(action.source_path),
+          action.destination_path.clone(),
+          action.safety_level,
+          Some(message),
+          None,
+        );
+      }
+      Err(error) => {
+        failed += 1;
+        results.push(ActionResult {
+          id: action.id.clone(),
+          status: "error".to_string(),
+          message: error.clone(),
+          undoable: false,
+        });
+        let _ = append_operation_journal(
+          &app_handle,
+          "batch_action",
+          "error",
+          Some(action.action_type.clone()),
+          Some(action.source_path),
+          action.destination_path.clone(),
+          action.safety_level,
+          Some(error),
+          None,
+        );
+      }
+    }
+  }
+
+  if !dry_run && !undo_actions.is_empty() {
+    let record = UndoBatchRecord {
+      batch_id: batch_id.clone(),
+      created_ms: now_ms(),
+      actions: undo_actions,
+    };
+    let _ = store_batch_record(&app_handle, &record);
+  }
+
+  Ok(ActionBatchResult {
+    batch_id,
+    dry_run,
+    applied,
+    blocked,
+    failed,
+    results,
+  })
+}
+
+#[tauri::command]
+fn undo_action_batch(app_handle: AppHandle, batch_id: String) -> Result<UndoBatchResult, String> {
+  let record = load_batch_record(&app_handle, &batch_id)?;
+  let mut restored = 0usize;
+  let mut failed = 0usize;
+  let mut messages = Vec::new();
+
+  for action in record.actions.iter().rev() {
+    let result = match action.action_type.as_str() {
+      "move" => {
+        let rollback_path = action
+          .rollback_source
+          .as_ref()
+          .ok_or("Missing rollback source for move action".to_string())?;
+        move_path(Path::new(&action.source_path), Path::new(rollback_path))
+      }
+      "trash" => {
+        let backup = action
+          .rollback_source
+          .as_ref()
+          .ok_or("Missing backup source for trash action".to_string())?;
+        let backup_path = PathBuf::from(backup);
+        let target = PathBuf::from(&action.source_path);
+        if backup_path.is_dir() {
+          move_dir(&backup_path, &target)
+        } else {
+          move_path(&backup_path, &target)
+        }
+      }
+      _ => Ok(()),
+    };
+    match result {
+      Ok(_) => {
+        restored += 1;
+        messages.push(format!("Restored {}", action.source_path));
+      }
+      Err(error) => {
+        failed += 1;
+        messages.push(format!("Failed to restore {}: {}", action.source_path, error));
+      }
+    }
+  }
+  if failed == 0 {
+    let _ = remove_batch_record(&app_handle, &batch_id);
+  }
+  let _ = append_operation_journal(
+    &app_handle,
+    "undo_action_batch",
+    if failed == 0 { "success" } else { "error" },
+    Some("undo-batch".to_string()),
+    None,
+    None,
+    Some("safe".to_string()),
+    Some(format!("restored={}, failed={}", restored, failed)),
+    None,
+  );
+  Ok(UndoBatchResult {
+    batch_id,
+    restored,
+    failed,
+    messages,
+  })
 }
 
 fn unique_path(destination: &Path, file_name: &str) -> PathBuf {
@@ -1137,6 +2444,7 @@ fn find_duplicate_groups(
   min_size_bytes: u64,
   cancel_flag: Option<&Arc<AtomicBool>>,
 ) -> Result<HashMap<PathBuf, String>, String> {
+  // Stage 1: size buckets
   let mut size_map: HashMap<u64, Vec<PathBuf>> = HashMap::new();
   for path in paths {
     if let Some(flag) = cancel_flag {
@@ -1164,21 +2472,40 @@ fn find_duplicate_groups(
       continue;
     }
     if use_hash {
-      let mut hash_map: HashMap<String, Vec<PathBuf>> = HashMap::new();
+      // Stage 2: partial hash (first/last chunks) to reduce full-hash work.
+      let mut partial_map: HashMap<String, Vec<PathBuf>> = HashMap::new();
       for path in &group {
         if let Some(flag) = cancel_flag {
           if flag.load(Ordering::Relaxed) {
             return Err("Scan cancelled".into());
           }
         }
-        if let Ok(hash) = hash_file(path) {
-          hash_map.entry(hash).or_default().push(path.clone());
+        if let Ok(hash) = partial_hash_file(path) {
+          partial_map.entry(hash).or_default().push(path.clone());
         }
       }
-      for (hash, files) in hash_map {
-        if files.len() > 1 {
-          for path in files {
-            duplicates.insert(path.clone(), hash.clone());
+
+      // Stage 3: full hash only for remaining candidate groups.
+      for partial_group in partial_map.into_values() {
+        if partial_group.len() < 2 {
+          continue;
+        }
+        let mut full_hash_map: HashMap<String, Vec<PathBuf>> = HashMap::new();
+        for path in partial_group {
+          if let Some(flag) = cancel_flag {
+            if flag.load(Ordering::Relaxed) {
+              return Err("Scan cancelled".into());
+            }
+          }
+          if let Ok(hash) = hash_file(&path) {
+            full_hash_map.entry(hash).or_default().push(path);
+          }
+        }
+        for (hash, files) in full_hash_map {
+          if files.len() > 1 {
+            for path in files {
+              duplicates.insert(path.clone(), hash.clone());
+            }
           }
         }
       }
@@ -1195,6 +2522,18 @@ fn find_duplicate_groups(
 fn is_hidden_entry(path: &Path, root: &Path) -> bool {
   if path == root {
     return false;
+  }
+  #[cfg(target_os = "windows")]
+  {
+    use std::os::windows::fs::MetadataExt;
+    const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
+    const FILE_ATTRIBUTE_SYSTEM: u32 = 0x4;
+    if let Ok(metadata) = fs::metadata(path) {
+      let attrs = metadata.file_attributes();
+      if attrs & FILE_ATTRIBUTE_HIDDEN != 0 || attrs & FILE_ATTRIBUTE_SYSTEM != 0 {
+        return true;
+      }
+    }
   }
   let relative = path.strip_prefix(root).unwrap_or(path);
   relative.components().any(|component| {
@@ -1545,8 +2884,10 @@ fn main() {
         .map_err(|error| error.to_string())?;
       let trash_dir = app_data_dir.join("trash");
       let crash_dir = app_data_dir.join("crash-reports");
+      let batches_dir = app_data_dir.join(APPLIED_BATCHES_DIR);
       fs::create_dir_all(&trash_dir).map_err(|error| error.to_string())?;
       fs::create_dir_all(&crash_dir).map_err(|error| error.to_string())?;
+      fs::create_dir_all(&batches_dir).map_err(|error| error.to_string())?;
       if let Some(previous_session) = load_session_info(&crash_dir) {
         if !previous_session.clean_shutdown {
           let skip_report = load_last_crash_report(&crash_dir)
@@ -1605,9 +2946,17 @@ fn main() {
       get_crash_report,
       clear_crash_report,
       log_client_error,
+      get_operation_history,
+      get_recent_undo_actions,
+      store_recent_undo_actions,
+      get_preview_capabilities,
       update_heartbeat,
       scan_folder,
+      scan_folder_v2,
       cancel_scan,
+      build_cleanup_suggestions,
+      apply_action_batch,
+      undo_action_batch,
       trash_file,
       trash_folder,
       move_file,
@@ -1615,6 +2964,7 @@ fn main() {
       restore_folder,
       set_destination,
       list_archive_entries,
+      extract_office_fallback_preview,
       generate_preview,
       reveal_in_file_manager
     ])
@@ -1658,5 +3008,32 @@ mod tests {
   fn clear_trash_dir_missing_is_ok() {
     let base = std::env::temp_dir().join(format!("tidy-trash-test-missing-{}", Uuid::new_v4()));
     clear_trash_dir(&base).unwrap();
+  }
+
+  #[test]
+  fn xml_text_extraction_removes_tags() {
+    let xml = "<w:document><w:p>Hello <w:t>world</w:t> &amp; friends</w:p></w:document>";
+    let text = extract_text_from_xml(xml);
+    assert!(text.contains("Hello"));
+    assert!(text.contains("world"));
+    assert!(text.contains("&"));
+  }
+
+  #[test]
+  fn partial_hash_is_stable() {
+    let path = std::env::temp_dir().join(format!("tidy-partial-hash-{}", Uuid::new_v4()));
+    fs::write(&path, vec![7u8; 400_000]).unwrap();
+    let a = partial_hash_file(&path).unwrap();
+    let b = partial_hash_file(&path).unwrap();
+    assert_eq!(a, b);
+    let _ = fs::remove_file(path);
+  }
+
+  #[test]
+  fn safety_check_allows_regular_paths() {
+    let path = std::env::temp_dir().join(format!("tidy-safe-{}", Uuid::new_v4()));
+    fs::write(&path, b"ok").unwrap();
+    assert!(ensure_safe_path(&path, false).is_ok());
+    let _ = fs::remove_file(path);
   }
 }

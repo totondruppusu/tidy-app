@@ -40,7 +40,7 @@ export const COMMON_EXTENSIONS = new Set([
   "rar",
 ]);
 export const SCROLL_HINT_TOLERANCE = 6;
-export const CRASH_REPORT_EMAIL = "<placeholder>@info.com";
+export const CRASH_REPORT_EMAIL = "support@tidy-app.dev";
 export const MAX_CRASH_EMAIL_BODY = 4000;
 export const HEARTBEAT_INTERVAL_MS = 10_000;
 export const EVENT_LOOP_POLL_MS = 1000;

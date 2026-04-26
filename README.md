@@ -9,10 +9,14 @@ Tidy-app is a desktop file triage tool built with Tauri, React, and Vite. It sca
 - Sort by name, size, date, type, or extension.
 - Group by type, extension, or duplicate sets.
 - Detect duplicates (optionally using hashes and minimum size thresholds).
+- Safety policy blocks destructive actions in protected system paths by default.
+- Operation history journal and persisted undo stack (up to 20 actions).
 - Preview images, video, audio, text, PDF, Office documents, and archives.
+- Office preview supports cross-platform text fallback when rich rendering is unavailable.
 - Tree and list views with adjustable density.
 - One-click move to saved destination slots.
 - Trash items or delete permanently, with undo support for recent actions.
+- Cleanup suggestion API and action-batch API for conservative, review-first automation flows.
 - Keyboard shortcuts and configurable settings (theme, auto-scan, autoplay, etc.).
 
 ## Installation
@@ -93,3 +97,4 @@ npm run tauri build
 - Tauri uses `npm run build` before packaging (`src-tauri/tauri.conf.json`), so `npm run tauri build` is usually all you need for release builds.
 - The app uses a local settings store to remember filters, destinations, and UI preferences per machine.
 - Undo stores temporary backup copies in the app data directory and clears them when the app exits.
+- `operation-history.jsonl` and `undo-actions.json` are stored in app data for auditability and restart recovery.

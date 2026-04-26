@@ -30,6 +30,7 @@ export type ThemeMode = "light" | "dark";
 export type ViewMode = "tree" | "list";
 export type ExtensionFilterMode = "all" | "remember" | "common";
 export type TrashBehavior = "system" | "permanent";
+export type SafetyLevel = "safe" | "review" | "manual";
 
 export type FileEntry = {
   id: string;
@@ -55,9 +56,35 @@ export type ArchivePreview = {
   truncated: boolean;
 };
 
+export type OfficeFallbackPreview = {
+  mode: string;
+  title: string;
+  excerpt: string;
+};
+
 export type ScanResult = {
   files: FileEntry[];
   total: number;
+};
+
+export type ScanStats = {
+  indexed: number;
+  matched: number;
+  duplicateGroups: number;
+  durationMs: number;
+};
+
+export type ScanIssue = {
+  code: string;
+  message: string;
+  path?: string | null;
+};
+
+export type ScanResultV2 = {
+  files: FileEntry[];
+  total: number;
+  stats: ScanStats;
+  issues: ScanIssue[];
 };
 
 export type ScanProgress = {
@@ -114,6 +141,17 @@ export type CrashReport = {
   lastHeartbeatMs?: number | null;
 };
 
+export type PreviewCapabilities = {
+  platform: string;
+  textPreview: boolean;
+  pdfPreview: boolean;
+  mediaPreview: boolean;
+  archivePreview: boolean;
+  officeRichPreview: boolean;
+  officeFallbackPreview: boolean;
+  notes: string[];
+};
+
 export type FolderTrashEntry = {
   id: string;
   relativePath: string;
@@ -143,6 +181,78 @@ export type UndoAction =
       trashPath: string;
       items: FolderTrashItem[];
     };
+
+export type SuggestionReason = {
+  code: string;
+  message: string;
+};
+
+export type Suggestion = {
+  id: string;
+  actionType: string;
+  sourcePath: string;
+  destinationPath?: string | null;
+  safetyLevel: SafetyLevel;
+  reclaimableBytes: number;
+  reason: SuggestionReason;
+};
+
+export type SuggestionSet = {
+  generatedMs: number;
+  folderPath: string;
+  totalReclaimableBytes: number;
+  suggestions: Suggestion[];
+};
+
+export type ActionBatchItem = {
+  id: string;
+  actionType: string;
+  sourcePath: string;
+  destinationPath?: string | null;
+  safetyLevel?: SafetyLevel | string | null;
+  reason?: string | null;
+};
+
+export type ActionBatch = {
+  actions: ActionBatchItem[];
+  allowUnsafe?: boolean;
+  dryRun?: boolean;
+  allowPermanentDelete?: boolean;
+};
+
+export type ActionResult = {
+  id: string;
+  status: "planned" | "applied" | "blocked" | "error";
+  message: string;
+  undoable: boolean;
+};
+
+export type ActionBatchResult = {
+  batchId: string;
+  dryRun: boolean;
+  applied: number;
+  blocked: number;
+  failed: number;
+  results: ActionResult[];
+};
+
+export type OperationJournalEntry = {
+  id: string;
+  timestampMs: number;
+  operation: string;
+  status: string;
+  mode?: string | null;
+  source?: string | null;
+  destination?: string | null;
+  safetyLevel?: string | null;
+  message?: string | null;
+  rollback?: Record<string, unknown> | null;
+};
+
+export type OperationHistoryPage = {
+  entries: OperationJournalEntry[];
+  nextCursor?: number | null;
+};
 
 export type TreeFolderNode = {
   type: "folder";

@@ -16,6 +16,8 @@ import type {
   FolderTrashItem,
   GroupMode,
   MoveResult,
+  OfficeFallbackPreview,
+  PreviewCapabilities,
   ScanBatch,
   ScanProgress,
   ScanResult,
@@ -192,9 +194,11 @@ export default function App() {
   const [isPreviewPanning, setIsPreviewPanning] = useState(false);
   const [allowLargePreview, setAllowLargePreview] = useState(false);
   const [officePreviewId, setOfficePreviewId] = useState<string | null>(null);
+  const [officeFallbackPreview, setOfficeFallbackPreview] = useState<OfficeFallbackPreview | null>(null);
   const [officePreviewStatus, setOfficePreviewStatus] = useState<"idle" | "loading" | "error">(
     "idle"
   );
+  const [previewCapabilities, setPreviewCapabilities] = useState<PreviewCapabilities | null>(null);
   const [archiveEntries, setArchiveEntries] = useState<string[]>([]);
   const [archiveTruncated, setArchiveTruncated] = useState(false);
   const [archiveStatus, setArchiveStatus] = useState<"idle" | "loading" | "error">("idle");
@@ -319,6 +323,32 @@ export default function App() {
         }
         setCrashReport(report);
         setIsCrashReportOpen(true);
+      })
+      .catch(() => {});
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isTauri()) {
+      return;
+    }
+    let isMounted = true;
+    invoke<PreviewCapabilities>("get_preview_capabilities")
+      .then((capabilities) => {
+        if (!isMounted) {
+          return;
+        }
+        setPreviewCapabilities(capabilities);
+      })
+      .catch(() => {});
+    invoke<UndoAction[]>("get_recent_undo_actions")
+      .then((actions) => {
+        if (!isMounted) {
+          return;
+        }
+        setUndoStack(Array.isArray(actions) ? actions : []);
       })
       .catch(() => {});
     return () => {
@@ -550,6 +580,13 @@ export default function App() {
     };
     void applyWindowTheme();
   }, [theme]);
+
+  useEffect(() => {
+    if (!isTauri()) {
+      return;
+    }
+    void invoke("store_recent_undo_actions", { actions: undoStack }).catch(() => {});
+  }, [undoStack]);
 
   const updateStatus = useCallback((message: string) => {
     lastStatusRef.current = message;
@@ -783,16 +820,19 @@ export default function App() {
     }
     if (!previewFile || !isOfficePreview) {
       setOfficePreviewId(null);
+      setOfficeFallbackPreview(null);
       setOfficePreviewStatus("idle");
       return;
     }
     if (!isTauri()) {
       setOfficePreviewId(null);
+      setOfficeFallbackPreview(null);
       setOfficePreviewStatus("error");
       return;
     }
     let isActive = true;
     setOfficePreviewId(null);
+    setOfficeFallbackPreview(null);
     setOfficePreviewStatus("idle");
     officePreviewTimeoutRef.current = window.setTimeout(() => {
       if (!isActive) {
@@ -812,8 +852,23 @@ export default function App() {
             return;
           }
           console.warn("Failed to generate office preview.", error);
-          setOfficePreviewId(null);
-          setOfficePreviewStatus("error");
+          invoke<OfficeFallbackPreview>("extract_office_fallback_preview", { id: previewFile.id })
+            .then((fallback) => {
+              if (!isActive) {
+                return;
+              }
+              setOfficePreviewId(null);
+              setOfficeFallbackPreview(fallback);
+              setOfficePreviewStatus("idle");
+            })
+            .catch(() => {
+              if (!isActive) {
+                return;
+              }
+              setOfficePreviewId(null);
+              setOfficeFallbackPreview(null);
+              setOfficePreviewStatus("error");
+            });
         });
     }, OFFICE_PREVIEW_DEBOUNCE_MS);
     return () => {
@@ -1559,7 +1614,7 @@ export default function App() {
       try {
         await invoke("reveal_in_file_manager", { path: file.path, reveal: true });
       } catch (error) {
-        updateStatus(`Open in Finder failed: ${String(error)}`);
+        updateStatus(`Reveal in file manager failed: ${String(error)}`);
       }
     },
     [updateStatus]
@@ -2676,13 +2731,28 @@ export default function App() {
                           <div className="preview-office-status">Generating preview...</div>
                         )}
                         {officePreviewStatus === "error" && (
-                          <div className="preview-office-status">Preview unavailable.</div>
+                          <div className="preview-office-status">
+                            Preview unavailable.
+                            {previewCapabilities && !previewCapabilities.officeRichPreview && (
+                              <> Rich Office rendering is not available on this platform.</>
+                            )}
+                          </div>
                         )}
                         {officePreviewStatus === "idle" && officePreviewId && (
                           <img
                             src={buildMediaUrl(officePreviewId)}
                             alt={`Preview of ${previewFile.name}`}
                           />
+                        )}
+                        {officePreviewStatus === "idle" && !officePreviewId && officeFallbackPreview && (
+                          <div className="preview-office-fallback">
+                            <div className="preview-office-fallback-title">
+                              {officeFallbackPreview.title}
+                            </div>
+                            <pre className="preview-office-fallback-text">
+                              {officeFallbackPreview.excerpt}
+                            </pre>
+                          </div>
                         )}
                       </div>
                     </div>

@@ -31,6 +31,9 @@ export type ViewMode = "tree" | "list";
 export type ExtensionFilterMode = "all" | "remember" | "common";
 export type TrashBehavior = "system" | "permanent";
 export type SafetyLevel = "safe" | "review" | "manual";
+export type SuggestionSortMode = "largest_first" | "safest_first" | "path_asc";
+export type SuggestionActionFilter = "all" | "trash" | "remove-empty-folder" | "move" | "delete";
+export type SuggestionsMode = "review" | "advanced";
 
 export type FileEntry = {
   id: string;
@@ -289,4 +292,24 @@ export type StoredSettings = {
   extensionFilterMode?: ExtensionFilterMode;
   extensionSelection?: string[];
   destinationSlots?: (string | null)[];
+  suggestionStaleDays?: number;
+  suggestionMinLargeFileBytes?: number;
+  suggestionMaxResults?: number;
+  suggestionSortMode?: SuggestionSortMode;
+  suggestionActionFilter?: SuggestionActionFilter;
+  suggestionsMode?: SuggestionsMode;
+  suggestionPresetId?: string;
+  suggestionPresets?: SuggestionPreset[];
+};
+
+export type SuggestionPreset = {
+  id: string;
+  name: string;
+  staleDays: number;
+  minLargeFileBytes: number;
+  maxResults: number;
+  safetyFilter: SafetyLevel;
+  actionFilter: SuggestionActionFilter;
+  sortMode: SuggestionSortMode;
+  searchQuery?: string;
 };

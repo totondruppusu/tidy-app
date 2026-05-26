@@ -7,6 +7,7 @@ import { listen } from "@tauri-apps/api/event";
 import type {
   ArchivePreview,
   ActivitySnapshot,
+  ActionBatchResult,
   CrashReport,
   DensityMode,
   ExtensionFilterMode,
@@ -17,6 +18,13 @@ import type {
   GroupMode,
   MoveResult,
   OfficeFallbackPreview,
+  SuggestionPreset,
+  SuggestionActionFilter,
+  SuggestionSortMode,
+  Suggestion,
+  SuggestionSet,
+  SuggestionsMode,
+  SafetyLevel,
   PreviewCapabilities,
   ScanBatch,
   ScanProgress,
@@ -69,6 +77,38 @@ import { extractFolder, formatRelativeFolder, getRelativeSegments, splitPathSegm
 import { getInitialTheme, getStoredSettings } from "../lib/settings";
 import { HelpModal } from "../components/HelpModal";
 import { SettingsModal } from "../components/SettingsModal";
+
+const SUGGESTION_DEFAULT_STALE_DAYS = 30;
+const SUGGESTION_DEFAULT_MIN_LARGE_FILE_BYTES = 250 * 1024 * 1024;
+const SUGGESTION_DEFAULT_MAX_RESULTS = 200;
+const SUGGESTIONS_MODE_OPTIONS: { value: SuggestionsMode; label: string }[] = [
+  { value: "review", label: "Review & Apply" },
+  { value: "advanced", label: "Advanced" },
+];
+
+const SUGGESTION_SAFETY_RANK: Record<SafetyLevel, number> = { safe: 0, review: 1, manual: 2 };
+
+const SUGGESTION_ACTION_FILTER_OPTIONS: { value: SuggestionActionFilter; label: string }[] = [
+  { value: "all", label: "All actions" },
+  { value: "trash", label: "Move to trash" },
+  { value: "remove-empty-folder", label: "Remove empty folder" },
+  { value: "move", label: "Move file" },
+  { value: "delete", label: "Delete permanently" },
+];
+
+const SUGGESTION_SORT_OPTIONS: { value: SuggestionSortMode; label: string }[] = [
+  { value: "largest_first", label: "Largest first" },
+  { value: "safest_first", label: "Safest first" },
+  { value: "path_asc", label: "Path A-Z" },
+];
+
+const SUGGESTION_MIN_LARGE_FILE_OPTIONS = [
+  { value: 100 * 1024 * 1024, label: "100 MB+" },
+  { value: 250 * 1024 * 1024, label: "250 MB+" },
+  { value: 500 * 1024 * 1024, label: "500 MB+" },
+  { value: 1024 * 1024 * 1024, label: "1 GB+" },
+  { value: 2 * 1024 * 1024 * 1024, label: "2 GB+" },
+];
 
 export default function App() {
   const [storedSettings] = useState(() => getStoredSettings());
@@ -180,10 +220,12 @@ export default function App() {
     };
   }, [isSettingsOpen]);
   const [isHelpOpen, setIsHelpOpen] = useState(false);
+  const [isSuggestionsOpen, setIsSuggestionsOpen] = useState(false);
   const [crashReport, setCrashReport] = useState<CrashReport | null>(null);
   const [isCrashReportOpen, setIsCrashReportOpen] = useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isDrawerMode, setIsDrawerMode] = useState(false);
+  const [isWindowFullscreen, setIsWindowFullscreen] = useState(false);
   const [isExtensionsCollapsed, setIsExtensionsCollapsed] = useState(true);
   const [theme, setTheme] = useState<ThemeMode>(getInitialTheme);
   const [undoStack, setUndoStack] = useState<UndoAction[]>([]);
@@ -199,6 +241,45 @@ export default function App() {
     "idle"
   );
   const [previewCapabilities, setPreviewCapabilities] = useState<PreviewCapabilities | null>(null);
+  const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
+  const [suggestionsStatus, setSuggestionsStatus] = useState<"idle" | "loading" | "error">("idle");
+  const [suggestionsError, setSuggestionsError] = useState<string | null>(null);
+  const [suggestionsMode, setSuggestionsMode] = useState<SuggestionsMode>(
+    storedSettings.suggestionsMode ?? "review"
+  );
+  const [suggestionPresets, setSuggestionPresets] = useState<SuggestionPreset[]>(
+    storedSettings.suggestionPresets ?? []
+  );
+  const [suggestionPresetId, setSuggestionPresetId] = useState<string | null>(
+    storedSettings.suggestionPresetId ?? null
+  );
+  const [suggestionSafetyFilter, setSuggestionSafetyFilter] = useState<SafetyLevel>("safe");
+  const [suggestionActionFilter, setSuggestionActionFilter] = useState<SuggestionActionFilter>(
+    storedSettings.suggestionActionFilter ?? "all"
+  );
+  const [suggestionSortMode, setSuggestionSortMode] = useState<SuggestionSortMode>(
+    storedSettings.suggestionSortMode ?? "largest_first"
+  );
+  const [suggestionSearchQuery, setSuggestionSearchQuery] = useState("");
+  const [suggestionStaleDays, setSuggestionStaleDays] = useState(
+    storedSettings.suggestionStaleDays ?? SUGGESTION_DEFAULT_STALE_DAYS
+  );
+  const [suggestionMinLargeFileBytes, setSuggestionMinLargeFileBytes] = useState(
+    storedSettings.suggestionMinLargeFileBytes ?? SUGGESTION_DEFAULT_MIN_LARGE_FILE_BYTES
+  );
+  const [suggestionMaxResults, setSuggestionMaxResults] = useState(
+    storedSettings.suggestionMaxResults ?? SUGGESTION_DEFAULT_MAX_RESULTS
+  );
+  const [selectedSuggestionIds, setSelectedSuggestionIds] = useState<string[]>([]);
+  const [suggestionTotalReclaimableBytes, setSuggestionTotalReclaimableBytes] = useState(0);
+  const [suggestionDryRunStatus, setSuggestionDryRunStatus] = useState<"idle" | "loading" | "error">(
+    "idle"
+  );
+  const [suggestionDryRunError, setSuggestionDryRunError] = useState<string | null>(null);
+  const [suggestionDryRunResult, setSuggestionDryRunResult] = useState<ActionBatchResult | null>(null);
+  const [suggestionDryRunSelectionKey, setSuggestionDryRunSelectionKey] = useState<string | null>(null);
+  const [suggestionExplainabilityEnabled] = useState(false);
+  const [suggestionBatchToolbarEnabled] = useState(false);
   const [archiveEntries, setArchiveEntries] = useState<string[]>([]);
   const [archiveTruncated, setArchiveTruncated] = useState(false);
   const [archiveStatus, setArchiveStatus] = useState<"idle" | "loading" | "error">("idle");
@@ -228,6 +309,55 @@ export default function App() {
   const previewScrollRef = useRef<HTMLElement | null>(null);
   const lastStatusRef = useRef<string | null>(null);
   const lastEventLoopLagRef = useRef<number | null>(null);
+  const clearSuggestionDryRunPreview = useCallback(() => {
+    setSuggestionDryRunResult(null);
+    setSuggestionDryRunSelectionKey(null);
+    setSuggestionDryRunStatus("idle");
+    setSuggestionDryRunError(null);
+  }, []);
+  const buildSuggestionPreset = useCallback(
+    (name: string, id?: string): SuggestionPreset => ({
+      id:
+        id ??
+        (typeof crypto?.randomUUID === "function"
+          ? crypto.randomUUID()
+          : `preset-${Date.now()}-${Math.floor(Math.random() * 10_000)}`),
+      name,
+      staleDays: Math.max(1, Math.min(3650, Math.round(suggestionStaleDays))),
+      minLargeFileBytes: Math.max(
+        1024 * 1024,
+        Math.min(20 * 1024 * 1024 * 1024, Math.round(suggestionMinLargeFileBytes))
+      ),
+      maxResults: Math.max(1, Math.min(2000, Math.round(suggestionMaxResults))),
+      safetyFilter: suggestionSafetyFilter,
+      actionFilter: suggestionActionFilter,
+      sortMode: suggestionSortMode,
+      searchQuery: suggestionSearchQuery.trim() || undefined,
+    }),
+    [
+      suggestionStaleDays,
+      suggestionMinLargeFileBytes,
+      suggestionMaxResults,
+      suggestionSafetyFilter,
+      suggestionActionFilter,
+      suggestionSortMode,
+      suggestionSearchQuery,
+    ]
+  );
+  const applySuggestionPreset = useCallback(
+    (preset: SuggestionPreset) => {
+      setSuggestionStaleDays(preset.staleDays);
+      setSuggestionMinLargeFileBytes(preset.minLargeFileBytes);
+      setSuggestionMaxResults(preset.maxResults);
+      setSuggestionSafetyFilter(preset.safetyFilter);
+      setSuggestionActionFilter(preset.actionFilter);
+      setSuggestionSortMode(preset.sortMode);
+      setSuggestionSearchQuery(preset.searchQuery ?? "");
+      setSuggestionPresetId(preset.id);
+      clearSuggestionDryRunPreview();
+    },
+    [clearSuggestionDryRunPreview]
+  );
   const crashReportText = useMemo(
     () => (crashReport ? formatCrashReport(crashReport) : ""),
     [crashReport]
@@ -310,6 +440,44 @@ export default function App() {
       setIsSidebarCollapsed(true);
     }
   }, [isDrawerMode]);
+
+  useEffect(() => {
+    if (!isTauri()) {
+      return;
+    }
+    let isMounted = true;
+    const appWindow = getCurrentWindow();
+    let unlistenResize: (() => void) | null = null;
+    const syncFullscreenState = async () => {
+      try {
+        const fullscreen = await appWindow.isFullscreen();
+        if (isMounted) {
+          setIsWindowFullscreen(fullscreen);
+        }
+      } catch {
+        // Ignore unsupported window APIs in non-desktop runtimes.
+      }
+    };
+    void syncFullscreenState();
+    void appWindow
+      .onResized(() => {
+        void syncFullscreenState();
+      })
+      .then((unlisten) => {
+        if (!isMounted) {
+          unlisten();
+          return;
+        }
+        unlistenResize = unlisten;
+      })
+      .catch(() => {});
+    return () => {
+      isMounted = false;
+      if (unlistenResize) {
+        unlistenResize();
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (!isTauri()) {
@@ -539,6 +707,14 @@ export default function App() {
       extensionFilterMode,
       extensionSelection: selectedExtensions,
       destinationSlots,
+      suggestionStaleDays,
+      suggestionMinLargeFileBytes,
+      suggestionMaxResults,
+      suggestionSortMode,
+      suggestionActionFilter,
+      suggestionsMode,
+      suggestionPresetId: suggestionPresetId ?? undefined,
+      suggestionPresets,
     };
     try {
       window.localStorage.setItem(SETTINGS_KEY, JSON.stringify(snapshot));
@@ -565,6 +741,14 @@ export default function App() {
     extensionFilterMode,
     selectedExtensions,
     destinationSlots,
+    suggestionStaleDays,
+    suggestionMinLargeFileBytes,
+    suggestionMaxResults,
+    suggestionSortMode,
+    suggestionActionFilter,
+    suggestionsMode,
+    suggestionPresetId,
+    suggestionPresets,
   ]);
 
   useEffect(() => {
@@ -751,6 +935,203 @@ export default function App() {
   }, [files, selectedExtensionsSet]);
 
   const sortedFiles = useMemo(() => sortFiles(filteredFiles), [filteredFiles, sortFiles]);
+  const selectedSuggestionSet = useMemo(
+    () => new Set(selectedSuggestionIds),
+    [selectedSuggestionIds]
+  );
+  const activeSuggestionPreset = useMemo(
+    () => suggestionPresets.find((preset) => preset.id === suggestionPresetId) ?? null,
+    [suggestionPresetId, suggestionPresets]
+  );
+  const visibleSuggestions = useMemo(() => {
+    const maxRank = SUGGESTION_SAFETY_RANK[suggestionSafetyFilter];
+    const searchValue = suggestionSearchQuery.trim().toLowerCase();
+    const next = suggestions.filter((suggestion) => {
+      if (SUGGESTION_SAFETY_RANK[suggestion.safetyLevel] > maxRank) {
+        return false;
+      }
+      if (suggestionActionFilter !== "all" && suggestion.actionType !== suggestionActionFilter) {
+        return false;
+      }
+      if (!searchValue) {
+        return true;
+      }
+      const haystack = [
+        suggestion.reason.message,
+        suggestion.sourcePath,
+        suggestion.destinationPath ?? "",
+        suggestion.actionType,
+      ]
+        .join(" ")
+        .toLowerCase();
+      return haystack.includes(searchValue);
+    });
+    const comparePath = (a: Suggestion, b: Suggestion) =>
+      a.sourcePath.localeCompare(b.sourcePath, undefined, { sensitivity: "base" });
+    next.sort((a, b) => {
+      if (suggestionSortMode === "safest_first") {
+        const bySafety = SUGGESTION_SAFETY_RANK[a.safetyLevel] - SUGGESTION_SAFETY_RANK[b.safetyLevel];
+        if (bySafety !== 0) {
+          return bySafety;
+        }
+        const bySize = b.reclaimableBytes - a.reclaimableBytes;
+        return bySize !== 0 ? bySize : comparePath(a, b);
+      }
+      if (suggestionSortMode === "path_asc") {
+        const byPath = comparePath(a, b);
+        return byPath !== 0 ? byPath : b.reclaimableBytes - a.reclaimableBytes;
+      }
+      const bySize = b.reclaimableBytes - a.reclaimableBytes;
+      return bySize !== 0 ? bySize : comparePath(a, b);
+    });
+    return next;
+  }, [
+    suggestions,
+    suggestionSafetyFilter,
+    suggestionActionFilter,
+    suggestionSearchQuery,
+    suggestionSortMode,
+  ]);
+  const selectedSuggestions = useMemo(
+    () => suggestions.filter((suggestion) => selectedSuggestionSet.has(suggestion.id)),
+    [suggestions, selectedSuggestionSet]
+  );
+  const selectedVisibleSuggestions = useMemo(
+    () => visibleSuggestions.filter((suggestion) => selectedSuggestionSet.has(suggestion.id)),
+    [visibleSuggestions, selectedSuggestionSet]
+  );
+  const selectedSuggestionReclaimableBytes = useMemo(
+    () => selectedSuggestions.reduce((total, suggestion) => total + suggestion.reclaimableBytes, 0),
+    [selectedSuggestions]
+  );
+  const selectedSuggestionPlanKey = useMemo(
+    () =>
+      selectedSuggestions
+        .map((suggestion) => suggestion.id)
+        .sort((a, b) => a.localeCompare(b))
+        .join("|"),
+    [selectedSuggestions]
+  );
+  const selectedSuggestionActionCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    selectedSuggestions.forEach((suggestion) => {
+      counts[suggestion.actionType] = (counts[suggestion.actionType] ?? 0) + 1;
+    });
+    return counts;
+  }, [selectedSuggestions]);
+  const suggestionDryRunResultsById = useMemo(
+    () =>
+      new Map(
+        (suggestionDryRunResult?.results ?? []).map((result) => [result.id, result] as const)
+      ),
+    [suggestionDryRunResult]
+  );
+  const suggestionDryRunStatusCounts = useMemo(() => {
+    const counts: Record<"planned" | "blocked" | "error", number> = {
+      planned: 0,
+      blocked: 0,
+      error: 0,
+    };
+    for (const result of suggestionDryRunResult?.results ?? []) {
+      if (result.status === "planned") {
+        counts.planned += 1;
+      } else if (result.status === "blocked") {
+        counts.blocked += 1;
+      } else if (result.status === "error") {
+        counts.error += 1;
+      }
+    }
+    return counts;
+  }, [suggestionDryRunResult]);
+  const formatSuggestionPath = useCallback(
+    (path: string) => {
+      const segments = getRelativeSegments(path, currentFolder);
+      return segments.length > 0 ? segments.join("/") : path;
+    },
+    [currentFolder]
+  );
+  const getSuggestionActionLabel = useCallback((actionType: string) => {
+    switch (actionType) {
+      case "trash":
+        return "Move to Trash";
+      case "remove-empty-folder":
+        return "Remove Empty Folder";
+      case "move":
+        return "Move";
+      case "delete":
+        return "Delete Permanently";
+      default:
+        return actionType;
+    }
+  }, []);
+  const getSuggestionTargetLabel = useCallback(
+    (suggestion: Suggestion) => {
+      if (suggestion.actionType === "trash") {
+        return "System Trash";
+      }
+      if (suggestion.actionType === "remove-empty-folder" || suggestion.actionType === "delete") {
+        return "Removed";
+      }
+      if (suggestion.destinationPath) {
+        return formatSuggestionPath(suggestion.destinationPath);
+      }
+      return "No destination";
+    },
+    [formatSuggestionPath]
+  );
+  const getSuggestionChangeSentence = useCallback(
+    (suggestion: Suggestion) => {
+      const sourceSegments = splitPathSegments(suggestion.sourcePath);
+      const fileName = sourceSegments[sourceSegments.length - 1] ?? suggestion.sourcePath;
+      if (suggestion.actionType === "trash") {
+        return `Move "${fileName}" to System Trash.`;
+      }
+      if (suggestion.actionType === "remove-empty-folder") {
+        return `Remove the empty folder "${fileName}".`;
+      }
+      if (suggestion.actionType === "move") {
+        return `Move "${fileName}" to ${getSuggestionTargetLabel(suggestion)}.`;
+      }
+      if (suggestion.actionType === "delete") {
+        return `Permanently delete "${fileName}".`;
+      }
+      return `${getSuggestionActionLabel(suggestion.actionType)} "${fileName}".`;
+    },
+    [getSuggestionActionLabel, getSuggestionTargetLabel]
+  );
+  const updateSuggestionSelection = useCallback(
+    (updater: (previous: string[]) => string[]) => {
+      clearSuggestionDryRunPreview();
+      setSelectedSuggestionIds(updater);
+    },
+    [clearSuggestionDryRunPreview]
+  );
+  const hasDryRunPreviewForSelection = Boolean(
+    suggestionDryRunResult &&
+      suggestionDryRunResult.dryRun &&
+      suggestionDryRunSelectionKey === selectedSuggestionPlanKey
+  );
+  useEffect(() => {
+    if (suggestionPresetId && !suggestionPresets.some((preset) => preset.id === suggestionPresetId)) {
+      setSuggestionPresetId(suggestionPresets[0]?.id ?? null);
+    }
+  }, [suggestionPresetId, suggestionPresets]);
+
+  useEffect(() => {
+    if (!suggestionDryRunResult && suggestionDryRunStatus === "idle" && !suggestionDryRunError) {
+      return;
+    }
+    clearSuggestionDryRunPreview();
+  }, [
+    clearSuggestionDryRunPreview,
+    suggestionStaleDays,
+    suggestionMinLargeFileBytes,
+    suggestionMaxResults,
+    suggestionSafetyFilter,
+    suggestionActionFilter,
+    suggestionSortMode,
+    suggestionSearchQuery,
+  ]);
   const sortedIndexById = useMemo(() => {
     const map = new Map<string, number>();
     sortedFiles.forEach((file, index) => {
@@ -1113,6 +1494,15 @@ export default function App() {
       setCurrentIndex(0);
       setRenderCount(0);
       setUndoStack([]);
+      setSuggestions([]);
+      setSelectedSuggestionIds([]);
+      setSuggestionTotalReclaimableBytes(0);
+      setSuggestionsError(null);
+      setSuggestionsStatus("idle");
+      setSuggestionDryRunResult(null);
+      setSuggestionDryRunSelectionKey(null);
+      setSuggestionDryRunStatus("idle");
+      setSuggestionDryRunError(null);
       setCollapsedGroups({});
       setCollapsedFolders({});
       updateStatus(includeSubfolders ? "Scanning folders and subfolders..." : "Scanning folder...");
@@ -1186,6 +1576,297 @@ export default function App() {
       updateStatus(`Folder picker failed: ${String(error)}`);
     }
   }, [autoScanOnPick, handleScan, updateStatus]);
+
+  const saveSuggestionPreset = useCallback(() => {
+    const suggestedName = activeSuggestionPreset?.name ?? "New preset";
+    const name = window.prompt("Preset name", suggestedName);
+    if (!name) {
+      return;
+    }
+    const trimmed = name.trim();
+    if (!trimmed) {
+      updateStatus("Preset name cannot be empty.");
+      return;
+    }
+    const preset = buildSuggestionPreset(trimmed);
+    setSuggestionPresets((previous) => [...previous, preset]);
+    setSuggestionPresetId(preset.id);
+    updateStatus(`Preset "${preset.name}" saved.`);
+  }, [activeSuggestionPreset?.name, buildSuggestionPreset, updateStatus]);
+
+  const applyLastSuggestionPreset = useCallback(() => {
+    if (!activeSuggestionPreset) {
+      updateStatus("No saved preset selected.");
+      return;
+    }
+    applySuggestionPreset(activeSuggestionPreset);
+    updateStatus(`Applied preset "${activeSuggestionPreset.name}".`);
+  }, [activeSuggestionPreset, applySuggestionPreset, updateStatus]);
+
+  const applySuggestionPresetById = useCallback(
+    (presetId: string) => {
+      const preset = suggestionPresets.find((entry) => entry.id === presetId);
+      if (!preset) {
+        updateStatus("Preset not found.");
+        return;
+      }
+      applySuggestionPreset(preset);
+      updateStatus(`Applied preset "${preset.name}".`);
+    },
+    [suggestionPresets, applySuggestionPreset, updateStatus]
+  );
+
+  const renameSuggestionPreset = useCallback(() => {
+    if (!activeSuggestionPreset) {
+      updateStatus("Select a preset to rename.");
+      return;
+    }
+    const name = window.prompt("Rename preset", activeSuggestionPreset.name);
+    if (!name) {
+      return;
+    }
+    const trimmed = name.trim();
+    if (!trimmed) {
+      updateStatus("Preset name cannot be empty.");
+      return;
+    }
+    setSuggestionPresets((previous) =>
+      previous.map((preset) =>
+        preset.id === activeSuggestionPreset.id ? { ...preset, name: trimmed } : preset
+      )
+    );
+    updateStatus(`Preset renamed to "${trimmed}".`);
+  }, [activeSuggestionPreset, updateStatus]);
+
+  const deleteSuggestionPreset = useCallback(async () => {
+    if (!activeSuggestionPreset) {
+      updateStatus("Select a preset to delete.");
+      return;
+    }
+    const shouldDelete = await confirm(
+      `Delete preset "${activeSuggestionPreset.name}"?`,
+      { title: "Delete suggestion preset" }
+    );
+    if (!shouldDelete) {
+      return;
+    }
+    setSuggestionPresets((previous) =>
+      previous.filter((preset) => preset.id !== activeSuggestionPreset.id)
+    );
+    setSuggestionPresetId((current) => (current === activeSuggestionPreset.id ? null : current));
+    updateStatus(`Preset "${activeSuggestionPreset.name}" deleted.`);
+  }, [activeSuggestionPreset, updateStatus]);
+
+  const buildSuggestionActions = useCallback(
+    (items: Suggestion[]) =>
+      items.map((suggestion) => ({
+        id: suggestion.id,
+        actionType: suggestion.actionType,
+        sourcePath: suggestion.sourcePath,
+        destinationPath: suggestion.destinationPath ?? null,
+        safetyLevel: suggestion.safetyLevel,
+        reason: suggestion.reason.message,
+      })),
+    []
+  );
+
+  const buildSuggestions = useCallback(async () => {
+    if (!currentFolder) {
+      updateStatus("Select a folder before building suggestions.");
+      return;
+    }
+    if (!isTauri()) {
+      updateStatus("Suggestions are available in the desktop app.");
+      return;
+    }
+    setSuggestionsStatus("loading");
+    setSuggestionsError(null);
+    clearSuggestionDryRunPreview();
+    try {
+      const clampedStaleDays = Math.max(1, Math.min(3650, Math.round(suggestionStaleDays)));
+      const clampedMaxResults = Math.max(1, Math.min(2000, Math.round(suggestionMaxResults)));
+      const clampedMinLargeBytes = Math.max(
+        1024 * 1024,
+        Math.min(20 * 1024 * 1024 * 1024, Math.round(suggestionMinLargeFileBytes))
+      );
+      const result = await invoke<SuggestionSet>("build_cleanup_suggestions", {
+        request: {
+          folderPath: currentFolder,
+          includeSubfolders,
+          includeHidden,
+          staleDays: clampedStaleDays,
+          maxResults: clampedMaxResults,
+          minLargeFileBytes: clampedMinLargeBytes,
+        },
+      });
+      setSuggestions(result.suggestions);
+      setSuggestionTotalReclaimableBytes(result.totalReclaimableBytes);
+      setSelectedSuggestionIds(
+        result.suggestions
+          .filter((suggestion) => suggestion.safetyLevel === "safe")
+          .map((suggestion) => suggestion.id)
+      );
+      setSuggestionsStatus("idle");
+      updateStatus(
+        `Built ${result.suggestions.length} suggestions (${formatBytes(result.totalReclaimableBytes)} reclaimable).`
+      );
+    } catch (error) {
+      const message = String(error);
+      setSuggestionsStatus("error");
+      setSuggestionsError(message);
+      updateStatus(`Suggestion build failed: ${message}`);
+    }
+  }, [
+    currentFolder,
+    includeSubfolders,
+    includeHidden,
+    updateStatus,
+    clearSuggestionDryRunPreview,
+    suggestionStaleDays,
+    suggestionMaxResults,
+    suggestionMinLargeFileBytes,
+  ]);
+
+  const previewSelectedSuggestions = useCallback(async () => {
+    if (!currentFolder) {
+      updateStatus("No folder selected.");
+      return null;
+    }
+    if (!isTauri()) {
+      updateStatus("Suggestions apply is available in the desktop app.");
+      return null;
+    }
+    const actions = buildSuggestionActions(selectedSuggestions);
+    if (actions.length === 0) {
+      updateStatus("Select at least one suggestion to preview.");
+      clearSuggestionDryRunPreview();
+      return null;
+    }
+    setSuggestionDryRunStatus("loading");
+    setSuggestionDryRunError(null);
+    try {
+      const plan = await invoke<ActionBatchResult>("apply_action_batch", {
+        request: {
+          actions,
+          dryRun: true,
+          allowUnsafe: false,
+          allowPermanentDelete: false,
+        },
+      });
+      setSuggestionDryRunResult(plan);
+      setSuggestionDryRunSelectionKey(selectedSuggestionPlanKey);
+      setSuggestionDryRunStatus("idle");
+      updateStatus(
+        `Preview ready: ${plan.applied} planned, ${plan.blocked} blocked, ${plan.failed} failed.`
+      );
+      return plan;
+    } catch (error) {
+      const message = String(error);
+      setSuggestionDryRunStatus("error");
+      setSuggestionDryRunError(message);
+      setSuggestionDryRunResult(null);
+      setSuggestionDryRunSelectionKey(null);
+      updateStatus(`Suggestion preview failed: ${message}`);
+      return null;
+    }
+  }, [
+    currentFolder,
+    updateStatus,
+    selectedSuggestions,
+    buildSuggestionActions,
+    selectedSuggestionPlanKey,
+    clearSuggestionDryRunPreview,
+  ]);
+
+  const applySelectedSuggestions = useCallback(async () => {
+    if (!currentFolder) {
+      updateStatus("No folder selected.");
+      return;
+    }
+    if (!isTauri()) {
+      updateStatus("Suggestions apply is available in the desktop app.");
+      return;
+    }
+    const actions = buildSuggestionActions(selectedSuggestions);
+    if (actions.length === 0) {
+      updateStatus("Select at least one suggestion to apply.");
+      return;
+    }
+    let plan = suggestionDryRunResult;
+    if (
+      !plan ||
+      !plan.dryRun ||
+      suggestionDryRunSelectionKey !== selectedSuggestionPlanKey ||
+      suggestionDryRunStatus === "error"
+    ) {
+      plan = await previewSelectedSuggestions();
+      if (!plan) {
+        return;
+      }
+      updateStatus("Preview updated. Review the Change Preview panel, then click Apply selected.");
+      return;
+    }
+    const shouldApply = await confirm(
+      `Preview ready: ${plan.applied} planned, ${plan.blocked} blocked, ${plan.failed} failed.\n\nApply now?`,
+      { title: "Confirm cleanup suggestions" }
+    );
+    if (!shouldApply) {
+      updateStatus("Suggestion apply canceled.");
+      return;
+    }
+    await runMutationWithSpinner("Applying cleanup…", async () => {
+      try {
+        const applied = await invoke<ActionBatchResult>("apply_action_batch", {
+          request: {
+            actions,
+            dryRun: false,
+            allowUnsafe: false,
+            allowPermanentDelete: false,
+          },
+        });
+        const appliedIds = new Set(
+          applied.results
+            .filter((result) => result.status === "applied")
+            .map((result) => result.id)
+        );
+        if (appliedIds.size > 0) {
+          setSuggestions((prev) => prev.filter((suggestion) => !appliedIds.has(suggestion.id)));
+          setSelectedSuggestionIds((prev) => prev.filter((id) => !appliedIds.has(id)));
+          setSuggestionTotalReclaimableBytes((prev) =>
+            Math.max(
+              0,
+              prev -
+                selectedSuggestions
+                  .filter((suggestion) => appliedIds.has(suggestion.id))
+                  .reduce((total, suggestion) => total + suggestion.reclaimableBytes, 0)
+            )
+          );
+        }
+        clearSuggestionDryRunPreview();
+        updateStatus(
+          `Applied ${applied.applied} suggestion(s), ${applied.blocked} blocked, ${applied.failed} failed.`
+        );
+        if (applied.applied > 0) {
+          await handleScan(currentFolder);
+        }
+      } catch (error) {
+        updateStatus(`Suggestion apply failed: ${String(error)}`);
+      }
+    });
+  }, [
+    currentFolder,
+    handleScan,
+    runMutationWithSpinner,
+    selectedSuggestions,
+    updateStatus,
+    buildSuggestionActions,
+    suggestionDryRunResult,
+    suggestionDryRunSelectionKey,
+    selectedSuggestionPlanKey,
+    suggestionDryRunStatus,
+    previewSelectedSuggestions,
+    clearSuggestionDryRunPreview,
+  ]);
 
   useEffect(() => {
     if (hasAutoLoadedFolderRef.current) {
@@ -1759,6 +2440,13 @@ export default function App() {
         }
         return;
       }
+      if (isSuggestionsOpen) {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          setIsSuggestionsOpen(false);
+        }
+        return;
+      }
       if (isSettingsOpen) {
         if (event.key === "Escape") {
           event.preventDefault();
@@ -1831,6 +2519,7 @@ export default function App() {
     goPrev,
     isHelpOpen,
     isMutating,
+    isSuggestionsOpen,
     isSettingsOpen,
     moveCurrentToSlot,
     openCurrentInFinder,
@@ -1842,6 +2531,9 @@ export default function App() {
   ]);
 
   useEffect(() => {
+    if (!isTauri()) {
+      return;
+    }
     let isMounted = true;
     const unlistenPromise = listen<ScanProgress>("scan_progress", (event) => {
       if (!isMounted) {
@@ -2385,7 +3077,11 @@ export default function App() {
   );
 
   return (
-    <div className={`app-shell ${isLoading ? "is-loading" : ""} ${isSidebarCollapsed ? "sidebar-collapsed" : ""}`}>
+    <div
+      className={`app-shell ${isLoading ? "is-loading" : ""} ${
+        isSidebarCollapsed ? "sidebar-collapsed" : ""
+      } ${isWindowFullscreen ? "is-fullscreen" : ""}`}
+    >
       <div className="titlebar-drag" data-tauri-drag-region />
       {isSidebarCollapsed && (
         <button
@@ -2402,6 +3098,19 @@ export default function App() {
           </svg>
         </button>
       )}
+      <button
+        type="button"
+        className="icon-button settings-button app-suggestions-button"
+        onClick={() => setIsSuggestionsOpen(true)}
+        aria-label="Open AI suggestions"
+        aria-haspopup="dialog"
+        aria-expanded={isSuggestionsOpen}
+        title="AI suggestions"
+      >
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" width="24" height="24">
+          <path d="M12 2.8 14.9 8.5 21.2 9.4l-4.6 4.4 1.1 6.3L12 17.1 6.3 20.1l1.1-6.3-4.6-4.4 6.3-.9L12 2.8Z" />
+        </svg>
+      </button>
       <button
         type="button"
         className="icon-button settings-button app-settings-button"
@@ -3055,6 +3764,437 @@ export default function App() {
               </button>
               <button type="button" onClick={handleDismissCrashReport}>
                 Dismiss
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isSuggestionsOpen && (
+        <div
+          className="modal-backdrop suggestions-backdrop"
+          role="presentation"
+          onClick={(event) => {
+            if (event.target === event.currentTarget) {
+              setIsSuggestionsOpen(false);
+            }
+          }}
+        >
+          <div
+            className="modal-panel suggestions-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="suggestions-title"
+          >
+            <div className="modal-header">
+              <h2 id="suggestions-title" className="modal-title">
+                AI Suggestions
+              </h2>
+              <button
+                type="button"
+                className="icon-button"
+                onClick={() => setIsSuggestionsOpen(false)}
+                aria-label="Close suggestions"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                  <path d="M18.3 5.7a1 1 0 0 0-1.4 0L12 10.6 7.1 5.7a1 1 0 1 0-1.4 1.4L10.6 12l-4.9 4.9a1 1 0 1 0 1.4 1.4L12 13.4l4.9 4.9a1 1 0 0 0 1.4-1.4L13.4 12l4.9-4.9a1 1 0 0 0 0-1.4Z" />
+                </svg>
+              </button>
+            </div>
+            <div className="suggestions-scroll-frame scroll-hints">
+              <div className="modal-body suggestions-body">
+                <div className="suggestions-shell">
+                <div className="suggestions-main">
+                  <div className="suggestions-main-header">
+                    <div>
+                      <div className="footer-title">Suggestions</div>
+                      <div className="suggestions-kicker">{visibleSuggestions.length} visible actions</div>
+                    </div>
+                    <div className="suggestions-header-actions">
+                      <div className="suggestions-mode-toggle" role="group" aria-label="Suggestions mode">
+                        {SUGGESTIONS_MODE_OPTIONS.map((option) => (
+                          <button
+                            key={option.value}
+                            type="button"
+                            className={`suggestions-mode-button${suggestionsMode === option.value ? " is-active" : ""}`}
+                            onClick={() => setSuggestionsMode(option.value)}
+                            aria-pressed={suggestionsMode === option.value}
+                          >
+                            {option.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="suggestions-preset-row">
+                    <label className="suggestions-field suggestions-field-inline" htmlFor="suggestion-preset-select">
+                      <span className="control-label">Preset</span>
+                      <select
+                        id="suggestion-preset-select"
+                        value={suggestionPresetId ?? ""}
+                        onChange={(event) => {
+                          const nextId = event.target.value;
+                          setSuggestionPresetId(nextId || null);
+                          if (nextId) {
+                            applySuggestionPresetById(nextId);
+                          }
+                        }}
+                      >
+                        <option value="">No preset</option>
+                        {suggestionPresets.map((preset) => (
+                          <option key={preset.id} value={preset.id}>
+                            {preset.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    {activeSuggestionPreset && (
+                      <button
+                        type="button"
+                        className="suggestions-quick-button suggestions-last-preset-button"
+                        onClick={applyLastSuggestionPreset}
+                      >
+                        Apply last: {activeSuggestionPreset.name}
+                      </button>
+                    )}
+                    <button type="button" className="suggestions-quick-button" onClick={saveSuggestionPreset}>
+                      Save current rules
+                    </button>
+                    <button
+                      type="button"
+                      className="suggestions-quick-button"
+                      onClick={renameSuggestionPreset}
+                      disabled={!activeSuggestionPreset}
+                    >
+                      Rename
+                    </button>
+                    <button
+                      type="button"
+                      className="suggestions-quick-button"
+                      onClick={() => void deleteSuggestionPreset()}
+                      disabled={!activeSuggestionPreset}
+                    >
+                      Delete
+                    </button>
+                  </div>
+                  <div className="suggestions-controls suggestions-controls-actions">
+                    <button
+                      type="button"
+                      className="preview-action-button"
+                      onClick={() => void buildSuggestions()}
+                      disabled={!currentFolder || isLoading || isMutating || suggestionsStatus === "loading"}
+                    >
+                      {suggestionsStatus === "loading" ? "Building..." : "Build suggestions"}
+                    </button>
+                    <button
+                      type="button"
+                      className="preview-action-button"
+                      onClick={() => void previewSelectedSuggestions()}
+                      disabled={
+                        !currentFolder ||
+                        isLoading ||
+                        isMutating ||
+                        selectedSuggestions.length === 0 ||
+                        suggestionDryRunStatus === "loading"
+                      }
+                    >
+                      {suggestionDryRunStatus === "loading" ? "Previewing..." : "Preview selected"}
+                    </button>
+                    <button
+                      type="button"
+                      className="preview-action-button"
+                      onClick={() => void applySelectedSuggestions()}
+                      disabled={!currentFolder || isLoading || isMutating || selectedSuggestions.length === 0}
+                    >
+                      Apply selected
+                    </button>
+                  </div>
+                  <div className="suggestions-filter-row">
+                    <label className="suggestions-field" htmlFor="suggestion-safety-filter-modal">
+                      <span className="control-label">Safety</span>
+                      <select
+                        id="suggestion-safety-filter-modal"
+                        value={suggestionSafetyFilter}
+                        onChange={(event) => setSuggestionSafetyFilter(event.target.value as SafetyLevel)}
+                      >
+                        <option value="safe">Safe</option>
+                        <option value="review">Review</option>
+                        <option value="manual">Manual</option>
+                      </select>
+                    </label>
+                    <label className="suggestions-field suggestions-search-field" htmlFor="suggestion-search-modal">
+                      <span className="control-label">Search</span>
+                      <input
+                        id="suggestion-search-modal"
+                        type="text"
+                        value={suggestionSearchQuery}
+                        onChange={(event) => setSuggestionSearchQuery(event.target.value)}
+                        placeholder="Search reason or path"
+                      />
+                    </label>
+                  </div>
+                  {suggestionsMode === "advanced" && (
+                    <div className="suggestions-advanced-panel">
+                      <div className="suggestions-build-grid">
+                        <label className="suggestions-field" htmlFor="suggestion-stale-days">
+                          <span className="control-label">Stale days</span>
+                          <input
+                            id="suggestion-stale-days"
+                            type="number"
+                            min={1}
+                            max={3650}
+                            value={suggestionStaleDays}
+                            onChange={(event) => {
+                              const next = Number(event.target.value);
+                              if (Number.isFinite(next)) {
+                                setSuggestionStaleDays(next);
+                              }
+                            }}
+                          />
+                        </label>
+                        <label className="suggestions-field" htmlFor="suggestion-min-large-bytes">
+                          <span className="control-label">Large file threshold</span>
+                          <select
+                            id="suggestion-min-large-bytes"
+                            value={suggestionMinLargeFileBytes}
+                            onChange={(event) => setSuggestionMinLargeFileBytes(Number(event.target.value))}
+                          >
+                            {SUGGESTION_MIN_LARGE_FILE_OPTIONS.map((option) => (
+                              <option key={option.value} value={option.value}>
+                                {option.label}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="suggestions-field" htmlFor="suggestion-max-results">
+                          <span className="control-label">Max results</span>
+                          <input
+                            id="suggestion-max-results"
+                            type="number"
+                            min={1}
+                            max={2000}
+                            value={suggestionMaxResults}
+                            onChange={(event) => {
+                              const next = Number(event.target.value);
+                              if (Number.isFinite(next)) {
+                                setSuggestionMaxResults(next);
+                              }
+                            }}
+                          />
+                        </label>
+                      </div>
+                      <div className="suggestions-filter-grid">
+                        <label className="suggestions-field" htmlFor="suggestion-action-filter-modal">
+                          <span className="control-label">Action</span>
+                          <select
+                            id="suggestion-action-filter-modal"
+                            value={suggestionActionFilter}
+                            onChange={(event) =>
+                              setSuggestionActionFilter(event.target.value as SuggestionActionFilter)
+                            }
+                          >
+                            {SUGGESTION_ACTION_FILTER_OPTIONS.map((option) => (
+                              <option key={option.value} value={option.value}>
+                                {option.label}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="suggestions-field" htmlFor="suggestion-sort-mode-modal">
+                          <span className="control-label">Sort</span>
+                          <select
+                            id="suggestion-sort-mode-modal"
+                            value={suggestionSortMode}
+                            onChange={(event) =>
+                              setSuggestionSortMode(event.target.value as SuggestionSortMode)
+                            }
+                          >
+                            {SUGGESTION_SORT_OPTIONS.map((option) => (
+                              <option key={option.value} value={option.value}>
+                                {option.label}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      </div>
+                      <div className="suggestions-v2-placeholder" aria-live="polite">
+                        <span className="footer-title">V2 slots</span>
+                        <div className="suggestions-v2-actions">
+                          <button type="button" disabled={!suggestionExplainabilityEnabled}>
+                            Explainability panel (v2)
+                          </button>
+                          <button type="button" disabled={!suggestionBatchToolbarEnabled}>
+                            Batch actions toolbar (v2)
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                  <div className="suggestions-controls suggestions-controls-selection">
+                    <button
+                      type="button"
+                      className="suggestions-quick-button"
+                      onClick={() =>
+                        updateSuggestionSelection(() =>
+                          suggestions
+                            .filter((suggestion) => suggestion.safetyLevel === "safe")
+                            .map((suggestion) => suggestion.id)
+                        )
+                      }
+                      disabled={suggestions.length === 0}
+                    >
+                      Select safe
+                    </button>
+                    <button
+                      type="button"
+                      className="suggestions-quick-button"
+                      onClick={() =>
+                        updateSuggestionSelection(() =>
+                          visibleSuggestions.map((suggestion) => suggestion.id)
+                        )
+                      }
+                      disabled={visibleSuggestions.length === 0}
+                    >
+                      Select visible
+                    </button>
+                    <button
+                      type="button"
+                      className="suggestions-quick-button"
+                      onClick={() => updateSuggestionSelection(() => [])}
+                      disabled={selectedSuggestionIds.length === 0}
+                    >
+                      Clear selection
+                    </button>
+                  </div>
+                  <div className="suggestions-meta">
+                    <span>Total reclaimable: {formatBytes(suggestionTotalReclaimableBytes)}</span>
+                    <span>Selected: {formatBytes(selectedSuggestionReclaimableBytes)}</span>
+                    <span>{selectedSuggestions.length} selected actions</span>
+                  </div>
+                  {suggestionsError && <div className="suggestions-error">{suggestionsError}</div>}
+                  {visibleSuggestions.length === 0 ? (
+                    <div className="suggestions-empty">No suggestions match current filters.</div>
+                  ) : (
+                    <div className="suggestions-list">
+                      {visibleSuggestions.slice(0, 120).map((suggestion) => (
+                        <label key={suggestion.id} className="suggestion-item">
+                          <input
+                            type="checkbox"
+                            checked={selectedSuggestionSet.has(suggestion.id)}
+                            onChange={(event) => {
+                              updateSuggestionSelection((previous) =>
+                                event.target.checked
+                                  ? previous.includes(suggestion.id)
+                                    ? previous
+                                    : [...previous, suggestion.id]
+                                  : previous.filter((id) => id !== suggestion.id)
+                              );
+                            }}
+                          />
+                          <span className="suggestion-main">
+                            <span className="suggestion-title">{suggestion.reason.message}</span>
+                            <span className="suggestion-subtitle">
+                              {getSuggestionActionLabel(suggestion.actionType)} ·{" "}
+                              {formatBytes(suggestion.reclaimableBytes)} · {suggestion.safetyLevel}
+                            </span>
+                            <span className="suggestion-subtitle mono">
+                              {formatSuggestionPath(suggestion.sourcePath)} -&gt;{" "}
+                              {getSuggestionTargetLabel(suggestion)}
+                            </span>
+                            <span className="suggestion-change">{getSuggestionChangeSentence(suggestion)}</span>
+                          </span>
+                        </label>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <aside className="suggestions-preview-panel">
+                  <div className="suggestions-preview-header">
+                    <div className="footer-title">Change Preview</div>
+                    <span
+                      className={`suggestion-status ${
+                        hasDryRunPreviewForSelection ? "suggestion-status-planned" : "suggestion-status-pending"
+                      }`}
+                    >
+                      {hasDryRunPreviewForSelection ? "Preview ready" : "Needs preview"}
+                    </span>
+                  </div>
+                  <div className="suggestions-preview-summary">
+                    <span>{selectedSuggestions.length} selected actions</span>
+                    <span>{formatBytes(selectedSuggestionReclaimableBytes)} reclaimable</span>
+                    <span>
+                      Visible selected: {selectedVisibleSuggestions.length}/{selectedSuggestions.length}
+                    </span>
+                  </div>
+                  <div className="suggestions-preview-list">
+                    {selectedSuggestions.length === 0 ? (
+                      <div className="suggestions-empty">No selected actions yet.</div>
+                    ) : (
+                      selectedSuggestions.slice(0, 120).map((suggestion) => {
+                        const dryRunResult = suggestionDryRunResultsById.get(suggestion.id);
+                        const previewStatus = hasDryRunPreviewForSelection
+                          ? dryRunResult?.status ?? "planned"
+                          : "pending";
+                        return (
+                          <div key={`preview-${suggestion.id}`} className="suggestions-preview-item">
+                            <div className="suggestions-preview-path mono">
+                              {formatSuggestionPath(suggestion.sourcePath)} -&gt; {getSuggestionTargetLabel(suggestion)}
+                            </div>
+                            <div className="suggestions-preview-meta">
+                              <span
+                                className={`suggestion-status suggestion-status-${
+                                  previewStatus === "pending" ? "pending" : previewStatus
+                                }`}
+                              >
+                                {previewStatus}
+                              </span>
+                              <span>{formatBytes(suggestion.reclaimableBytes)}</span>
+                            </div>
+                            {dryRunResult?.message && (
+                              <div className="suggestions-preview-message">{dryRunResult.message}</div>
+                            )}
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                  <details className="suggestions-diagnostics">
+                    <summary>Diagnostics</summary>
+                    <div className="suggestions-preview-actions">
+                      {Object.entries(selectedSuggestionActionCounts).length === 0 ? (
+                        <span className="suggestions-empty">Select suggestions to preview changes.</span>
+                      ) : (
+                        Object.entries(selectedSuggestionActionCounts)
+                          .sort(([a], [b]) => a.localeCompare(b))
+                          .map(([actionType, count]) => (
+                            <span key={actionType} className="suggestion-chip">
+                              {getSuggestionActionLabel(actionType)}: {count}
+                            </span>
+                          ))
+                      )}
+                    </div>
+                    {suggestionDryRunError && <div className="suggestions-error">{suggestionDryRunError}</div>}
+                    {hasDryRunPreviewForSelection && (
+                      <div className="suggestions-preview-dryrun">
+                        <span className="suggestion-status suggestion-status-planned">
+                          planned {suggestionDryRunStatusCounts.planned}
+                        </span>
+                        <span className="suggestion-status suggestion-status-blocked">
+                          blocked {suggestionDryRunStatusCounts.blocked}
+                        </span>
+                        <span className="suggestion-status suggestion-status-error">
+                          error {suggestionDryRunStatusCounts.error}
+                        </span>
+                      </div>
+                    )}
+                  </details>
+                </aside>
+                </div>
+              </div>
+            </div>
+            <div className="modal-footer">
+              <button type="button" onClick={() => setIsSuggestionsOpen(false)}>
+                Close
               </button>
             </div>
           </div>

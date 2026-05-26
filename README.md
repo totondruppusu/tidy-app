@@ -98,3 +98,26 @@ npm run tauri build
 - The app uses a local settings store to remember filters, destinations, and UI preferences per machine.
 - Undo stores temporary backup copies in the app data directory and clears them when the app exits.
 - `operation-history.jsonl` and `undo-actions.json` are stored in app data for auditability and restart recovery.
+
+## Testing
+
+- Frontend unit/integration tests:
+  ```bash
+  npm run test
+  ```
+- Frontend coverage gate (80% thresholds on configured core modules):
+  ```bash
+  npm run test:coverage
+  ```
+- Web smoke E2E (Playwright):
+  ```bash
+  npm run test:e2e
+  ```
+- Rust tests:
+  ```bash
+  npm run test:rust
+  ```
+- Full local pre-merge gate:
+  ```bash
+  npm run test:all
+  ```

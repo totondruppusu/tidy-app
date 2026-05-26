@@ -3036,4 +3036,89 @@ mod tests {
     assert!(ensure_safe_path(&path, false).is_ok());
     let _ = fs::remove_file(path);
   }
+
+  #[test]
+  fn safety_check_blocks_trash_paths() {
+    let path = PathBuf::from("/tmp/.Trash/tidy-test.txt");
+    assert!(ensure_safe_path(&path, false).is_err());
+    assert!(ensure_safe_path(&path, true).is_ok());
+  }
+
+  #[test]
+  fn classify_and_filter_helpers_match_expected_kinds() {
+    let image_kind = classify_file(Path::new("/tmp/file.jpg"));
+    let docs_kind = classify_file(Path::new("/tmp/file.pdf"));
+    let binary_kind = classify_file(Path::new("/tmp/file.unknownext"));
+    assert!(matches!(image_kind, FileKind::Image));
+    assert!(matches!(docs_kind, FileKind::Docs));
+    assert!(matches!(binary_kind, FileKind::Binary));
+    assert!(matches_filter("images", &image_kind));
+    assert!(!matches_filter("images", &docs_kind));
+    assert!(matches_filter("all", &binary_kind));
+  }
+
+  #[test]
+  fn parse_range_handles_standard_and_capped_ranges() {
+    assert_eq!(parse_range("bytes=0-9", 100, None), Some((0, 9)));
+    assert_eq!(parse_range("bytes=10-", 100, Some(5)), Some((10, 14)));
+    assert_eq!(parse_range("bytes=90-200", 100, None), Some((90, 99)));
+    assert_eq!(parse_range("bytes=101-200", 100, None), None);
+    assert_eq!(parse_range("items=0-9", 100, None), None);
+  }
+
+  #[test]
+  fn duplicate_grouping_detects_same_content_files() {
+    let base = PathBuf::from(format!("/tmp/tidy-duplicates-{}", Uuid::new_v4()));
+    fs::create_dir_all(&base).unwrap();
+    let a = base.join("a.bin");
+    let b = base.join("b.bin");
+    fs::write(&a, vec![8u8; 1_200_000]).unwrap();
+    fs::write(&b, vec![8u8; 1_200_000]).unwrap();
+    let duplicates = find_duplicate_groups(&[a.clone(), b.clone()], true, 1_000_000, None).unwrap();
+    assert_eq!(duplicates.len(), 2);
+    let a_group = duplicates.get(&a).cloned();
+    let b_group = duplicates.get(&b).cloned();
+    assert_eq!(a_group, b_group);
+    let _ = fs::remove_dir_all(base);
+  }
+
+  #[test]
+  fn build_cleanup_suggestions_produces_safe_review_and_manual_items() {
+    let root = PathBuf::from(format!("/tmp/tidy-suggestions-{}", Uuid::new_v4()));
+    let cache_dir = root.join("cache");
+    fs::create_dir_all(&cache_dir).unwrap();
+    let duplicate_a = root.join("dupe-a.bin");
+    let duplicate_b = root.join("dupe-b.bin");
+    let review_zip = root.join("installer.zip");
+    let manual_cache = cache_dir.join("cache.tmp");
+    fs::write(&duplicate_a, vec![4u8; 1_200_000]).unwrap();
+    fs::write(&duplicate_b, vec![4u8; 1_200_000]).unwrap();
+    fs::write(&review_zip, vec![6u8; 2_000]).unwrap();
+    fs::write(&manual_cache, vec![9u8; 2_000]).unwrap();
+
+    let result = build_cleanup_suggestions(SuggestionsRequest {
+      folder_path: root.to_string_lossy().to_string(),
+      include_subfolders: true,
+      include_hidden: true,
+      max_results: Some(100),
+      min_large_file_bytes: Some(1),
+      stale_days: Some(0),
+    })
+    .unwrap();
+
+    assert!(result
+      .suggestions
+      .iter()
+      .any(|item| matches!(item.safety_level, SafetyLevel::Safe)));
+    assert!(result
+      .suggestions
+      .iter()
+      .any(|item| matches!(item.safety_level, SafetyLevel::Review)));
+    assert!(result
+      .suggestions
+      .iter()
+      .any(|item| matches!(item.safety_level, SafetyLevel::Manual)));
+
+    let _ = fs::remove_dir_all(root);
+  }
 }

@@ -1,9 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { invoke, isTauri } from "@tauri-apps/api/core";
-import { getCurrentWindow } from "@tauri-apps/api/window";
-import { open, confirm } from "@tauri-apps/plugin-dialog";
-import { listen } from "@tauri-apps/api/event";
-
 import type {
   ArchivePreview,
   ActivitySnapshot,
@@ -74,6 +69,14 @@ import { getGroupIdForFile, groupFilesByMode } from "../lib/grouping";
 import { buildFileTree, getFolderCollapseKey, sortTreeNodesByIndex } from "../lib/tree";
 import { clampNumber } from "../lib/number";
 import { extractFolder, formatRelativeFolder, getRelativeSegments, splitPathSegments } from "../lib/path";
+import {
+  confirmDialog,
+  getDesktopWindow,
+  invokeCommand,
+  isDesktopRuntime,
+  listenEvent,
+  openDialog,
+} from "../lib/desktopBridge";
 import { getInitialTheme, getStoredSettings } from "../lib/settings";
 import { HelpModal } from "../components/HelpModal";
 import { SettingsModal } from "../components/SettingsModal";
@@ -442,11 +445,11 @@ export default function App() {
   }, [isDrawerMode]);
 
   useEffect(() => {
-    if (!isTauri()) {
+    if (!isDesktopRuntime()) {
       return;
     }
     let isMounted = true;
-    const appWindow = getCurrentWindow();
+    const appWindow = getDesktopWindow();
     let unlistenResize: (() => void) | null = null;
     const syncFullscreenState = async () => {
       try {
@@ -480,11 +483,11 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!isTauri()) {
+    if (!isDesktopRuntime()) {
       return;
     }
     let isMounted = true;
-    invoke<CrashReport | null>("get_crash_report")
+    invokeCommand<CrashReport | null>("get_crash_report")
       .then((report) => {
         if (!isMounted || !report) {
           return;
@@ -499,11 +502,11 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!isTauri()) {
+    if (!isDesktopRuntime()) {
       return;
     }
     let isMounted = true;
-    invoke<PreviewCapabilities>("get_preview_capabilities")
+    invokeCommand<PreviewCapabilities>("get_preview_capabilities")
       .then((capabilities) => {
         if (!isMounted) {
           return;
@@ -511,7 +514,7 @@ export default function App() {
         setPreviewCapabilities(capabilities);
       })
       .catch(() => {});
-    invoke<UndoAction[]>("get_recent_undo_actions")
+    invokeCommand<UndoAction[]>("get_recent_undo_actions")
       .then((actions) => {
         if (!isMounted) {
           return;
@@ -525,7 +528,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!isTauri()) {
+    if (!isDesktopRuntime()) {
       return;
     }
     let lastTick = performance.now();
@@ -543,11 +546,11 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!isTauri()) {
+    if (!isDesktopRuntime()) {
       return;
     }
     const handleError = (event: ErrorEvent) => {
-      void invoke("log_client_error", {
+      void invokeCommand("log_client_error", {
         message: event.message || "Unhandled error",
         stack: event.error?.stack ?? null,
       });
@@ -560,7 +563,7 @@ export default function App() {
             ? event.reason
             : "Unhandled promise rejection";
       const stack = event.reason instanceof Error ? event.reason.stack : null;
-      void invoke("log_client_error", { message: reason, stack });
+      void invokeCommand("log_client_error", { message: reason, stack });
     };
     window.addEventListener("error", handleError);
     window.addEventListener("unhandledrejection", handleRejection);
@@ -571,7 +574,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!isTauri()) {
+    if (!isDesktopRuntime()) {
       return;
     }
     let active = true;
@@ -580,7 +583,7 @@ export default function App() {
         return;
       }
       const activity = buildActivitySnapshot();
-      void invoke("update_heartbeat", { activity }).catch(() => {});
+      void invokeCommand("update_heartbeat", { activity }).catch(() => {});
     };
     tick();
     const interval = window.setInterval(tick, HEARTBEAT_INTERVAL_MS);
@@ -593,8 +596,8 @@ export default function App() {
   const handleDismissCrashReport = useCallback(() => {
     setIsCrashReportOpen(false);
     setCrashReport(null);
-    if (isTauri()) {
-      void invoke("clear_crash_report");
+    if (isDesktopRuntime()) {
+      void invokeCommand("clear_crash_report");
     }
   }, []);
 
@@ -611,10 +614,10 @@ export default function App() {
   }, [crashReport]);
 
   const handleRevealCrashReport = useCallback(() => {
-    if (!crashReport || !isTauri()) {
+    if (!crashReport || !isDesktopRuntime()) {
       return;
     }
-    void invoke("reveal_in_file_manager", { path: crashReport.reportPath, reveal: true });
+    void invokeCommand("reveal_in_file_manager", { path: crashReport.reportPath, reveal: true });
   }, [crashReport]);
 
   const handleCopyCrashReport = useCallback(() => {
@@ -753,11 +756,11 @@ export default function App() {
 
   useEffect(() => {
     const applyWindowTheme = async () => {
-      if (!isTauri()) {
+      if (!isDesktopRuntime()) {
         return;
       }
       try {
-        await getCurrentWindow().setTheme(theme === "dark" ? "dark" : "light");
+        await getDesktopWindow().setTheme(theme === "dark" ? "dark" : "light");
       } catch (error) {
         console.warn("Failed to sync window theme.", error);
       }
@@ -766,10 +769,10 @@ export default function App() {
   }, [theme]);
 
   useEffect(() => {
-    if (!isTauri()) {
+    if (!isDesktopRuntime()) {
       return;
     }
-    void invoke("store_recent_undo_actions", { actions: undoStack }).catch(() => {});
+    void invokeCommand("store_recent_undo_actions", { actions: undoStack }).catch(() => {});
   }, [undoStack]);
 
   const updateStatus = useCallback((message: string) => {
@@ -1205,7 +1208,7 @@ export default function App() {
       setOfficePreviewStatus("idle");
       return;
     }
-    if (!isTauri()) {
+    if (!isDesktopRuntime()) {
       setOfficePreviewId(null);
       setOfficeFallbackPreview(null);
       setOfficePreviewStatus("error");
@@ -1220,7 +1223,7 @@ export default function App() {
         return;
       }
       setOfficePreviewStatus("loading");
-      invoke<string>("generate_preview", { id: previewFile.id })
+      invokeCommand<string>("generate_preview", { id: previewFile.id })
         .then((previewId) => {
           if (!isActive) {
             return;
@@ -1233,7 +1236,7 @@ export default function App() {
             return;
           }
           console.warn("Failed to generate office preview.", error);
-          invoke<OfficeFallbackPreview>("extract_office_fallback_preview", { id: previewFile.id })
+          invokeCommand<OfficeFallbackPreview>("extract_office_fallback_preview", { id: previewFile.id })
             .then((fallback) => {
               if (!isActive) {
                 return;
@@ -1273,7 +1276,7 @@ export default function App() {
       setArchiveError(null);
       return;
     }
-    if (!isTauri()) {
+    if (!isDesktopRuntime()) {
       setArchiveEntries([]);
       setArchiveTruncated(false);
       setArchiveStatus("error");
@@ -1290,7 +1293,7 @@ export default function App() {
         return;
       }
       setArchiveStatus("loading");
-      invoke<ArchivePreview>("list_archive_entries", { id: previewFile.id })
+      invokeCommand<ArchivePreview>("list_archive_entries", { id: previewFile.id })
         .then((result) => {
           if (!isActive) {
             return;
@@ -1507,7 +1510,7 @@ export default function App() {
       setCollapsedFolders({});
       updateStatus(includeSubfolders ? "Scanning folders and subfolders..." : "Scanning folder...");
       try {
-        const result = await invoke<ScanResult>("scan_folder", {
+        const result = await invokeCommand<ScanResult>("scan_folder", {
           folderPath,
           filterMode,
           includeSubfolders,
@@ -1552,7 +1555,7 @@ export default function App() {
     setIsCancellingScan(true);
     updateStatus("Stopping scan...");
     try {
-      await invoke("cancel_scan", { scanId });
+      await invokeCommand("cancel_scan", { scanId });
     } catch (error) {
       setIsCancellingScan(false);
       updateStatus(`Failed to stop scan: ${String(error)}`);
@@ -1561,7 +1564,7 @@ export default function App() {
 
   const pickFolder = useCallback(async () => {
     try {
-      const selected = await open({ directory: true, multiple: false });
+      const selected = await openDialog({ directory: true, multiple: false });
       if (typeof selected === "string") {
         setCurrentFolder(selected);
         if (autoScanOnPick) {
@@ -1643,7 +1646,7 @@ export default function App() {
       updateStatus("Select a preset to delete.");
       return;
     }
-    const shouldDelete = await confirm(
+    const shouldDelete = await confirmDialog(
       `Delete preset "${activeSuggestionPreset.name}"?`,
       { title: "Delete suggestion preset" }
     );
@@ -1675,7 +1678,7 @@ export default function App() {
       updateStatus("Select a folder before building suggestions.");
       return;
     }
-    if (!isTauri()) {
+    if (!isDesktopRuntime()) {
       updateStatus("Suggestions are available in the desktop app.");
       return;
     }
@@ -1689,7 +1692,7 @@ export default function App() {
         1024 * 1024,
         Math.min(20 * 1024 * 1024 * 1024, Math.round(suggestionMinLargeFileBytes))
       );
-      const result = await invoke<SuggestionSet>("build_cleanup_suggestions", {
+      const result = await invokeCommand<SuggestionSet>("build_cleanup_suggestions", {
         request: {
           folderPath: currentFolder,
           includeSubfolders,
@@ -1732,7 +1735,7 @@ export default function App() {
       updateStatus("No folder selected.");
       return null;
     }
-    if (!isTauri()) {
+    if (!isDesktopRuntime()) {
       updateStatus("Suggestions apply is available in the desktop app.");
       return null;
     }
@@ -1745,7 +1748,7 @@ export default function App() {
     setSuggestionDryRunStatus("loading");
     setSuggestionDryRunError(null);
     try {
-      const plan = await invoke<ActionBatchResult>("apply_action_batch", {
+      const plan = await invokeCommand<ActionBatchResult>("apply_action_batch", {
         request: {
           actions,
           dryRun: true,
@@ -1783,7 +1786,7 @@ export default function App() {
       updateStatus("No folder selected.");
       return;
     }
-    if (!isTauri()) {
+    if (!isDesktopRuntime()) {
       updateStatus("Suggestions apply is available in the desktop app.");
       return;
     }
@@ -1806,7 +1809,7 @@ export default function App() {
       updateStatus("Preview updated. Review the Change Preview panel, then click Apply selected.");
       return;
     }
-    const shouldApply = await confirm(
+    const shouldApply = await confirmDialog(
       `Preview ready: ${plan.applied} planned, ${plan.blocked} blocked, ${plan.failed} failed.\n\nApply now?`,
       { title: "Confirm cleanup suggestions" }
     );
@@ -1816,7 +1819,7 @@ export default function App() {
     }
     await runMutationWithSpinner("Applying cleanup…", async () => {
       try {
-        const applied = await invoke<ActionBatchResult>("apply_action_batch", {
+        const applied = await invokeCommand<ActionBatchResult>("apply_action_batch", {
           request: {
             actions,
             dryRun: false,
@@ -1890,7 +1893,7 @@ export default function App() {
   const pickDestinationForSlot = useCallback(
     async (slotIndex: number) => {
       try {
-        const selected = await open({ directory: true, multiple: false });
+        const selected = await openDialog({ directory: true, multiple: false });
         if (typeof selected === "string") {
           updateDestinationSlot(slotIndex, selected);
           updateStatus(`Destination ${slotIndex + 1} set to ${selected}.`);
@@ -2086,7 +2089,7 @@ export default function App() {
         : `Move ${currentFile.name} to system trash?`;
     const confirmTitle = trashBehavior === "permanent" ? "Confirm delete" : "Confirm trash";
     const shouldTrash = shouldConfirmTrash
-      ? await confirm(confirmMessage, { title: confirmTitle })
+      ? await confirmDialog(confirmMessage, { title: confirmTitle })
       : true;
     if (!shouldTrash) {
       return;
@@ -2095,7 +2098,7 @@ export default function App() {
       trashBehavior === "permanent" ? "Deleting…" : "Trashing…",
       async () => {
         try {
-          const result = await invoke<TrashResult>("trash_file", {
+          const result = await invokeCommand<TrashResult>("trash_file", {
             id: currentFile.id,
             trashMode: trashBehavior,
           });
@@ -2127,14 +2130,14 @@ export default function App() {
     }
     const confirmMessage = `Permanently delete ${currentFile.name}? This cannot be undone.`;
     const shouldDelete = confirmTrash
-      ? await confirm(confirmMessage, { title: "Confirm permanent delete" })
+      ? await confirmDialog(confirmMessage, { title: "Confirm permanent delete" })
       : true;
     if (!shouldDelete) {
       return;
     }
     await runMutationWithSpinner("Deleting…", async () => {
       try {
-        await invoke<TrashResult>("trash_file", {
+        await invokeCommand<TrashResult>("trash_file", {
           id: currentFile.id,
           trashMode: "permanent",
         });
@@ -2188,7 +2191,7 @@ export default function App() {
             }) to system trash?`;
       const confirmTitle = trashBehavior === "permanent" ? "Confirm delete" : "Confirm folder trash";
       const shouldTrash = shouldConfirmTrash
-        ? await confirm(confirmMessage, { title: confirmTitle })
+        ? await confirmDialog(confirmMessage, { title: confirmTitle })
         : true;
       if (!shouldTrash) {
         return;
@@ -2207,7 +2210,7 @@ export default function App() {
         trashBehavior === "permanent" ? "Deleting…" : "Trashing…",
         async () => {
           try {
-            const result = await invoke<TrashResult>("trash_folder", {
+            const result = await invokeCommand<TrashResult>("trash_folder", {
               folderPath: fullFolderPath,
               files: entries,
               trashMode: trashBehavior,
@@ -2264,8 +2267,8 @@ export default function App() {
       }
       await runMutationWithSpinner("Moving…", async () => {
         try {
-          await invoke("set_destination", { destination: destinationPath });
-          const result = await invoke<MoveResult>("move_file", { id: currentFile.id });
+          await invokeCommand("set_destination", { destination: destinationPath });
+          const result = await invokeCommand<MoveResult>("move_file", { id: currentFile.id });
           removeFileById(currentFile.id);
           pushUndo({
             kind: "move",
@@ -2293,7 +2296,7 @@ export default function App() {
   const openFileInFinder = useCallback(
     async (file: FileEntry) => {
       try {
-        await invoke("reveal_in_file_manager", { path: file.path, reveal: true });
+        await invokeCommand("reveal_in_file_manager", { path: file.path, reveal: true });
       } catch (error) {
         updateStatus(`Reveal in file manager failed: ${String(error)}`);
       }
@@ -2304,7 +2307,7 @@ export default function App() {
   const openFileInSystem = useCallback(
     async (file: FileEntry) => {
       try {
-        await invoke("reveal_in_file_manager", { path: file.path, reveal: false });
+        await invokeCommand("reveal_in_file_manager", { path: file.path, reveal: false });
       } catch (error) {
         updateStatus(`Open file failed: ${String(error)}`);
       }
@@ -2367,7 +2370,7 @@ export default function App() {
     if (lastAction.kind === "trash-folder") {
       await runMutationWithSpinner("Restoring…", async () => {
         try {
-          await invoke("restore_folder", {
+          await invokeCommand("restore_folder", {
             source: lastAction.trashPath,
             destination: lastAction.folderPath,
             files: lastAction.items.map((item) => ({
@@ -2387,7 +2390,7 @@ export default function App() {
     const sourcePath = lastAction.kind === "move" ? lastAction.toPath : lastAction.trashPath;
     await runMutationWithSpinner("Restoring…", async () => {
       try {
-        await invoke("restore_file", {
+        await invokeCommand("restore_file", {
           id: lastAction.file.id,
           source: sourcePath,
           destination: lastAction.fromPath,
@@ -2531,11 +2534,11 @@ export default function App() {
   ]);
 
   useEffect(() => {
-    if (!isTauri()) {
+    if (!isDesktopRuntime()) {
       return;
     }
     let isMounted = true;
-    const unlistenPromise = listen<ScanProgress>("scan_progress", (event) => {
+    const unlistenPromise = listenEvent<ScanProgress>("scan_progress", (event) => {
       if (!isMounted) {
         return;
       }
@@ -2544,7 +2547,7 @@ export default function App() {
       }
       setScanProgress(event.payload);
     });
-    const unlistenBatchPromise = listen<ScanBatch>("scan_batch", (event) => {
+    const unlistenBatchPromise = listenEvent<ScanBatch>("scan_batch", (event) => {
       if (!isMounted) {
         return;
       }

@@ -5,3 +5,6 @@ node_modules
 .DS_Store
 .playwright-mcp
 .codex
+coverage
+test-results
+playwright-report

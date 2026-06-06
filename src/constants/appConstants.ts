@@ -54,6 +54,7 @@ export const TREE_INDENT_PX = 16;
 export const FILTER_MODES: FilterMode[] = [
   "all",
   "images",
+  "screenshots",
   "videos",
   "images_videos",
   "audio",
@@ -68,6 +69,7 @@ export const FILTER_MODES: FilterMode[] = [
 export const FILTER_OPTIONS: { value: FilterMode; label: string }[] = [
   { value: "all", label: "All files" },
   { value: "images", label: "Images" },
+  { value: "screenshots", label: "Screenshots + Memes" },
   { value: "videos", label: "Videos" },
   { value: "images_videos", label: "Images + Videos" },
   { value: "audio", label: "Audio" },

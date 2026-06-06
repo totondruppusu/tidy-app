@@ -1,3 +1,4 @@
+use image::ImageReader;
 use mime_guess::MimeGuess;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -63,6 +64,37 @@ struct DuplicateCandidate {
   path: PathBuf,
   size_bytes: u64,
   modified_ms: Option<u64>,
+}
+
+#[derive(Clone, Copy)]
+struct LumaPixel {
+  value: u8,
+  alpha: u8,
+}
+
+struct DecodedImage {
+  width: usize,
+  height: usize,
+  pixels: Vec<LumaPixel>,
+}
+
+struct EdgeMap {
+  width: usize,
+  height: usize,
+  sums: Vec<u32>,
+}
+
+struct CountMap {
+  width: usize,
+  height: usize,
+  sums: Vec<u32>,
+}
+
+#[derive(Default)]
+struct TextBandStats {
+  groups: usize,
+  wide_groups: usize,
+  max_active_cells: usize,
 }
 
 #[derive(Default)]
@@ -643,7 +675,7 @@ impl IndexStore {
       if filter == "duplicates" && file.duplicate_group.is_none() {
         continue;
       }
-      if !matches_filter(&filter, &file.kind) {
+      if !matches_file_filter(&filter, &file.name, &file.path, &file.kind) {
         continue;
       }
       if let Some(extensions) = selected_extensions.as_ref() {
@@ -1550,7 +1582,7 @@ async fn scan_folder(
       let is_match = if let Some(duplicates) = duplicate_groups.as_ref() {
         duplicates.contains_key(&candidate.path)
       } else {
-        matches_filter(filter, &candidate.kind)
+        matches_candidate_filter(filter, &candidate)
       };
       if is_match {
         let id = Uuid::new_v4().to_string();
@@ -2922,6 +2954,542 @@ fn matches_filter(filter: &str, kind: &FileKind) -> bool {
   }
 }
 
+fn matches_candidate_filter(filter: &str, candidate: &IndexedCandidate) -> bool {
+  matches_file_filter(
+    filter,
+    &candidate.name,
+    &candidate.path.to_string_lossy(),
+    &candidate.kind,
+  )
+}
+
+fn matches_file_filter(filter: &str, name: &str, path: &str, kind: &FileKind) -> bool {
+  if filter == "screenshots" {
+    return is_screenshot_file(name, path, kind);
+  }
+  matches_filter(filter, kind)
+}
+
+fn is_screenshot_file(name: &str, path: &str, kind: &FileKind) -> bool {
+  if !matches!(kind, FileKind::Image) {
+    return false;
+  }
+
+  let image_path = Path::new(path);
+  let normalized_name = normalize_screenshot_match_text(name);
+  if normalized_name.contains("screenshot")
+    || normalized_name.contains("screen shot")
+    || normalized_name.contains("screen capture")
+    || normalized_name.contains("screencapture")
+    || normalized_name.contains("schermata")
+    || normalized_name.contains("captura de pantalla")
+    || normalized_name.contains("bildschirmfoto")
+  {
+    return true;
+  }
+
+  path
+    .split(|character| character == '/' || character == '\\')
+    .any(|segment| {
+      let normalized_segment = normalize_screenshot_match_text(segment);
+      normalized_segment == "screenshots" || normalized_segment == "screen shots"
+    })
+    || has_screenshot_or_meme_content(image_path)
+}
+
+fn normalize_screenshot_match_text(value: &str) -> String {
+  value
+    .to_lowercase()
+    .chars()
+    .map(|character| match character {
+      '_' | '-' | '.' => ' ',
+      _ => character,
+    })
+    .collect::<String>()
+    .split_whitespace()
+    .collect::<Vec<_>>()
+    .join(" ")
+}
+
+fn has_screenshot_or_meme_content(path: &Path) -> bool {
+  let Ok(image) = decode_image_luma(path) else {
+    return false;
+  };
+  has_screenshot_or_meme_content_from_image(&image)
+}
+
+fn has_screenshot_or_meme_content_from_image(image: &DecodedImage) -> bool {
+  has_text_or_number_content(image) || has_strict_ui_only_screenshot(image)
+}
+
+fn decode_image_luma(path: &Path) -> Result<DecodedImage, String> {
+  let image = ImageReader::open(path)
+    .map_err(|error| error.to_string())?
+    .with_guessed_format()
+    .map_err(|error| error.to_string())?
+    .decode()
+    .map_err(|error| error.to_string())?
+    .to_rgba8();
+  let width = image.width() as usize;
+  let height = image.height() as usize;
+  if width == 0 || height == 0 {
+    return Err("Invalid image dimensions.".into());
+  }
+
+  let pixels = image
+    .pixels()
+    .map(|pixel| LumaPixel {
+      value: rgb_to_luma(pixel[0], pixel[1], pixel[2]),
+      alpha: pixel[3],
+    })
+    .collect();
+
+  Ok(DecodedImage {
+    width,
+    height,
+    pixels,
+  })
+}
+
+fn rgb_to_luma(red: u8, green: u8, blue: u8) -> u8 {
+  ((u32::from(red) * 299 + u32::from(green) * 587 + u32::from(blue) * 114) / 1000) as u8
+}
+
+fn has_battery_icon_like_shape(image: &DecodedImage) -> bool {
+  if image.width < 120 || image.height < 120 {
+    return false;
+  }
+  if has_filled_battery_badge_like_shape(image) {
+    return true;
+  }
+
+  let search_x_start = image.width * 45 / 100;
+  let search_x_end = image.width.saturating_sub(1);
+  let search_y_start = 0usize;
+  let search_y_end = (image.height * 18 / 100).clamp(24, 160).min(image.height.saturating_sub(1));
+  let min_width = (image.width / 120).clamp(8, 24);
+  let max_width = (image.width / 12).clamp(36, 120);
+  let min_height = (image.height / 220).clamp(4, 14);
+  let max_height = (image.height / 45).clamp(12, 48);
+  let edge_map_height = (search_y_end + max_height + 8).min(image.height);
+  let edges = build_edge_map(image, edge_map_height);
+
+  for y in (search_y_start..search_y_end).step_by(2) {
+    for x in (search_x_start..search_x_end).step_by(2) {
+      for candidate_width in (min_width..=max_width).step_by(2) {
+        if x + candidate_width >= image.width {
+          break;
+        }
+        for candidate_height in min_height..=max_height {
+          if y + candidate_height >= image.height {
+            break;
+          }
+          let aspect = candidate_width as f32 / candidate_height as f32;
+          if !(1.8..=4.8).contains(&aspect) {
+            continue;
+          }
+          if is_battery_outline_candidate(&edges, x, y, candidate_width, candidate_height) {
+            return true;
+          }
+        }
+      }
+    }
+  }
+
+  false
+}
+
+fn has_filled_battery_badge_like_shape(image: &DecodedImage) -> bool {
+  let search_y_end = (image.height * 10 / 100).clamp(32, 150).min(image.height);
+  let dark = build_count_map(image, search_y_end, |pixel| pixel.alpha >= 180 && pixel.value <= 55);
+  let bright = build_count_map(image, search_y_end, |pixel| pixel.alpha >= 180 && pixel.value >= 200);
+  let x_start = image.width * 70 / 100;
+  let x_end = image.width.saturating_sub(image.width * 3 / 100);
+  let min_width = (image.width * 3 / 100).clamp(20, 48);
+  let max_width = (image.width * 10 / 100).clamp(48, 140);
+  let min_height = (image.height / 180).clamp(10, 24);
+  let max_height = (image.height / 55).clamp(24, 64);
+
+  for y in (0..search_y_end).step_by(2) {
+    for x in (x_start..x_end).step_by(2) {
+      for width in (min_width..=max_width).step_by(2) {
+        if x + width > x_end {
+          break;
+        }
+        for height in min_height..=max_height {
+          if y + height > search_y_end {
+            break;
+          }
+          let aspect = width as f32 / height as f32;
+          if !(1.15..=3.8).contains(&aspect) {
+            continue;
+          }
+          if has_contrasting_badge_fill(&dark, x, y, width, height)
+            || has_contrasting_badge_fill(&bright, x, y, width, height)
+          {
+            return true;
+          }
+        }
+      }
+    }
+  }
+
+  false
+}
+
+fn has_contrasting_badge_fill(map: &CountMap, x: usize, y: usize, width: usize, height: usize) -> bool {
+  let inner = map.rect_score(x, y, width, height);
+  if inner < 0.38 {
+    return false;
+  }
+  let padding = (height / 2).max(4);
+  let outer_x = x.saturating_sub(padding);
+  let outer_y = y.saturating_sub(padding);
+  let outer_right = (x + width + padding).min(map.width);
+  let outer_bottom = (y + height + padding).min(map.height);
+  let outer_width = outer_right.saturating_sub(outer_x);
+  let outer_height = outer_bottom.saturating_sub(outer_y);
+  let outer_area = outer_width.saturating_mul(outer_height);
+  let inner_area = width.saturating_mul(height);
+  if outer_area <= inner_area {
+    return false;
+  }
+  let outer_sum = map.rect_sum(outer_x, outer_y, outer_width, outer_height);
+  let inner_sum = map.rect_sum(x, y, width, height);
+  let ring = (outer_sum.saturating_sub(inner_sum)) as f32 / (outer_area - inner_area) as f32;
+  inner - ring >= 0.20
+}
+
+fn has_mobile_screenshot_ui(image: &DecodedImage) -> bool {
+  if !has_phone_screenshot_dimensions(image) {
+    return false;
+  }
+
+  mobile_screenshot_ui_score(image) >= 2
+}
+
+fn has_strict_ui_only_screenshot(image: &DecodedImage) -> bool {
+  if !has_phone_screenshot_dimensions(image) {
+    return false;
+  }
+
+  mobile_screenshot_ui_score(image) >= 4
+}
+
+fn mobile_screenshot_ui_score(image: &DecodedImage) -> usize {
+  let mut score = 0usize;
+  if has_battery_icon_like_shape(image) {
+    score += 2;
+  }
+  if has_dynamic_island_like_shape(image) {
+    score += 2;
+  }
+  if has_home_indicator_like_shape(image) {
+    score += 1;
+  }
+  if has_status_bar_activity(image) {
+    score += 1;
+  }
+
+  score
+}
+
+fn has_text_or_number_content(image: &DecodedImage) -> bool {
+  if image.width < 240 || image.height < 240 {
+    return false;
+  }
+  let edges = build_edge_map(image, image.height);
+  let top = text_line_stats_in_band(&edges, 0, image.height * 28 / 100);
+  let middle = text_line_stats_in_band(&edges, image.height * 28 / 100, image.height * 72 / 100);
+  let bottom = text_line_stats_in_band(&edges, image.height * 72 / 100, image.height);
+  let wide_groups = top.wide_groups + middle.wide_groups + bottom.wide_groups;
+
+  top.wide_groups >= 2
+    || bottom.wide_groups >= 2
+    || (wide_groups >= 4 && has_low_photo_texture_bias(&edges))
+}
+
+fn text_line_stats_in_band(edges: &EdgeMap, y_start: usize, y_end: usize) -> TextBandStats {
+  if y_end <= y_start || edges.width < 80 {
+    return TextBandStats::default();
+  }
+  let y_end = y_end.min(edges.height);
+  let cell_count = 12usize;
+  let cell_width = (edges.width / cell_count).max(1);
+  let window_height = (edges.height / 160).clamp(3, 8);
+  let mut stats = TextBandStats::default();
+  let mut in_group = false;
+  let mut group_max_active_cells = 0usize;
+
+  for y in y_start..y_end.saturating_sub(window_height) {
+    let active_cells = (0..cell_count)
+      .filter(|cell| {
+        let x = cell * cell_width;
+        let width = if *cell == cell_count - 1 {
+          edges.width.saturating_sub(x)
+        } else {
+          cell_width
+        };
+        edges.rect_score(x, y, width, window_height) >= 0.012
+      })
+      .count();
+    stats.max_active_cells = stats.max_active_cells.max(active_cells);
+    let text_like_row = active_cells >= 6;
+    if text_like_row && !in_group {
+      stats.groups += 1;
+      in_group = true;
+      group_max_active_cells = active_cells;
+    } else if text_like_row {
+      group_max_active_cells = group_max_active_cells.max(active_cells);
+    } else if !text_like_row {
+      if in_group && group_max_active_cells >= 7 {
+        stats.wide_groups += 1;
+      }
+      in_group = false;
+      group_max_active_cells = 0;
+    }
+  }
+  if in_group && group_max_active_cells >= 7 {
+    stats.wide_groups += 1;
+  }
+
+  stats
+}
+
+fn has_low_photo_texture_bias(edges: &EdgeMap) -> bool {
+  let top = edges.rect_score(0, 0, edges.width, edges.height * 25 / 100);
+  let center_y = edges.height * 35 / 100;
+  let center_height = edges.height * 30 / 100;
+  let center = edges.rect_score(0, center_y, edges.width, center_height);
+  top >= center * 1.15 || center >= top * 1.15
+}
+
+fn has_phone_screenshot_dimensions(image: &DecodedImage) -> bool {
+  if image.width < 300 || image.height < 600 || image.height <= image.width {
+    return false;
+  }
+  let ratio = image.width as f32 / image.height as f32;
+  (0.40..=0.62).contains(&ratio)
+}
+
+fn has_dynamic_island_like_shape(image: &DecodedImage) -> bool {
+  let search_y_end = (image.height * 8 / 100).clamp(36, 150).min(image.height);
+  let dark = build_count_map(image, search_y_end, |pixel| pixel.alpha >= 180 && pixel.value <= 35);
+  let min_width = (image.width * 22 / 100).max(70);
+  let max_width = (image.width * 58 / 100).max(min_width);
+  let min_height = (image.height * 2 / 100).max(12);
+  let max_height = (image.height * 5 / 100).max(min_height);
+  let x_start = image.width * 18 / 100;
+  let x_end = image.width * 82 / 100;
+
+  for y in (0..search_y_end).step_by(3) {
+    for x in (x_start..x_end).step_by(4) {
+      for width in (min_width..=max_width).step_by(8) {
+        if x + width > x_end {
+          break;
+        }
+        for height in (min_height..=max_height).step_by(3) {
+          if y + height > search_y_end {
+            break;
+          }
+          let aspect = width as f32 / height as f32;
+          if !(3.0..=8.5).contains(&aspect) {
+            continue;
+          }
+          if dark.rect_score(x, y, width, height) >= 0.72 {
+            return true;
+          }
+        }
+      }
+    }
+  }
+
+  false
+}
+
+fn has_home_indicator_like_shape(image: &DecodedImage) -> bool {
+  let search_y_start = image.height * 88 / 100;
+  let bright = build_count_map(image, image.height, |pixel| pixel.alpha >= 180 && pixel.value >= 225);
+  let dark = build_count_map(image, image.height, |pixel| pixel.alpha >= 180 && pixel.value <= 35);
+  let min_width = (image.width * 24 / 100).max(80);
+  let max_width = (image.width * 48 / 100).max(min_width);
+  let min_height = (image.height / 320).clamp(3, 10);
+  let max_height = (image.height / 120).clamp(8, 24);
+  let x_start = image.width * 22 / 100;
+  let x_end = image.width * 78 / 100;
+
+  for y in (search_y_start..image.height).step_by(2) {
+    for x in (x_start..x_end).step_by(4) {
+      for width in (min_width..=max_width).step_by(8) {
+        if x + width > x_end {
+          break;
+        }
+        for height in min_height..=max_height {
+          if y + height >= image.height {
+            break;
+          }
+          let aspect = width as f32 / height as f32;
+          if aspect < 18.0 {
+            continue;
+          }
+          if bright.rect_score(x, y, width, height) >= 0.82
+            || dark.rect_score(x, y, width, height) >= 0.82
+          {
+            return true;
+          }
+        }
+      }
+    }
+  }
+
+  false
+}
+
+fn has_status_bar_activity(image: &DecodedImage) -> bool {
+  let band_height = (image.height * 8 / 100).clamp(36, 140).min(image.height);
+  let edges = build_edge_map(image, band_height);
+  let left_score = edges.rect_score(0, 0, image.width * 34 / 100, band_height);
+  let right_x = image.width * 64 / 100;
+  let right_score = edges.rect_score(right_x, 0, image.width.saturating_sub(right_x), band_height);
+  left_score >= 0.035 && right_score >= 0.035
+}
+
+fn is_battery_outline_candidate(
+  edges: &EdgeMap,
+  x: usize,
+  y: usize,
+  width: usize,
+  height: usize,
+) -> bool {
+  let top = edge_line_score(edges, x, y, width, true);
+  let bottom = edge_line_score(edges, x, y + height, width, true);
+  let left = edge_line_score(edges, x, y, height, false);
+  let right = edge_line_score(edges, x + width, y, height, false);
+  if top < 0.55 || bottom < 0.55 || left < 0.45 || right < 0.45 {
+    return false;
+  }
+
+  let center_y = y + height / 2;
+  let nub_width = (width / 5).clamp(2, 8);
+  let nub_height = (height / 2).max(2);
+  let nub_x = x + width + 1;
+  let nub_y = center_y.saturating_sub(nub_height / 2);
+  if nub_x + nub_width >= edges.width || nub_y + nub_height >= edges.height {
+    return false;
+  }
+  edges.rect_score(nub_x, nub_y, nub_width, nub_height) >= 0.18
+}
+
+fn edge_line_score(edges: &EdgeMap, x: usize, y: usize, length: usize, horizontal: bool) -> f32 {
+  if length == 0 {
+    return 0.0;
+  }
+  if horizontal {
+    edges.rect_score(x, y, length, 1)
+  } else {
+    edges.rect_score(x, y, 1, length)
+  }
+}
+
+fn build_edge_map(image: &DecodedImage, height: usize) -> EdgeMap {
+  let height = height.min(image.height);
+  let stride = image.width + 1;
+  let mut sums = vec![0u32; (image.width + 1) * (height + 1)];
+  for y in 0..height {
+    for x in 0..image.width {
+      let value = if is_high_contrast_pixel(image, x, y) { 1 } else { 0 };
+      let index = (y + 1) * stride + x + 1;
+      sums[index] =
+        value + sums[index - 1] + sums[index - stride] - sums[index - stride - 1];
+    }
+  }
+  EdgeMap {
+    width: image.width,
+    height,
+    sums,
+  }
+}
+
+fn build_count_map(
+  image: &DecodedImage,
+  height: usize,
+  matches_pixel: impl Fn(LumaPixel) -> bool,
+) -> CountMap {
+  let height = height.min(image.height);
+  let stride = image.width + 1;
+  let mut sums = vec![0u32; (image.width + 1) * (height + 1)];
+  for y in 0..height {
+    for x in 0..image.width {
+      let value = if matches_pixel(image.pixels[y * image.width + x]) { 1 } else { 0 };
+      let index = (y + 1) * stride + x + 1;
+      sums[index] =
+        value + sums[index - 1] + sums[index - stride] - sums[index - stride - 1];
+    }
+  }
+  CountMap {
+    width: image.width,
+    height,
+    sums,
+  }
+}
+
+impl EdgeMap {
+  fn rect_score(&self, x: usize, y: usize, width: usize, height: usize) -> f32 {
+    let area = width.saturating_mul(height);
+    if area == 0 || x + width > self.width || y + height > self.height {
+      return 0.0;
+    }
+    self.rect_sum(x, y, width, height) as f32 / area as f32
+  }
+
+  fn rect_sum(&self, x: usize, y: usize, width: usize, height: usize) -> u32 {
+    let stride = self.width + 1;
+    let x2 = x + width;
+    let y2 = y + height;
+    self.sums[y2 * stride + x2] + self.sums[y * stride + x]
+      - self.sums[y * stride + x2]
+      - self.sums[y2 * stride + x]
+  }
+}
+
+impl CountMap {
+  fn rect_score(&self, x: usize, y: usize, width: usize, height: usize) -> f32 {
+    let area = width.saturating_mul(height);
+    if area == 0 || x + width > self.width || y + height > self.height {
+      return 0.0;
+    }
+    self.rect_sum(x, y, width, height) as f32 / area as f32
+  }
+
+  fn rect_sum(&self, x: usize, y: usize, width: usize, height: usize) -> u32 {
+    let stride = self.width + 1;
+    let x2 = x + width;
+    let y2 = y + height;
+    self.sums[y2 * stride + x2] + self.sums[y * stride + x]
+      - self.sums[y * stride + x2]
+      - self.sums[y2 * stride + x]
+  }
+}
+
+fn is_high_contrast_pixel(image: &DecodedImage, x: usize, y: usize) -> bool {
+  if x == 0 || y == 0 || x + 1 >= image.width || y + 1 >= image.height {
+    return false;
+  }
+  let pixel = image.pixels[y * image.width + x];
+  if pixel.alpha < 180 {
+    return false;
+  }
+  let neighbors = [
+    image.pixels[y * image.width + x - 1],
+    image.pixels[y * image.width + x + 1],
+    image.pixels[(y - 1) * image.width + x],
+    image.pixels[(y + 1) * image.width + x],
+  ];
+  neighbors.iter().any(|neighbor| {
+    neighbor.alpha >= 180 && pixel.value.abs_diff(neighbor.value) >= 90
+  })
+}
+
 fn hash_file(path: &Path) -> Result<String, String> {
   let file = File::open(path).map_err(|error| error.to_string())?;
   let mut reader = BufReader::new(file);
@@ -3657,6 +4225,182 @@ mod tests {
     assert!(matches_filter("images", &image_kind));
     assert!(!matches_filter("images", &docs_kind));
     assert!(matches_filter("all", &binary_kind));
+    assert!(matches_file_filter(
+      "screenshots",
+      "Screenshot 2026-06-06 at 10.30.00.png",
+      "/tmp/Screenshot 2026-06-06 at 10.30.00.png",
+      &image_kind,
+    ));
+    assert!(matches_file_filter(
+      "screenshots",
+      "IMG_0001.PNG",
+      "/tmp/Screenshots/IMG_0001.PNG",
+      &image_kind,
+    ));
+    assert!(!matches_file_filter(
+      "screenshots",
+      "Screenshot notes.txt",
+      "/tmp/Screenshot notes.txt",
+      &docs_kind,
+    ));
+    assert!(!matches_file_filter(
+      "screenshots",
+      "holiday.png",
+      "/tmp/Photos/holiday.png",
+      &image_kind,
+    ));
+  }
+
+  #[test]
+  fn screenshot_content_detector_finds_battery_like_status_icon() {
+    let mut image = test_luma_image(360, 640, 245);
+    draw_rect_outline(&mut image, 300, 18, 28, 12, 25);
+    draw_filled_rect(&mut image, 330, 22, 4, 5, 25);
+    assert!(has_battery_icon_like_shape(&image));
+    assert!(has_mobile_screenshot_ui(&image));
+    assert!(!has_strict_ui_only_screenshot(&image));
+  }
+
+  #[test]
+  fn screenshot_content_detector_ignores_plain_images() {
+    let image = test_luma_image(360, 640, 245);
+    assert!(!has_mobile_screenshot_ui(&image));
+  }
+
+  #[test]
+  fn screenshot_content_detector_finds_dynamic_island_status_area() {
+    let mut image = test_luma_image(1320, 2868, 245);
+    draw_filled_rect(&mut image, 370, 42, 580, 110, 5);
+    draw_filled_rect(&mut image, 92, 80, 160, 42, 5);
+    draw_filled_rect(&mut image, 980, 80, 210, 42, 5);
+    assert!(has_mobile_screenshot_ui(&image));
+    assert!(has_strict_ui_only_screenshot(&image));
+  }
+
+  #[test]
+  fn screenshot_content_detector_finds_home_indicator_status_area() {
+    let mut image = test_luma_image(1320, 2868, 35);
+    draw_filled_rect(&mut image, 92, 80, 160, 42, 245);
+    draw_filled_rect(&mut image, 980, 80, 210, 42, 245);
+    draw_filled_rect(&mut image, 430, 2800, 460, 12, 245);
+    assert!(has_mobile_screenshot_ui(&image));
+    assert!(has_strict_ui_only_screenshot(&image));
+  }
+
+  #[test]
+  fn screenshot_content_detector_matches_provided_examples_when_available() {
+    for path in [
+      "/Volumes/personal_folder/tempscreen/Diocane/IMG_4826.png",
+      "/Volumes/personal_folder/tempscreen/Diocane/IMG_4992.png",
+      "/Volumes/personal_folder/tempscreen/Diocane/IMG_4998.png",
+      "/Volumes/personal_folder/tempscreen/Diocane/IMG_5009.png",
+      "/Volumes/personal_folder/tempscreen/Diocane/IMG_6850.png",
+      "/Volumes/personal_folder/tempscreen/Diocane/IMG_7257.png",
+    ] {
+      let path = Path::new(path);
+      if path.exists() {
+        assert!(
+          has_screenshot_or_meme_content(path),
+          "expected {} to be detected as a screenshot",
+          path.display(),
+        );
+      }
+    }
+  }
+
+  #[test]
+  fn screenshot_content_detector_rejects_non_phone_battery_like_photo_patch() {
+    let mut image = test_luma_image(1280, 720, 120);
+    draw_filled_rect(&mut image, 980, 40, 90, 36, 245);
+    draw_filled_rect(&mut image, 250, 160, 280, 180, 25);
+    assert!(has_battery_icon_like_shape(&image));
+    assert!(!has_mobile_screenshot_ui(&image));
+    assert!(!has_text_or_number_content(&image));
+  }
+
+  #[test]
+  fn screenshot_content_detector_rejects_incidental_photo_text() {
+    let mut image = test_luma_image(1200, 1600, 135);
+    draw_text_like_line(&mut image, 420, 1120, 340, 30, 245);
+    draw_filled_rect(&mut image, 120, 180, 360, 500, 70);
+    draw_filled_rect(&mut image, 620, 360, 260, 180, 45);
+    assert!(!has_text_or_number_content(&image));
+    assert!(!has_screenshot_or_meme_content_from_image(&image));
+  }
+
+  #[test]
+  fn screenshot_content_detector_rejects_photo_texture_rows() {
+    let mut image = test_luma_image(1280, 720, 130);
+    for y in (40..680).step_by(42) {
+      draw_filled_rect(&mut image, 0, y, 1280, 4, 45);
+    }
+    for x in (0..1280).step_by(90) {
+      draw_filled_rect(&mut image, x, 0, 6, 720, 220);
+    }
+    assert!(!has_text_or_number_content(&image));
+    assert!(!has_screenshot_or_meme_content_from_image(&image));
+  }
+
+  #[test]
+  fn screenshot_content_detector_finds_meme_like_text_layout() {
+    let mut image = test_luma_image(900, 900, 80);
+    draw_text_like_line(&mut image, 80, 60, 720, 24, 245);
+    draw_text_like_line(&mut image, 110, 116, 660, 24, 245);
+    assert!(has_text_or_number_content(&image));
+    assert!(has_screenshot_or_meme_content_from_image(&image));
+  }
+
+  #[test]
+  fn screenshot_content_detector_rejects_weak_ui_without_text() {
+    let mut image = test_luma_image(1320, 2868, 245);
+    draw_rect_outline(&mut image, 1100, 74, 54, 24, 25);
+    draw_filled_rect(&mut image, 1158, 82, 6, 10, 25);
+    assert!(!has_text_or_number_content(&image));
+    assert!(!has_strict_ui_only_screenshot(&image));
+    assert!(!has_screenshot_or_meme_content_from_image(&image));
+  }
+
+  fn test_luma_image(width: usize, height: usize, value: u8) -> DecodedImage {
+    DecodedImage {
+      width,
+      height,
+      pixels: vec![LumaPixel { value, alpha: 255 }; width * height],
+    }
+  }
+
+  fn draw_rect_outline(image: &mut DecodedImage, x: usize, y: usize, width: usize, height: usize, value: u8) {
+    for px in x..=x + width {
+      set_test_pixel(image, px, y, value);
+      set_test_pixel(image, px, y + height, value);
+    }
+    for py in y..=y + height {
+      set_test_pixel(image, x, py, value);
+      set_test_pixel(image, x + width, py, value);
+    }
+  }
+
+  fn draw_filled_rect(image: &mut DecodedImage, x: usize, y: usize, width: usize, height: usize, value: u8) {
+    for py in y..y + height {
+      for px in x..x + width {
+        set_test_pixel(image, px, py, value);
+      }
+    }
+  }
+
+  fn draw_text_like_line(image: &mut DecodedImage, x: usize, y: usize, width: usize, height: usize, value: u8) {
+    let block_width = 18usize;
+    let gap = 10usize;
+    let mut cursor = x;
+    while cursor + block_width < x + width {
+      draw_filled_rect(image, cursor, y, block_width, height, value);
+      cursor += block_width + gap;
+    }
+  }
+
+  fn set_test_pixel(image: &mut DecodedImage, x: usize, y: usize, value: u8) {
+    if x < image.width && y < image.height {
+      image.pixels[y * image.width + x] = LumaPixel { value, alpha: 255 };
+    }
   }
 
   #[test]

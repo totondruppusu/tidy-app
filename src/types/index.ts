@@ -1,6 +1,7 @@
 export type FilterMode =
   | "all"
   | "images"
+  | "screenshots"
   | "videos"
   | "images_videos"
   | "audio"

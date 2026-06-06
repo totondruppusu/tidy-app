@@ -17,14 +17,14 @@ describe("grouping", () => {
     expect(sortGroupKeys("extension", ["none", "jpg", "txt"])).toEqual(["jpg", "txt", "none"]);
   });
 
-  it("groups duplicates by size and name fallback", () => {
+  it("preserves duplicate group order from the input list", () => {
     const files = [
-      createFile({ id: "1", name: "a.txt", duplicateGroup: "g1" }),
-      createFile({ id: "2", name: "a.txt", duplicateGroup: "g1" }),
-      createFile({ id: "3", name: "b.txt", duplicateGroup: "g2" }),
+      createFile({ id: "1", name: "b.txt", duplicateGroup: "g2" }),
+      createFile({ id: "2", name: "b-copy.txt", duplicateGroup: "g2" }),
+      createFile({ id: "3", name: "a.txt", duplicateGroup: "g1" }),
     ];
     const result = groupFilesByMode("duplicates", files);
-    expect(result.keys[0]).toBe("g1");
-    expect(result.groups.get("g1")).toHaveLength(2);
+    expect(result.keys).toEqual(["g2", "g1"]);
+    expect(result.groups.get("g2")).toHaveLength(2);
   });
 });

@@ -48,6 +48,8 @@ auto updater
 auto load to last opened file in view
 .smoother scroll file list for huge lists
 .selected file always visible in list
+screenshots identification
+memes identification
 
 
 BUG
@@ -62,7 +64,8 @@ sorting size bugged in tree view
 .app trash does not clean up after exiting
 .better responsive settings modal
 .previews that take time hung the application and crashes
-files with wrong extension or corrupted crash the app
+?files with wrong extension or corrupted crash the app
+.in duplicates view when i delete a file the order changes and the selected file is not the next one
 
 REFACTORING
 .refactor app structure in app, components, constansts, lib, styles, types

@@ -44,7 +44,7 @@ auto updater
 .Smooth scrollIntoView
 .Responsive layout clamps
 .Smoother selection highlight transition and stable scroll behavior
-clear loading when an operation takes time
+.clear loading when an operation takes time
 auto load to last opened file in view
 .smoother scroll file list for huge lists
 .selected file always visible in list

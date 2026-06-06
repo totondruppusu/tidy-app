@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type SetStateAction,
+} from "react";
 import type {
   ArchivePreview,
   ActivitySnapshot,
@@ -134,6 +141,11 @@ const SUGGESTION_MIN_LARGE_FILE_OPTIONS = [
   { value: 2 * 1024 * 1024 * 1024, label: "2 GB+" },
 ];
 
+type BlockingOverlayState = {
+  title: string;
+  subtitle: string;
+};
+
 export default function App() {
   const [storedSettings] = useState(() => getStoredSettings());
   const [files, setFiles] = useState<FileEntry[]>([]);
@@ -233,11 +245,15 @@ export default function App() {
   );
   const [isLoading, setIsLoading] = useState(false);
   const [isMutating, setIsMutating] = useState(false);
+  const [blockingOverlay, setBlockingOverlay] =
+    useState<BlockingOverlayState | null>(null);
   const [mutationSpinnerLabel, setMutationSpinnerLabel] = useState<
     string | null
   >(null);
   const mutationSpinnerTimeoutRef = useRef<number | null>(null);
   const isMutatingRef = useRef(false);
+  const blockingOverlayShowFrameRef = useRef<number | null>(null);
+  const blockingOverlayHideFrameRef = useRef<number | null>(null);
   const [isCancellingScan, setIsCancellingScan] = useState(false);
   const [scanProgress, setScanProgress] = useState<ScanProgress | null>(null);
   const [renderCount, setRenderCount] = useState(0);
@@ -902,6 +918,55 @@ export default function App() {
     setStatus(message);
   }, []);
 
+  const clearBlockingOverlayFrames = useCallback(() => {
+    if (blockingOverlayShowFrameRef.current !== null) {
+      window.cancelAnimationFrame(blockingOverlayShowFrameRef.current);
+      blockingOverlayShowFrameRef.current = null;
+    }
+    if (blockingOverlayHideFrameRef.current !== null) {
+      window.cancelAnimationFrame(blockingOverlayHideFrameRef.current);
+      blockingOverlayHideFrameRef.current = null;
+    }
+  }, []);
+
+  const runBlockingUiTransition = useCallback(
+    (
+      title: string,
+      action: () => void,
+      subtitle = "Updating the interface. Please wait...",
+    ) => {
+      clearBlockingOverlayFrames();
+      setBlockingOverlay({ title, subtitle });
+      blockingOverlayShowFrameRef.current = window.requestAnimationFrame(() => {
+        blockingOverlayShowFrameRef.current = null;
+        action();
+        blockingOverlayHideFrameRef.current = window.requestAnimationFrame(
+          () => {
+            blockingOverlayHideFrameRef.current = window.requestAnimationFrame(
+              () => {
+                blockingOverlayHideFrameRef.current = null;
+                setBlockingOverlay(null);
+              },
+            );
+          },
+        );
+      });
+    },
+    [clearBlockingOverlayFrames],
+  );
+
+  const makeBlockingSetter = useCallback(
+    <T,>(
+      title: string,
+      setter: (value: SetStateAction<T>) => void,
+      subtitle: string,
+    ) =>
+      (value: SetStateAction<T>) => {
+        runBlockingUiTransition(title, () => setter(value), subtitle);
+      },
+    [runBlockingUiTransition],
+  );
+
   const runMutationWithSpinner = useCallback(
     async (spinnerLabel: string, operation: () => Promise<void>) => {
       if (isMutatingRef.current) {
@@ -909,6 +974,10 @@ export default function App() {
       }
       isMutatingRef.current = true;
       setIsMutating(true);
+      setBlockingOverlay({
+        title: spinnerLabel.replace(/…$/, ""),
+        subtitle: "This operation is in progress. Please wait...",
+      });
       if (mutationSpinnerTimeoutRef.current) {
         window.clearTimeout(mutationSpinnerTimeoutRef.current);
       }
@@ -925,6 +994,7 @@ export default function App() {
           mutationSpinnerTimeoutRef.current = null;
         }
         setMutationSpinnerLabel(null);
+        setBlockingOverlay(null);
       }
     },
     [],
@@ -936,8 +1006,9 @@ export default function App() {
         window.clearTimeout(mutationSpinnerTimeoutRef.current);
         mutationSpinnerTimeoutRef.current = null;
       }
+      clearBlockingOverlayFrames();
     };
-  }, []);
+  }, [clearBlockingOverlayFrames]);
 
   const sortFiles = useCallback(
     (list: FileEntry[]) => {
@@ -2759,7 +2830,7 @@ export default function App() {
       if (isEditableTarget(event.target)) {
         return;
       }
-      if (isMutating) {
+      if (isMutating || blockingOverlay) {
         return;
       }
       if (
@@ -2822,6 +2893,7 @@ export default function App() {
     currentFile,
     goNext,
     goPrev,
+    blockingOverlay,
     isHelpOpen,
     isMutating,
     isSuggestionsOpen,
@@ -3512,6 +3584,8 @@ export default function App() {
     return `Scanning ${percent}% · ${scanProgress.scanned}/${scanProgress.total} files · ${scanProgress.matched} matched`;
   }, [isLoading, scanProgress]);
 
+  const isInteractionBlocked = Boolean(blockingOverlay);
+  const areControlsDisabled = isLoading || isInteractionBlocked;
   const isRenderingList = renderCount < sortedFiles.length;
   const totalFiles = files.length;
   const filteredCount = sortedFiles.length;
@@ -3552,8 +3626,11 @@ export default function App() {
   return (
     <div
       className={`app-shell ${isLoading ? "is-loading" : ""} ${
+        isInteractionBlocked ? "is-blocked" : ""
+      } ${
         isSidebarCollapsed ? "sidebar-collapsed" : ""
       } ${isWindowFullscreen ? "is-fullscreen" : ""}`}
+      aria-busy={isLoading || isInteractionBlocked}
     >
       <div className="titlebar-drag" data-tauri-drag-region />
       {isSidebarCollapsed && (
@@ -3659,7 +3736,7 @@ export default function App() {
                   type="button"
                   className="pill-button"
                   onClick={pickFolder}
-                  disabled={isLoading}
+                  disabled={areControlsDisabled}
                   title={currentFolder ?? "No folder selected"}
                 >
                   <span className="pill-label">Folder</span>
@@ -3670,10 +3747,15 @@ export default function App() {
                 <div className="toolbar-control">
                   <select
                     value={filterMode}
-                    onChange={(event) =>
-                      setFilterMode(event.target.value as FilterMode)
-                    }
-                    disabled={isLoading}
+                    onChange={(event) => {
+                      const nextFilterMode = event.target.value as FilterMode;
+                      runBlockingUiTransition(
+                        "Updating filter",
+                        () => setFilterMode(nextFilterMode),
+                        "Refreshing the file selection...",
+                      );
+                    }}
+                    disabled={areControlsDisabled}
                   >
                     {FILTER_OPTIONS.map((option) => (
                       <option key={option.value} value={option.value}>
@@ -3686,7 +3768,7 @@ export default function App() {
                   type="button"
                   className="icon-button search-button"
                   onClick={() => handleScan(currentFolder ?? undefined)}
-                  disabled={isLoading || !currentFolder}
+                  disabled={areControlsDisabled || !currentFolder}
                   aria-label="Scan folder"
                   title="Scan folder"
                 >
@@ -3708,7 +3790,7 @@ export default function App() {
                       type="button"
                       className="list-expand-button"
                       onClick={toggleAllFolders}
-                      disabled={!hasFolders || isLoading}
+                      disabled={!hasFolders || areControlsDisabled}
                       data-prevent-open-on-enter
                       title={
                         hasCollapsedFolders
@@ -3729,10 +3811,15 @@ export default function App() {
                   <span className="control-label">Sort</span>
                   <select
                     value={sortMode}
-                    onChange={(event) =>
-                      setSortMode(event.target.value as SortMode)
-                    }
-                    disabled={isLoading}
+                    onChange={(event) => {
+                      const nextSortMode = event.target.value as SortMode;
+                      runBlockingUiTransition(
+                        "Sorting files",
+                        () => setSortMode(nextSortMode),
+                        "Reordering the list...",
+                      );
+                    }}
+                    disabled={areControlsDisabled}
                   >
                     <option value="none">None</option>
                     <option value="name_asc">Name (A-Z)</option>
@@ -3751,10 +3838,15 @@ export default function App() {
                   <span className="control-label">Group</span>
                   <select
                     value={displayGroupMode}
-                    onChange={(event) =>
-                      handleGroupModeChange(event.target.value as GroupMode)
-                    }
-                    disabled={isLoading || shouldGroupDuplicates}
+                    onChange={(event) => {
+                      const nextGroupMode = event.target.value as GroupMode;
+                      runBlockingUiTransition(
+                        "Grouping files",
+                        () => handleGroupModeChange(nextGroupMode),
+                        "Rebuilding the file groups...",
+                      );
+                    }}
+                    disabled={areControlsDisabled || shouldGroupDuplicates}
                   >
                     <option value="none">None</option>
                     <option value="type">Type</option>
@@ -3768,10 +3860,15 @@ export default function App() {
                   <span className="control-label">View</span>
                   <select
                     value={viewMode}
-                    onChange={(event) =>
-                      setViewMode(event.target.value as ViewMode)
-                    }
-                    disabled={isLoading}
+                    onChange={(event) => {
+                      const nextViewMode = event.target.value as ViewMode;
+                      runBlockingUiTransition(
+                        "Changing view",
+                        () => setViewMode(nextViewMode),
+                        "Switching the file layout...",
+                      );
+                    }}
+                    disabled={areControlsDisabled}
                   >
                     <option value="tree">Tree</option>
                     <option value="list">List</option>
@@ -3857,12 +3954,18 @@ export default function App() {
                             type="checkbox"
                             checked={allExtensionsSelected}
                             onChange={(event) => {
+                              const nextChecked = event.target.checked;
                               hasUserAdjustedExtensionsRef.current = true;
-                              setSelectedExtensions(
-                                event.target.checked ? allExtensions : [],
+                              runBlockingUiTransition(
+                                "Updating extensions",
+                                () =>
+                                  setSelectedExtensions(
+                                    nextChecked ? allExtensions : [],
+                                  ),
+                                "Refreshing the visible files...",
                               );
                             }}
-                            disabled={isLoading}
+                            disabled={areControlsDisabled}
                           />
                           <span>All</span>
                         </label>
@@ -3875,15 +3978,20 @@ export default function App() {
                               checked={selectedExtensions.includes(extension)}
                               onChange={() => {
                                 hasUserAdjustedExtensionsRef.current = true;
-                                setSelectedExtensions((current) =>
-                                  current.includes(extension)
-                                    ? current.filter(
-                                        (value) => value !== extension,
-                                      )
-                                    : [...current, extension],
+                                runBlockingUiTransition(
+                                  "Updating extensions",
+                                  () =>
+                                    setSelectedExtensions((current) =>
+                                      current.includes(extension)
+                                        ? current.filter(
+                                            (value) => value !== extension,
+                                          )
+                                        : [...current, extension],
+                                    ),
+                                  "Refreshing the visible files...",
                                 );
                               }}
-                              disabled={isLoading}
+                              disabled={areControlsDisabled}
                             />
                             <span>{formatExtensionLabel(extension)}</span>
                           </label>
@@ -4238,12 +4346,12 @@ export default function App() {
           <div className="actions-row">
             <div className="destination-row" aria-label="Move destinations">
               {destinationSlots.map((destinationPath, index) => (
-                <button
+              <button
                   key={`destination-${index}`}
                   type="button"
                   className={`destination-button ${destinationPath ? "is-set" : "is-empty"}`}
                   onClick={() => void pickDestinationForSlot(index)}
-                  disabled={isLoading || isMutating}
+                  disabled={areControlsDisabled || isMutating}
                   title={destinationPath ?? `Set destination ${index + 1}`}
                   aria-label={`Set destination ${index + 1}`}
                 >
@@ -4274,7 +4382,10 @@ export default function App() {
                 type="button"
                 onClick={goPrev}
                 disabled={
-                  !hasFiles || currentIndex === 0 || isLoading || isMutating
+                  !hasFiles ||
+                  currentIndex === 0 ||
+                  areControlsDisabled ||
+                  isMutating
                 }
               >
                 Prev ←
@@ -4283,7 +4394,9 @@ export default function App() {
                 className="action-button action-undo"
                 type="button"
                 onClick={undoLastAction}
-                disabled={undoStack.length === 0 || isLoading || isMutating}
+                disabled={
+                  undoStack.length === 0 || areControlsDisabled || isMutating
+                }
               >
                 Undo ↓
               </button>
@@ -4294,7 +4407,7 @@ export default function App() {
                 disabled={
                   !hasFiles ||
                   currentIndex >= filteredCount - 1 ||
-                  isLoading ||
+                  areControlsDisabled ||
                   isMutating
                 }
               >
@@ -4304,7 +4417,7 @@ export default function App() {
                 className="action-button action-trash"
                 type="button"
                 onClick={trashCurrent}
-                disabled={!hasFiles || isLoading || isMutating}
+                disabled={!hasFiles || areControlsDisabled || isMutating}
               >
                 Trash ↑
               </button>
@@ -4312,6 +4425,16 @@ export default function App() {
           </div>
         </footer>
       </div>
+
+      {blockingOverlay && (
+        <div className="blocking-overlay" role="alert" aria-live="assertive">
+          <div className="loading-state blocking-overlay-card">
+            <div className="spinner" aria-hidden="true" />
+            <div className="loading-title">{blockingOverlay.title}</div>
+            <div className="loading-subtitle">{blockingOverlay.subtitle}</div>
+          </div>
+        </div>
+      )}
 
       {isCrashReportOpen && crashReport && (
         <div
@@ -4984,16 +5107,34 @@ export default function App() {
 
       <SettingsModal
         isOpen={isSettingsOpen}
-        isLoading={isLoading}
+        isLoading={areControlsDisabled}
         viewMode={viewMode}
-        setViewMode={setViewMode}
+        setViewMode={makeBlockingSetter(
+          "Changing default view",
+          setViewMode,
+          "Switching the default layout...",
+        )}
         sortMode={sortMode}
-        setSortMode={setSortMode}
+        setSortMode={makeBlockingSetter(
+          "Changing default sort",
+          setSortMode,
+          "Updating how files are ordered...",
+        )}
         displayGroupMode={displayGroupMode}
-        handleGroupModeChange={handleGroupModeChange}
+        handleGroupModeChange={(value) =>
+          runBlockingUiTransition(
+            "Changing default grouping",
+            () => handleGroupModeChange(value),
+            "Updating how files are grouped...",
+          )
+        }
         shouldGroupDuplicates={shouldGroupDuplicates}
         extensionFilterMode={extensionFilterMode}
-        setExtensionFilterMode={setExtensionFilterMode}
+        setExtensionFilterMode={makeBlockingSetter(
+          "Changing extension defaults",
+          setExtensionFilterMode,
+          "Refreshing extension preferences...",
+        )}
         autoScanOnPick={autoScanOnPick}
         setAutoScanOnPick={setAutoScanOnPick}
         rememberLastFolder={rememberLastFolder}
@@ -5015,9 +5156,17 @@ export default function App() {
         confirmTrash={confirmTrash}
         setConfirmTrash={setConfirmTrash}
         listDensity={listDensity}
-        setListDensity={setListDensity}
+        setListDensity={makeBlockingSetter(
+          "Changing list density",
+          setListDensity,
+          "Refreshing the list spacing...",
+        )}
         theme={theme}
-        setTheme={setTheme}
+        setTheme={makeBlockingSetter(
+          "Changing theme",
+          setTheme,
+          "Applying the updated appearance...",
+        )}
         onClose={() => setIsSettingsOpen(false)}
         onOpenHelp={() => setIsHelpOpen(true)}
         settingsFrameRef={settingsFrameRef}

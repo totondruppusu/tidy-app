@@ -253,6 +253,10 @@ input {
   z-index: 1;
 }
 
+.app-shell.is-blocked {
+  cursor: progress;
+}
+
 .titlebar-drag {
   position: fixed;
   top: 0;
@@ -2614,6 +2618,33 @@ input {
   z-index: 20;
   backdrop-filter: blur(6px);
   -webkit-backdrop-filter: blur(6px);
+}
+
+.blocking-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-6);
+  background: linear-gradient(
+    180deg,
+    rgba(11, 12, 16, 0.18),
+    rgba(11, 12, 16, 0.42)
+  );
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+:root[data-theme="dark"] .blocking-overlay {
+  background: linear-gradient(180deg, rgba(2, 4, 8, 0.62), rgba(2, 4, 8, 0.82));
+}
+
+.blocking-overlay-card {
+  min-width: min(360px, calc(100vw - (var(--space-6) * 2)));
+  box-shadow: var(--shadow-modal);
+  pointer-events: auto;
 }
 
 :root[data-theme="dark"] .modal-backdrop {

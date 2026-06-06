@@ -3589,7 +3589,25 @@ export default function App() {
     return `Scanning ${percent}% · ${scanProgress.scanned}/${scanProgress.total} files · ${scanProgress.matched} matched`;
   }, [isLoading, scanProgress]);
 
-  const isInteractionBlocked = Boolean(blockingOverlay);
+  const activeBlockingOverlay = useMemo(() => {
+    if (blockingOverlay) {
+      return {
+        title: blockingOverlay.title,
+        subtitle: blockingOverlay.subtitle,
+        showCancel: false,
+      };
+    }
+    if (isLoading) {
+      return {
+        title: "Scanning files",
+        subtitle: loadingMessage ?? "Collecting file list...",
+        showCancel: true,
+      };
+    }
+    return null;
+  }, [blockingOverlay, isLoading, loadingMessage]);
+
+  const isInteractionBlocked = Boolean(activeBlockingOverlay);
   const areControlsDisabled = isLoading || isInteractionBlocked;
   const isRenderingList = renderCount < sortedFiles.length;
   const totalFiles = files.length;
@@ -4013,23 +4031,7 @@ export default function App() {
         <main className="content">
           <div className="preview-frame scroll-hints" ref={previewFrameRef}>
             <section className="preview-panel" ref={previewScrollRef}>
-              {isLoading ? (
-                <div className="loading-state">
-                  <div className="spinner" />
-                  <div className="loading-title">Scanning files</div>
-                  <div className="loading-subtitle">
-                    {loadingMessage ?? "Collecting file list..."}
-                  </div>
-                  <button
-                    type="button"
-                    className="preview-action-button"
-                    onClick={() => void cancelActiveScan()}
-                    disabled={isCancellingScan}
-                  >
-                    {isCancellingScan ? "Stopping..." : "Stop scan"}
-                  </button>
-                </div>
-              ) : previewFile ? (
+              {previewFile ? (
                 <div className="preview-content">
                   <div className="preview-layout">
                     <div className="preview-media" onWheel={handlePreviewWheel}>
@@ -4431,12 +4433,24 @@ export default function App() {
         </footer>
       </div>
 
-      {blockingOverlay && (
+      {activeBlockingOverlay && (
         <div className="blocking-overlay" role="alert" aria-live="assertive">
           <div className="loading-state blocking-overlay-card">
             <div className="spinner" aria-hidden="true" />
-            <div className="loading-title">{blockingOverlay.title}</div>
-            <div className="loading-subtitle">{blockingOverlay.subtitle}</div>
+            <div className="loading-title">{activeBlockingOverlay.title}</div>
+            <div className="loading-subtitle">
+              {activeBlockingOverlay.subtitle}
+            </div>
+            {activeBlockingOverlay.showCancel && (
+              <button
+                type="button"
+                className="preview-action-button"
+                onClick={() => void cancelActiveScan()}
+                disabled={isCancellingScan}
+              >
+                {isCancellingScan ? "Stopping..." : "Stop scan"}
+              </button>
+            )}
           </div>
         </div>
       )}

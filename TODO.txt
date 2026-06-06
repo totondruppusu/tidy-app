@@ -48,8 +48,7 @@ auto updater
 auto load to last opened file in view
 .smoother scroll file list for huge lists
 .selected file always visible in list
-screenshots identification
-memes identification
+.screenshots and memes identification
 
 
 BUG

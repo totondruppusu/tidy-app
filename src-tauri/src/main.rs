@@ -3160,14 +3160,6 @@ fn has_contrasting_badge_fill(map: &CountMap, x: usize, y: usize, width: usize, 
   inner - ring >= 0.20
 }
 
-fn has_mobile_screenshot_ui(image: &DecodedImage) -> bool {
-  if !has_phone_screenshot_dimensions(image) {
-    return false;
-  }
-
-  mobile_screenshot_ui_score(image) >= 2
-}
-
 fn has_strict_ui_only_screenshot(image: &DecodedImage) -> bool {
   if !has_phone_screenshot_dimensions(image) {
     return false;
@@ -4257,14 +4249,14 @@ mod tests {
     draw_rect_outline(&mut image, 300, 18, 28, 12, 25);
     draw_filled_rect(&mut image, 330, 22, 4, 5, 25);
     assert!(has_battery_icon_like_shape(&image));
-    assert!(has_mobile_screenshot_ui(&image));
+    assert!(mobile_screenshot_ui_score(&image) >= 2);
     assert!(!has_strict_ui_only_screenshot(&image));
   }
 
   #[test]
   fn screenshot_content_detector_ignores_plain_images() {
     let image = test_luma_image(360, 640, 245);
-    assert!(!has_mobile_screenshot_ui(&image));
+    assert!(!has_strict_ui_only_screenshot(&image));
   }
 
   #[test]
@@ -4273,7 +4265,7 @@ mod tests {
     draw_filled_rect(&mut image, 370, 42, 580, 110, 5);
     draw_filled_rect(&mut image, 92, 80, 160, 42, 5);
     draw_filled_rect(&mut image, 980, 80, 210, 42, 5);
-    assert!(has_mobile_screenshot_ui(&image));
+    assert!(mobile_screenshot_ui_score(&image) >= 2);
     assert!(has_strict_ui_only_screenshot(&image));
   }
 
@@ -4283,7 +4275,7 @@ mod tests {
     draw_filled_rect(&mut image, 92, 80, 160, 42, 245);
     draw_filled_rect(&mut image, 980, 80, 210, 42, 245);
     draw_filled_rect(&mut image, 430, 2800, 460, 12, 245);
-    assert!(has_mobile_screenshot_ui(&image));
+    assert!(mobile_screenshot_ui_score(&image) >= 2);
     assert!(has_strict_ui_only_screenshot(&image));
   }
 
@@ -4314,7 +4306,6 @@ mod tests {
     draw_filled_rect(&mut image, 980, 40, 90, 36, 245);
     draw_filled_rect(&mut image, 250, 160, 280, 180, 25);
     assert!(has_battery_icon_like_shape(&image));
-    assert!(!has_mobile_screenshot_ui(&image));
     assert!(!has_text_or_number_content(&image));
   }
 

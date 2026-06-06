@@ -295,6 +295,8 @@ export default function App() {
   const officePreviewTimeoutRef = useRef<number | null>(null);
   const archivePreviewTimeoutRef = useRef<number | null>(null);
   const activeScanId = useRef<string | null>(null);
+  const scanBatchBufferRef = useRef<FileEntry[]>([]);
+  const scanBatchRafRef = useRef<number | null>(null);
   const hasAutoLoadedFolderRef = useRef(false);
   const listItemRefs = useRef<Map<string, HTMLButtonElement | null>>(new Map());
   const currentFileIdRef = useRef<string | null>(null);
@@ -312,6 +314,35 @@ export default function App() {
   const previewScrollRef = useRef<HTMLElement | null>(null);
   const lastStatusRef = useRef<string | null>(null);
   const lastEventLoopLagRef = useRef<number | null>(null);
+  const cancelPendingScanBatchFlush = useCallback(() => {
+    scanBatchBufferRef.current = [];
+    if (scanBatchRafRef.current !== null) {
+      window.cancelAnimationFrame(scanBatchRafRef.current);
+      scanBatchRafRef.current = null;
+    }
+  }, []);
+  const flushQueuedScanBatches = useCallback(() => {
+    scanBatchRafRef.current = null;
+    const pending = scanBatchBufferRef.current;
+    if (pending.length === 0) {
+      return;
+    }
+    scanBatchBufferRef.current = [];
+    setFiles((prev) => [...prev, ...pending]);
+  }, []);
+  const queueScanBatchFiles = useCallback(
+    (batchFiles: FileEntry[]) => {
+      if (batchFiles.length === 0) {
+        return;
+      }
+      scanBatchBufferRef.current.push(...batchFiles);
+      if (scanBatchRafRef.current !== null) {
+        return;
+      }
+      scanBatchRafRef.current = window.requestAnimationFrame(flushQueuedScanBatches);
+    },
+    [flushQueuedScanBatches]
+  );
   const clearSuggestionDryRunPreview = useCallback(() => {
     setSuggestionDryRunResult(null);
     setSuggestionDryRunSelectionKey(null);
@@ -1492,6 +1523,7 @@ export default function App() {
       setIsCancellingScan(false);
       setIsLoading(true);
       setScanProgress({ scanId, scanned: 0, matched: 0, total: 0, phase: "indexing" });
+      cancelPendingScanBatchFlush();
       setFiles([]);
       currentFileIdRef.current = null;
       setCurrentIndex(0);
@@ -1522,6 +1554,7 @@ export default function App() {
         if (activeScanId.current !== scanId) {
           return;
         }
+        cancelPendingScanBatchFlush();
         setFiles(result.files);
         setCurrentFolder(folderPath);
         updateStatus(`Loaded ${result.files.length} items from ${folderPath}.`);
@@ -1544,7 +1577,15 @@ export default function App() {
         }
       }
     },
-    [filterMode, includeSubfolders, includeHidden, useHashForDuplicates, duplicateMinSizeBytes, updateStatus]
+    [
+      filterMode,
+      includeSubfolders,
+      includeHidden,
+      useHashForDuplicates,
+      duplicateMinSizeBytes,
+      updateStatus,
+      cancelPendingScanBatchFlush,
+    ]
   );
 
   const cancelActiveScan = useCallback(async () => {
@@ -1916,51 +1957,48 @@ export default function App() {
         const sortedPrev = sortFiles(prev.filter(filterByExtension));
         const next = prev.filter((file) => file.id !== removedId);
         const sortedNext = sortFiles(next.filter(filterByExtension));
-        
-        // Get the visible file order (the exact order shown in the UI)
+        const nextVisibleIds = new Set(sortedNext.map((file) => file.id));
+        const sortedNextIndexById = new Map(
+          sortedNext.map((file, index) => [file.id, index] as const)
+        );
         const visibleOrder = visibleFileOrderRef.current;
         const removedIndexInVisible = visibleOrder.indexOf(removedId);
-        
+
         setCurrentIndex((current) => {
           if (sortedPrev.length === 0) {
             currentFileIdRef.current = null;
             return 0;
           }
-          
-          // If the removed file is in the visible order, select the next one
+
           if (removedIndexInVisible !== -1) {
-            // Find the next file after the removed one in the visible order
             let nextVisibleId: string | null = null;
             for (let i = removedIndexInVisible + 1; i < visibleOrder.length; i++) {
               const candidateId = visibleOrder[i];
-              // Make sure this file still exists and matches the extension filter
-              if (next.some((file) => file.id === candidateId && filterByExtension(file))) {
+              if (nextVisibleIds.has(candidateId)) {
                 nextVisibleId = candidateId;
                 break;
               }
             }
-            
-            // If no next file found, try the previous one
+
             if (!nextVisibleId) {
               for (let i = removedIndexInVisible - 1; i >= 0; i--) {
                 const candidateId = visibleOrder[i];
-                if (next.some((file) => file.id === candidateId && filterByExtension(file))) {
+                if (nextVisibleIds.has(candidateId)) {
                   nextVisibleId = candidateId;
                   break;
                 }
               }
             }
-            
+
             if (nextVisibleId) {
-              const nextIndex = sortedNext.findIndex((file) => file.id === nextVisibleId);
-              if (nextIndex !== -1) {
+              const nextIndex = sortedNextIndexById.get(nextVisibleId);
+              if (nextIndex !== undefined) {
                 currentFileIdRef.current = nextVisibleId;
                 return nextIndex;
               }
             }
           }
-          
-          // Fallback: use current index if still valid, otherwise use 0 or last index
+
           const boundedCurrent = Math.min(current, sortedPrev.length - 1);
           const fallbackIndex =
             sortedNext.length === 0 ? 0 : Math.min(boundedCurrent, sortedNext.length - 1);
@@ -1985,10 +2023,11 @@ export default function App() {
         const sortedPrev = sortFiles(prev.filter(filterByExtension));
         const next = prev.filter((file) => !removedSet.has(file.id));
         const sortedNext = sortFiles(next.filter(filterByExtension));
-        
-        // Get the visible file order (the exact order shown in the UI)
+        const nextVisibleIds = new Set(sortedNext.map((file) => file.id));
+        const sortedNextIndexById = new Map(
+          sortedNext.map((file, index) => [file.id, index] as const)
+        );
         const visibleOrder = visibleFileOrderRef.current;
-        // Find the first removed file in the visible order to determine next selection
         let firstRemovedIndex = -1;
         for (let i = 0; i < visibleOrder.length; i++) {
           if (removedSet.has(visibleOrder[i])) {
@@ -1996,47 +2035,42 @@ export default function App() {
             break;
           }
         }
-        
+
         setCurrentIndex((current) => {
           if (sortedPrev.length === 0) {
             currentFileIdRef.current = null;
             return 0;
           }
-          
-          // If we found a removed file in the visible order, select the next one
+
           if (firstRemovedIndex !== -1) {
-            // Find the next file after the first removed one in the visible order
             let nextVisibleId: string | null = null;
             for (let i = firstRemovedIndex + 1; i < visibleOrder.length; i++) {
               const candidateId = visibleOrder[i];
-              // Make sure this file still exists, wasn't removed, and matches the extension filter
-              if (!removedSet.has(candidateId) && next.some((file) => file.id === candidateId && filterByExtension(file))) {
+              if (nextVisibleIds.has(candidateId)) {
                 nextVisibleId = candidateId;
                 break;
               }
             }
-            
-            // If no next file found, try the previous one
+
             if (!nextVisibleId) {
               for (let i = firstRemovedIndex - 1; i >= 0; i--) {
                 const candidateId = visibleOrder[i];
-                if (!removedSet.has(candidateId) && next.some((file) => file.id === candidateId && filterByExtension(file))) {
+                if (nextVisibleIds.has(candidateId)) {
                   nextVisibleId = candidateId;
                   break;
                 }
               }
             }
-            
+
             if (nextVisibleId) {
-              const nextIndex = sortedNext.findIndex((file) => file.id === nextVisibleId);
-              if (nextIndex !== -1) {
+              const nextIndex = sortedNextIndexById.get(nextVisibleId);
+              if (nextIndex !== undefined) {
                 currentFileIdRef.current = nextVisibleId;
                 return nextIndex;
               }
             }
           }
-          
-          // Fallback: use current index if still valid, otherwise use 0 or last index
+
           const boundedCurrent = Math.min(current, sortedPrev.length - 1);
           const fallbackIndex =
             sortedNext.length === 0 ? 0 : Math.min(boundedCurrent, sortedNext.length - 1);
@@ -2554,14 +2588,15 @@ export default function App() {
       if (event.payload.scanId !== activeScanId.current) {
         return;
       }
-      setFiles((prev) => [...prev, ...event.payload.files]);
+      queueScanBatchFiles(event.payload.files);
     });
     return () => {
       isMounted = false;
+      cancelPendingScanBatchFlush();
       void unlistenPromise.then((unlisten) => unlisten());
       void unlistenBatchPromise.then((unlisten) => unlisten());
     };
-  }, []);
+  }, [cancelPendingScanBatchFlush, queueScanBatchFiles]);
 
   useEffect(() => {
     if (sortedFiles.length === 0) {

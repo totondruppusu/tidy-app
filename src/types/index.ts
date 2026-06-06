@@ -103,6 +103,35 @@ export type ScanBatch = {
   files: FileEntry[];
 };
 
+export type QueryIndexRequest = {
+  filterMode?: FilterMode;
+  selectedExtensions?: string[];
+  sortMode?: SortMode;
+  groupMode?: GroupMode;
+  offset?: number;
+  limit?: number;
+};
+
+export type GroupCount = {
+  key: string;
+  count: number;
+};
+
+export type QueryIndexResult = {
+  files: FileEntry[];
+  total: number;
+  offset: number;
+  limit: number;
+  groups: GroupCount[];
+};
+
+export type IndexStats = {
+  folderPath?: string | null;
+  total: number;
+  extensions: GroupCount[];
+  duplicateGroups: number;
+};
+
 export type MoveResult = {
   newName: string;
   targetPath: string;

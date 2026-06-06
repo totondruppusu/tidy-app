@@ -1,10 +1,10 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 import App from "../../src/app/App";
 import { createMockBridge } from "../mocks/bridge";
 import { createFile } from "../mocks/files";
-import type { PreviewCapabilities, SuggestionSet } from "../../src/types";
+import type { PreviewCapabilities, ScanResult, SuggestionSet } from "../../src/types";
 
 const previewCapabilities: PreviewCapabilities = {
   platform: "test",
@@ -103,6 +103,104 @@ describe("App integration", () => {
     await waitFor(() =>
       expect(container.querySelector(".file-list")?.textContent).toContain("doc.txt")
     );
+  });
+
+  it("renders streamed scan batches and keeps the final result authoritative", async () => {
+    const controller = createMockBridge();
+    installBaseHandlers(controller);
+    window.__TIDY_DESKTOP_BRIDGE__ = controller.bridge;
+
+    const streamedFile = createFile({
+      id: "f1",
+      name: "streamed.txt",
+      kind: "text",
+      path: "/mock/streamed.txt",
+    });
+    const finalFile = createFile({
+      id: "f2",
+      name: "final.jpg",
+      kind: "image",
+      path: "/mock/final.jpg",
+    });
+    let scanId = "";
+    let resolveScan: ((result: ScanResult) => void) | null = null;
+
+    controller.bridge.open = async () => "/mock";
+    controller.onInvoke("scan_folder", (args) => {
+      scanId = String(args?.scanId ?? "");
+      return new Promise<ScanResult>((resolve) => {
+        resolveScan = resolve;
+      });
+    });
+
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+
+    await clickFolderPicker(user);
+    await user.click(screen.getByRole("button", { name: "Scan folder" }));
+    await waitFor(() => expect(resolveScan).not.toBeNull());
+
+    await act(async () => {
+      controller.emit("scan_batch", { scanId, files: [streamedFile] });
+    });
+    await waitFor(() =>
+      expect(container.querySelector(".file-list")?.textContent).toContain("streamed.txt")
+    );
+
+    await act(async () => {
+      resolveScan?.({ files: [streamedFile, finalFile], total: 2 });
+    });
+    await waitFor(() =>
+      expect(container.querySelector(".file-list")?.textContent).toContain("final.jpg")
+    );
+
+    const fileNames = Array.from(container.querySelectorAll(".file-item .filename")).map((node) =>
+      node.textContent?.trim()
+    );
+    expect(fileNames).toEqual(["final.jpg", "streamed.txt"]);
+  });
+
+  it("selects the next visible file after repeated trash operations", async () => {
+    const controller = createMockBridge();
+    installBaseHandlers(controller);
+    window.__TIDY_DESKTOP_BRIDGE__ = controller.bridge;
+
+    const files = [
+      createFile({ id: "f1", name: "alpha.txt", kind: "text", path: "/mock/alpha.txt" }),
+      createFile({ id: "f2", name: "beta.txt", kind: "text", path: "/mock/beta.txt" }),
+      createFile({ id: "f3", name: "gamma.txt", kind: "text", path: "/mock/gamma.txt" }),
+    ];
+    const trashedIds: string[] = [];
+
+    controller.bridge.open = async () => "/mock";
+    controller.onInvoke("scan_folder", () => ({ files, total: files.length }));
+    controller.onInvoke("trash_file", (args) => {
+      const id = String(args?.id ?? "");
+      trashedIds.push(id);
+      return { trashPath: `/trash/${id}` };
+    });
+
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+
+    await clickFolderPicker(user);
+    await user.click(screen.getByRole("button", { name: "Scan folder" }));
+    await waitFor(() =>
+      expect(container.querySelector(".file-list")?.textContent).toContain("alpha.txt")
+    );
+
+    await user.click(screen.getByRole("button", { name: "Trash ↑" }));
+    await waitFor(() =>
+      expect(container.querySelector(".file-list")?.textContent ?? "").not.toContain("alpha.txt")
+    );
+
+    await user.click(screen.getByRole("button", { name: "Trash ↑" }));
+    await waitFor(() =>
+      expect(container.querySelector(".file-list")?.textContent ?? "").not.toContain("beta.txt")
+    );
+
+    expect(trashedIds).toEqual(["f1", "f2"]);
+    expect(container.querySelector(".file-list")?.textContent).toContain("gamma.txt");
   });
 
   it("builds and previews suggestions", async () => {

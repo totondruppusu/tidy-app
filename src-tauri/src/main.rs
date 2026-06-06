@@ -1,4 +1,5 @@
 use mime_guess::MimeGuess;
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::backtrace::Backtrace;
@@ -47,8 +48,50 @@ struct FileEntry {
   duplicate_group: Option<String>,
 }
 
+#[derive(Clone)]
+struct IndexedCandidate {
+  path: PathBuf,
+  name: String,
+  kind: FileKind,
+  size_bytes: u64,
+  modified_ms: Option<u64>,
+  mime: Option<String>,
+}
+
+#[derive(Clone)]
+struct DuplicateCandidate {
+  path: PathBuf,
+  size_bytes: u64,
+  modified_ms: Option<u64>,
+}
+
+#[derive(Default)]
+struct IndexStore {
+  folder_path: Option<String>,
+  files: Vec<FileEntry>,
+  by_id: HashMap<String, FileEntry>,
+  sorted_ids_by_mode: HashMap<String, Vec<String>>,
+}
+
+#[derive(Default, Serialize, Deserialize)]
+struct HashCache {
+  entries: HashMap<String, HashCacheEntry>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HashCacheEntry {
+  hash: String,
+  size_bytes: u64,
+  modified_ms: Option<u64>,
+  hashed_ms: u64,
+}
+
 struct AppState {
   map: Mutex<HashMap<String, PathBuf>>,
+  index: Mutex<IndexStore>,
+  hash_cache: Mutex<HashCache>,
+  hash_cache_path: PathBuf,
   preview_map: Mutex<HashMap<String, String>>,
   destination: Mutex<Option<PathBuf>>,
   scan_cancellations: Mutex<HashMap<String, Arc<AtomicBool>>>,
@@ -114,6 +157,7 @@ const MAX_UNDO_STACK: usize = 20;
 const OPERATION_HISTORY_FILE: &str = "operation-history.jsonl";
 const UNDO_ACTIONS_FILE: &str = "undo-actions.json";
 const APPLIED_BATCHES_DIR: &str = "applied-batches";
+const HASH_CACHE_FILE: &str = "hash-cache.json";
 const PARTIAL_HASH_BYTES: usize = 65_536;
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -395,6 +439,43 @@ struct ScanBatch {
   files: Vec<FileEntry>,
 }
 
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct QueryIndexRequest {
+  filter_mode: Option<String>,
+  selected_extensions: Option<Vec<String>>,
+  sort_mode: Option<String>,
+  group_mode: Option<String>,
+  offset: Option<usize>,
+  limit: Option<usize>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GroupCount {
+  key: String,
+  count: usize,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct QueryIndexResult {
+  files: Vec<FileEntry>,
+  total: usize,
+  offset: usize,
+  limit: usize,
+  groups: Vec<GroupCount>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct IndexStats {
+  folder_path: Option<String>,
+  total: usize,
+  extensions: Vec<GroupCount>,
+  duplicate_groups: usize,
+}
+
 #[derive(Clone, Copy)]
 enum TrashMode {
   System,
@@ -405,6 +486,210 @@ fn parse_trash_mode(value: &str) -> TrashMode {
   match value {
     "permanent" => TrashMode::Permanent,
     _ => TrashMode::System,
+  }
+}
+
+fn get_extension(name: &str) -> String {
+  let Some(last_dot) = name.rfind('.') else {
+    return "none".to_string();
+  };
+  if last_dot == 0 || last_dot == name.len() - 1 {
+    return "none".to_string();
+  }
+  name[last_dot + 1..].to_lowercase()
+}
+
+fn kind_rank(kind: &FileKind) -> usize {
+  match kind {
+    FileKind::Image => 0,
+    FileKind::Video => 1,
+    FileKind::Audio => 2,
+    FileKind::Docs => 3,
+    FileKind::Text => 4,
+    FileKind::Compressed => 5,
+    FileKind::Executable => 6,
+    FileKind::Binary => 7,
+  }
+}
+
+fn compare_file_entries(a: &FileEntry, b: &FileEntry, sort_mode: &str) -> std::cmp::Ordering {
+  let compare_name = || a.name.to_lowercase().cmp(&b.name.to_lowercase());
+  match sort_mode {
+    "none" => a.id.cmp(&b.id),
+    "name_desc" => compare_name().reverse(),
+    "size_desc" => b.size_bytes.cmp(&a.size_bytes).then_with(compare_name),
+    "size_asc" => a.size_bytes.cmp(&b.size_bytes).then_with(compare_name),
+    "date_desc" => b.modified_ms.unwrap_or(0).cmp(&a.modified_ms.unwrap_or(0)).then_with(compare_name),
+    "date_asc" => a.modified_ms.unwrap_or(0).cmp(&b.modified_ms.unwrap_or(0)).then_with(compare_name),
+    "type_desc" => kind_rank(&b.kind).cmp(&kind_rank(&a.kind)).then_with(compare_name),
+    "type_asc" => kind_rank(&a.kind).cmp(&kind_rank(&b.kind)).then_with(compare_name),
+    "extension_desc" => get_extension(&b.name).cmp(&get_extension(&a.name)).then_with(compare_name),
+    "extension_asc" => get_extension(&a.name).cmp(&get_extension(&b.name)).then_with(compare_name),
+    _ => compare_name(),
+  }
+}
+
+fn index_group_key(mode: &str, file: &FileEntry) -> String {
+  match mode {
+    "extension" => get_extension(&file.name),
+    "duplicates" => file.duplicate_group.clone().unwrap_or_else(|| file.id.clone()),
+    "type" => format!("{:?}", kind_rank(&file.kind)),
+    _ => "all".to_string(),
+  }
+}
+
+impl IndexStore {
+  fn replace(&mut self, folder_path: String, files: Vec<FileEntry>) {
+    self.folder_path = Some(folder_path);
+    self.by_id = files
+      .iter()
+      .map(|file| (file.id.clone(), file.clone()))
+      .collect();
+    self.files = files;
+    self.rebuild_sorted_indexes();
+  }
+
+  fn remove(&mut self, id: &str) {
+    self.by_id.remove(id);
+    self.files.retain(|file| file.id != id);
+    self.sorted_ids_by_mode
+      .values_mut()
+      .for_each(|ids| ids.retain(|value| value != id));
+  }
+
+  fn remove_path(&mut self, path: &Path) {
+    let path = path.to_string_lossy().to_string();
+    let removed_ids = self
+      .files
+      .iter()
+      .filter(|file| file.path == path)
+      .map(|file| file.id.clone())
+      .collect::<Vec<_>>();
+    self.remove_many(removed_ids.iter().map(|id| id.as_str()));
+  }
+
+  fn remove_subtree(&mut self, path: &Path) {
+    let prefix = path.to_string_lossy().to_string();
+    let nested_prefix = format!("{}/", prefix);
+    let removed_ids = self
+      .files
+      .iter()
+      .filter(|file| file.path == prefix || file.path.starts_with(&nested_prefix))
+      .map(|file| file.id.clone())
+      .collect::<Vec<_>>();
+    self.remove_many(removed_ids.iter().map(|id| id.as_str()));
+  }
+
+  fn remove_many<'a>(&mut self, ids: impl Iterator<Item = &'a str>) {
+    let removed = ids.map(|id| id.to_string()).collect::<std::collections::HashSet<_>>();
+    if removed.is_empty() {
+      return;
+    }
+    removed.iter().for_each(|id| {
+      self.by_id.remove(id);
+    });
+    self.files.retain(|file| !removed.contains(file.id.as_str()));
+    self.sorted_ids_by_mode
+      .values_mut()
+      .for_each(|sorted_ids| sorted_ids.retain(|id| !removed.contains(id)));
+  }
+
+  fn upsert(&mut self, file: FileEntry) {
+    self.by_id.insert(file.id.clone(), file);
+    self.files = self.by_id.values().cloned().collect();
+    self.rebuild_sorted_indexes();
+  }
+
+  fn rebuild_sorted_indexes(&mut self) {
+    self.sorted_ids_by_mode.clear();
+    for mode in [
+      "none",
+      "name_asc",
+      "name_desc",
+      "size_desc",
+      "size_asc",
+      "date_desc",
+      "date_asc",
+      "type_asc",
+      "type_desc",
+      "extension_asc",
+      "extension_desc",
+    ] {
+      let mut list = self.files.clone();
+      list.sort_by(|a, b| compare_file_entries(a, b, mode));
+      self.sorted_ids_by_mode.insert(mode.to_string(), list.into_iter().map(|file| file.id).collect());
+    }
+  }
+
+  fn query(&self, request: QueryIndexRequest) -> QueryIndexResult {
+    let filter = request.filter_mode.unwrap_or_else(|| "all".to_string());
+    let sort = request.sort_mode.unwrap_or_else(|| "name_asc".to_string());
+    let group = request.group_mode.unwrap_or_else(|| "none".to_string());
+    let offset = request.offset.unwrap_or(0);
+    let limit = request.limit.unwrap_or(200).clamp(1, 2_000);
+    let selected_extensions = request
+      .selected_extensions
+      .map(|extensions| extensions.into_iter().collect::<std::collections::HashSet<_>>());
+    let ids = self
+      .sorted_ids_by_mode
+      .get(&sort)
+      .or_else(|| self.sorted_ids_by_mode.get("name_asc"));
+    let mut matched = Vec::new();
+    let mut groups = HashMap::<String, usize>::new();
+    for id in ids.into_iter().flatten() {
+      let Some(file) = self.by_id.get(id) else {
+        continue;
+      };
+      if filter == "duplicates" && file.duplicate_group.is_none() {
+        continue;
+      }
+      if !matches_filter(&filter, &file.kind) {
+        continue;
+      }
+      if let Some(extensions) = selected_extensions.as_ref() {
+        if !extensions.contains(&get_extension(&file.name)) {
+          continue;
+        }
+      }
+      *groups.entry(index_group_key(&group, file)).or_insert(0) += 1;
+      matched.push(file.clone());
+    }
+    let total = matched.len();
+    let files = matched.into_iter().skip(offset).take(limit).collect();
+    let mut groups = groups
+      .into_iter()
+      .map(|(key, count)| GroupCount { key, count })
+      .collect::<Vec<_>>();
+    groups.sort_by(|a, b| a.key.cmp(&b.key));
+    QueryIndexResult {
+      files,
+      total,
+      offset,
+      limit,
+      groups,
+    }
+  }
+
+  fn stats(&self) -> IndexStats {
+    let mut extensions = HashMap::<String, usize>::new();
+    let mut duplicate_groups = std::collections::HashSet::<String>::new();
+    for file in &self.files {
+      *extensions.entry(get_extension(&file.name)).or_insert(0) += 1;
+      if let Some(group) = file.duplicate_group.as_ref() {
+        duplicate_groups.insert(group.clone());
+      }
+    }
+    let mut extensions = extensions
+      .into_iter()
+      .map(|(key, count)| GroupCount { key, count })
+      .collect::<Vec<_>>();
+    extensions.sort_by(|a, b| a.key.cmp(&b.key));
+    IndexStats {
+      folder_path: self.folder_path.clone(),
+      total: self.files.len(),
+      extensions,
+      duplicate_groups: duplicate_groups.len(),
+    }
   }
 }
 
@@ -437,6 +722,60 @@ fn batch_record_dir(app_handle: &AppHandle) -> Result<PathBuf, String> {
     .app_data_dir()
     .map_err(|error| error.to_string())
     .map(|dir| dir.join(APPLIED_BATCHES_DIR))
+}
+
+fn hash_cache_file_path(app_data_dir: &Path) -> PathBuf {
+  app_data_dir.join(HASH_CACHE_FILE)
+}
+
+fn load_hash_cache(path: &Path) -> HashCache {
+  fs::read_to_string(path)
+    .ok()
+    .and_then(|data| serde_json::from_str(&data).ok())
+    .unwrap_or_default()
+}
+
+fn store_hash_cache(path: &Path, cache: &HashCache) -> Result<(), String> {
+  if let Some(parent) = path.parent() {
+    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+  }
+  let serialized = serde_json::to_string_pretty(cache).map_err(|error| error.to_string())?;
+  fs::write(path, serialized).map_err(|error| error.to_string())
+}
+
+fn modified_ms_from_metadata(metadata: &fs::Metadata) -> Option<u64> {
+  metadata
+    .modified()
+    .ok()
+    .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+    .map(|duration| duration.as_millis() as u64)
+}
+
+fn hash_cache_key(path: &Path, size_bytes: u64, modified_ms: Option<u64>) -> String {
+  let path = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+  format!("{}|{}|{}", path.to_string_lossy(), size_bytes, modified_ms.unwrap_or(0))
+}
+
+fn cached_full_hash(candidate: &DuplicateCandidate, cache: &HashCache) -> Option<String> {
+  let key = hash_cache_key(&candidate.path, candidate.size_bytes, candidate.modified_ms);
+  let entry = cache.entries.get(&key)?;
+  if entry.size_bytes == candidate.size_bytes && entry.modified_ms == candidate.modified_ms {
+    return Some(entry.hash.clone());
+  }
+  None
+}
+
+fn insert_cached_full_hash(candidate: &DuplicateCandidate, hash: String, cache: &mut HashCache) {
+  let key = hash_cache_key(&candidate.path, candidate.size_bytes, candidate.modified_ms);
+  cache.entries.insert(
+    key,
+    HashCacheEntry {
+      hash,
+      size_bytes: candidate.size_bytes,
+      modified_ms: candidate.modified_ms,
+      hashed_ms: now_ms(),
+    },
+  );
 }
 
 fn append_operation_journal(
@@ -1099,141 +1438,142 @@ async fn scan_folder(
     let _cancel_guard = ScanCancelGuard::new(app_handle.clone(), scan_id.clone());
     let state = app_handle.state::<AppState>();
     let mut entries = Vec::new();
-    let mut map = state.map.lock().expect("map lock");
-    map.clear();
-    state.preview_map.lock().expect("preview map lock").clear();
+    {
+      state.map.lock().expect("map lock").clear();
+      state.preview_map.lock().expect("preview map lock").clear();
+    }
 
     let folder = PathBuf::from(&folder_path);
     if !folder.exists() {
       return Err("Folder not found".into());
     }
 
-    let iterator: Box<dyn Iterator<Item = PathBuf>> = if include_subfolders {
-      Box::new(
-        WalkDir::new(&folder)
-          .follow_links(false)
-          .into_iter()
-          .filter_entry(|entry| include_hidden || !is_hidden_entry(entry.path(), &folder))
-          .filter_map(|entry| entry.ok())
-          .filter(|entry| entry.file_type().is_file())
-          .filter(|entry| include_hidden || !is_hidden_entry(entry.path(), &folder))
-          .map(|entry| entry.path().to_path_buf()),
-      )
+    let paths: Vec<PathBuf> = if include_subfolders {
+      WalkDir::new(&folder)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|entry| include_hidden || !is_hidden_entry(entry.path(), &folder))
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.file_type().is_file())
+        .map(|entry| entry.path().to_path_buf())
+        .collect()
     } else {
-      Box::new(
-        fs::read_dir(&folder)
-          .map_err(|error| error.to_string())?
-          .filter_map(|entry| entry.ok())
-          .filter(|entry| entry.file_type().map(|ft| ft.is_file()).unwrap_or(false))
-          .filter(|entry| include_hidden || !is_hidden_entry(&entry.path(), &folder))
-          .map(|entry| entry.path()),
-      )
+      fs::read_dir(&folder)
+        .map_err(|error| error.to_string())?
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.file_type().map(|ft| ft.is_file()).unwrap_or(false))
+        .filter(|entry| include_hidden || !is_hidden_entry(&entry.path(), &folder))
+        .map(|entry| entry.path())
+        .collect()
     };
 
     let filter = filter_mode.as_str();
-    let mut paths = Vec::new();
-    let mut scanned = 0usize;
-    let mut last_emit = 0usize;
-    for path in iterator {
+    let path_count = paths.len();
+    let mut candidates: Vec<IndexedCandidate> = Vec::with_capacity(path_count);
+    let mut processed = 0usize;
+    let mut index_last_emit = 0usize;
+    let chunk_size = 1000usize;
+    for chunk in paths.chunks(chunk_size) {
       if cancel_flag.load(Ordering::Relaxed) {
         return Err("Scan cancelled".into());
       }
-      scanned += 1;
-      paths.push(path);
-      if scanned.saturating_sub(last_emit) >= 300 {
+      let mut partial: Vec<IndexedCandidate> = chunk
+        .par_iter()
+        .map(|p| index_scan_candidate(p.clone()))
+        .collect();
+      processed += partial.len();
+      candidates.append(&mut partial);
+      if processed.saturating_sub(index_last_emit) >= 200 {
         let _ = window.emit(
           "scan_progress",
           ScanProgress {
             scan_id: scan_id.clone(),
-            scanned,
+            scanned: processed,
             matched: 0,
-            total: 0,
+            total: path_count,
             phase: "indexing".to_string(),
           },
         );
-        last_emit = scanned;
+        index_last_emit = processed;
       }
     }
 
-    if scanned != last_emit {
+    if processed != index_last_emit {
       let _ = window.emit(
         "scan_progress",
         ScanProgress {
           scan_id: scan_id.clone(),
-          scanned,
+          scanned: processed,
           matched: 0,
-          total: 0,
+          total: path_count,
           phase: "indexing".to_string(),
         },
       );
     }
 
-    let total = paths.len();
+    let total = candidates.len();
     let duplicate_groups = if filter == "duplicates" {
       if cancel_flag.load(Ordering::Relaxed) {
         return Err("Scan cancelled".into());
       }
-      Some(find_duplicate_groups(
-        &paths,
+      let duplicate_candidates: Vec<DuplicateCandidate> = candidates
+        .par_iter()
+        .map(|candidate| DuplicateCandidate {
+          path: candidate.path.clone(),
+          size_bytes: candidate.size_bytes,
+          modified_ms: candidate.modified_ms,
+        })
+        .collect();
+      let mut hash_cache = state.hash_cache.lock().expect("hash cache lock");
+      let groups = find_duplicate_groups_from_candidates_with_cache(
+        &duplicate_candidates,
         use_hash_for_duplicates,
         duplicate_min_size_bytes,
         Some(&cancel_flag),
-      )?)
+        Some(&mut hash_cache),
+      )?;
+      let _ = store_hash_cache(&state.hash_cache_path, &hash_cache);
+      Some(groups)
     } else {
       None
     };
-    scanned = 0;
-    last_emit = 0;
+    let mut scanned = 0usize;
+    let mut last_emit = 0usize;
     let mut matched = 0usize;
-    let mut batch = Vec::with_capacity(100);
-    for path in paths {
+    let mut batch = Vec::with_capacity(500);
+    let mut next_map = HashMap::new();
+    for candidate in candidates {
       if cancel_flag.load(Ordering::Relaxed) {
         return Err("Scan cancelled".into());
       }
       scanned += 1;
-      let kind = classify_file(&path);
       let is_match = if let Some(duplicates) = duplicate_groups.as_ref() {
-        duplicates.contains_key(&path)
+        duplicates.contains_key(&candidate.path)
       } else {
-        matches_filter(filter, &kind)
+        matches_filter(filter, &candidate.kind)
       };
       if is_match {
-        let name = path
-          .file_name()
-          .and_then(|name| name.to_str())
-          .unwrap_or("Unknown")
-          .to_string();
-        let path_display = path.to_string_lossy().to_string();
-        let metadata = fs::metadata(&path).ok();
-        let size_bytes = metadata.as_ref().map(|meta| meta.len()).unwrap_or(0);
-        let modified_ms = metadata
-          .as_ref()
-          .and_then(|meta| meta.modified().ok())
-          .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-          .map(|duration| duration.as_millis() as u64);
-        let mime = MimeGuess::from_path(&path)
-          .first_or_octet_stream()
-          .essence_str()
-          .to_string();
         let id = Uuid::new_v4().to_string();
+        let path_display = candidate.path.to_string_lossy().to_string();
+        let mime = resolve_mime_type(&candidate);
         let duplicate_group = duplicate_groups
           .as_ref()
-          .and_then(|duplicates| duplicates.get(&path).cloned());
-        map.insert(id.clone(), path);
+          .and_then(|duplicates| duplicates.get(&candidate.path).cloned());
+        next_map.insert(id.clone(), candidate.path.clone());
         let entry = FileEntry {
           id,
-          name,
-          kind,
+          name: candidate.name,
+          kind: candidate.kind,
           path: path_display,
-          size_bytes,
-          modified_ms,
+          size_bytes: candidate.size_bytes,
+          modified_ms: candidate.modified_ms,
           mime,
           duplicate_group,
         };
         entries.push(entry.clone());
         batch.push(entry);
         matched += 1;
-        if batch.len() >= 100 {
+        if batch.len() >= 500 {
           let _ = window.emit(
             "scan_batch",
             ScanBatch {
@@ -1243,7 +1583,7 @@ async fn scan_folder(
           );
         }
       }
-      if scanned.saturating_sub(last_emit) >= 200 {
+      if scanned.saturating_sub(last_emit) >= 1000 {
         let _ = window.emit(
           "scan_progress",
           ScanProgress {
@@ -1259,8 +1599,16 @@ async fn scan_folder(
     }
 
     entries.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    {
+      let mut map = state.map.lock().expect("map lock");
+      *map = next_map;
+    }
+    {
+      let mut index = state.index.lock().expect("index lock");
+      index.replace(folder_path.clone(), entries.clone());
+    }
 
-    if scanned != last_emit {
+    if scanned != last_emit || matched > 0 {
       let _ = window.emit(
         "scan_progress",
         ScanProgress {
@@ -1325,6 +1673,30 @@ async fn scan_folder_v2(
     files: result.files,
     issues: Vec::new(),
   })
+}
+
+#[tauri::command]
+fn query_index(
+  state: tauri::State<'_, AppState>,
+  request: QueryIndexRequest,
+) -> Result<QueryIndexResult, String> {
+  let index = state.index.lock().expect("index lock");
+  Ok(index.query(request))
+}
+
+#[tauri::command]
+fn get_index_stats(state: tauri::State<'_, AppState>) -> Result<IndexStats, String> {
+  let index = state.index.lock().expect("index lock");
+  Ok(index.stats())
+}
+
+#[tauri::command]
+fn get_file_by_id(
+  state: tauri::State<'_, AppState>,
+  id: String,
+) -> Result<Option<FileEntry>, String> {
+  let index = state.index.lock().expect("index lock");
+  Ok(index.by_id.get(&id).cloned())
 }
 
 #[tauri::command]
@@ -1393,6 +1765,7 @@ fn trash_file(
           "rollbackDestination": path.to_string_lossy().to_string(),
         })),
       );
+      state.index.lock().expect("index lock").remove(&id);
       Ok(TrashResult {
         trash_path: Some(target_path.to_string_lossy().to_string()),
       })
@@ -1426,6 +1799,7 @@ fn trash_file(
         None,
         None,
       );
+      state.index.lock().expect("index lock").remove(&id);
       Ok(TrashResult { trash_path: None })
     }
   }
@@ -1478,6 +1852,11 @@ fn trash_folder(
       files.iter().for_each(|entry| {
         map.remove(&entry.id);
       });
+      state
+        .index
+        .lock()
+        .expect("index lock")
+        .remove_many(files.iter().map(|entry| entry.id.as_str()));
       let _ = append_operation_journal(
         &app_handle,
         "trash_folder",
@@ -1517,6 +1896,11 @@ fn trash_folder(
       files.iter().for_each(|entry| {
         map.remove(&entry.id);
       });
+      state
+        .index
+        .lock()
+        .expect("index lock")
+        .remove_many(files.iter().map(|entry| entry.id.as_str()));
       let _ = append_operation_journal(
         &app_handle,
         "trash_folder",
@@ -1591,6 +1975,8 @@ fn move_file(
     })),
   );
 
+  state.index.lock().expect("index lock").remove(&id);
+
   Ok(MoveResult {
     new_name,
     target_path: target_path.to_string_lossy().to_string(),
@@ -1617,7 +2003,12 @@ fn restore_file(
   move_path(&source_path, &destination_path)?;
   let destination_display = destination_path.to_string_lossy().to_string();
   let mut map = state.map.lock().expect("map lock");
-  map.insert(id, destination_path);
+  map.insert(id.clone(), destination_path.clone());
+  state
+    .index
+    .lock()
+    .expect("index lock")
+    .upsert(file_entry_from_path(id, &destination_path));
   let _ = append_operation_journal(
     &app_handle,
     "restore_file",
@@ -1651,9 +2042,16 @@ fn restore_folder(
   ensure_destination_writable(&destination_path, allow_unsafe)?;
   move_dir(&source_path, &destination_path)?;
   let mut map = state.map.lock().expect("map lock");
+  let mut restored_files = Vec::new();
   files.iter().for_each(|entry| {
-    map.insert(entry.id.clone(), destination_path.join(&entry.relative_path));
+    let path = destination_path.join(&entry.relative_path);
+    map.insert(entry.id.clone(), path.clone());
+    restored_files.push(file_entry_from_path(entry.id.clone(), &path));
   });
+  {
+    let mut index = state.index.lock().expect("index lock");
+    restored_files.into_iter().for_each(|file| index.upsert(file));
+  }
   let _ = append_operation_journal(
     &app_handle,
     "restore_folder",
@@ -2166,6 +2564,20 @@ fn apply_action_batch(
     match operation_outcome {
       Ok((undoable, destination)) => {
         applied += 1;
+        {
+          let mut index = state.index.lock().expect("index lock");
+          match action.action_type.as_str() {
+            "move" | "trash" | "delete" => {
+              if source.is_dir() {
+                index.remove_subtree(&source);
+              } else {
+                index.remove_path(&source);
+              }
+            }
+            "remove-empty-folder" => index.remove_subtree(&source),
+            _ => {}
+          }
+        }
         let message = if destination.is_empty() {
           "Applied".to_string()
         } else {
@@ -2237,7 +2649,11 @@ fn apply_action_batch(
 }
 
 #[tauri::command]
-fn undo_action_batch(app_handle: AppHandle, batch_id: String) -> Result<UndoBatchResult, String> {
+fn undo_action_batch(
+  app_handle: AppHandle,
+  state: tauri::State<'_, AppState>,
+  batch_id: String,
+) -> Result<UndoBatchResult, String> {
   let record = load_batch_record(&app_handle, &batch_id)?;
   let mut restored = 0usize;
   let mut failed = 0usize;
@@ -2270,6 +2686,23 @@ fn undo_action_batch(app_handle: AppHandle, batch_id: String) -> Result<UndoBatc
     match result {
       Ok(_) => {
         restored += 1;
+        {
+          let restored_path = if action.action_type == "move" {
+            action.rollback_source.as_ref().map(PathBuf::from)
+          } else {
+            Some(PathBuf::from(&action.source_path))
+          };
+          if let Some(restored_path) = restored_path {
+            let mapped = {
+              let mut index = state.index.lock().expect("index lock");
+              upsert_index_path_or_tree(&mut index, &restored_path)
+            };
+            let mut map = state.map.lock().expect("map lock");
+            mapped.into_iter().for_each(|(id, path)| {
+              map.insert(id, path);
+            });
+          }
+        }
         messages.push(format!("Restored {}", action.source_path));
       }
       Err(error) => {
@@ -2375,6 +2808,72 @@ fn move_dir(source: &Path, target: &Path) -> Result<(), String> {
   }
 }
 
+fn index_scan_candidate(path: PathBuf) -> IndexedCandidate {
+  let name = path
+    .file_name()
+    .and_then(|name| name.to_str())
+    .unwrap_or("Unknown")
+    .to_string();
+  let kind = classify_file(&path);
+  let metadata = fs::metadata(&path).ok();
+  let size_bytes = metadata.as_ref().map(|meta| meta.len()).unwrap_or(0);
+  let modified_ms = metadata.as_ref().and_then(modified_ms_from_metadata);
+
+  IndexedCandidate {
+    path,
+    name,
+    kind,
+    size_bytes,
+    modified_ms,
+    mime: None,
+  }
+}
+
+fn resolve_mime_type(candidate: &IndexedCandidate) -> String {
+  if let Some(mime) = candidate.mime.as_ref() {
+    return mime.clone();
+  }
+  MimeGuess::from_path(&candidate.path)
+    .first_or_octet_stream()
+    .essence_str()
+    .to_string()
+}
+
+fn file_entry_from_path(id: String, path: &Path) -> FileEntry {
+  let candidate = index_scan_candidate(path.to_path_buf());
+  let mime = resolve_mime_type(&candidate);
+  FileEntry {
+    id,
+    name: candidate.name,
+    kind: candidate.kind,
+    path: candidate.path.to_string_lossy().to_string(),
+    size_bytes: candidate.size_bytes,
+    modified_ms: candidate.modified_ms,
+    mime,
+    duplicate_group: None,
+  }
+}
+
+fn upsert_index_path_or_tree(index: &mut IndexStore, path: &Path) -> Vec<(String, PathBuf)> {
+  let mut mapped = Vec::new();
+  if path.is_file() {
+    let id = Uuid::new_v4().to_string();
+    index.upsert(file_entry_from_path(id.clone(), path));
+    mapped.push((id, path.to_path_buf()));
+    return mapped;
+  }
+  if path.is_dir() {
+    for entry in WalkDir::new(path).into_iter().filter_map(|entry| entry.ok()) {
+      if entry.file_type().is_file() {
+        let id = Uuid::new_v4().to_string();
+        index.upsert(file_entry_from_path(id.clone(), entry.path()));
+        mapped.push((id, entry.path().to_path_buf()));
+      }
+    }
+  }
+  mapped
+}
+
 fn classify_file(path: &Path) -> FileKind {
   let extension = path
     .extension()
@@ -2444,25 +2943,63 @@ fn find_duplicate_groups(
   min_size_bytes: u64,
   cancel_flag: Option<&Arc<AtomicBool>>,
 ) -> Result<HashMap<PathBuf, String>, String> {
-  // Stage 1: size buckets
-  let mut size_map: HashMap<u64, Vec<PathBuf>> = HashMap::new();
-  for path in paths {
+  let candidates = paths
+    .iter()
+    .filter_map(|path| {
+      if let Some(flag) = cancel_flag {
+        if flag.load(Ordering::Relaxed) {
+          return None;
+        }
+      }
+      fs::metadata(path).ok().map(|metadata| DuplicateCandidate {
+        path: path.clone(),
+        size_bytes: metadata.len(),
+        modified_ms: modified_ms_from_metadata(&metadata),
+      })
+    })
+    .collect::<Vec<_>>();
+  if let Some(flag) = cancel_flag {
+    if flag.load(Ordering::Relaxed) {
+      return Err("Scan cancelled".into());
+    }
+  }
+  find_duplicate_groups_from_candidates(&candidates, use_hash, min_size_bytes, cancel_flag)
+}
+
+fn find_duplicate_groups_from_candidates(
+  candidates: &[DuplicateCandidate],
+  use_hash: bool,
+  min_size_bytes: u64,
+  cancel_flag: Option<&Arc<AtomicBool>>,
+) -> Result<HashMap<PathBuf, String>, String> {
+  find_duplicate_groups_from_candidates_with_cache(candidates, use_hash, min_size_bytes, cancel_flag, None)
+}
+
+fn find_duplicate_groups_from_candidates_with_cache(
+  candidates: &[DuplicateCandidate],
+  use_hash: bool,
+  min_size_bytes: u64,
+  cancel_flag: Option<&Arc<AtomicBool>>,
+  mut hash_cache: Option<&mut HashCache>,
+) -> Result<HashMap<PathBuf, String>, String> {
+  let mut size_map: HashMap<u64, Vec<DuplicateCandidate>> = HashMap::new();
+  for candidate in candidates {
     if let Some(flag) = cancel_flag {
       if flag.load(Ordering::Relaxed) {
         return Err("Scan cancelled".into());
       }
     }
-    if let Ok(metadata) = fs::metadata(path) {
-      let size = metadata.len();
-      if size < min_size_bytes {
-        continue;
-      }
-      size_map.entry(size).or_default().push(path.clone());
+    if candidate.size_bytes < min_size_bytes {
+      continue;
     }
+    size_map
+      .entry(candidate.size_bytes)
+      .or_default()
+      .push(candidate.clone());
   }
 
   let mut duplicates = HashMap::new();
-  for (size, group) in size_map {
+  for (size, group) in size_map.into_iter() {
     if let Some(flag) = cancel_flag {
       if flag.load(Ordering::Relaxed) {
         return Err("Scan cancelled".into());
@@ -2473,35 +3010,79 @@ fn find_duplicate_groups(
     }
     if use_hash {
       // Stage 2: partial hash (first/last chunks) to reduce full-hash work.
-      let mut partial_map: HashMap<String, Vec<PathBuf>> = HashMap::new();
-      for path in &group {
-        if let Some(flag) = cancel_flag {
-          if flag.load(Ordering::Relaxed) {
-            return Err("Scan cancelled".into());
+      let mut partial_map: HashMap<String, Vec<DuplicateCandidate>> = HashMap::new();
+      let partial_hashes = group
+        .par_iter()
+        .filter_map(|candidate| {
+          if cancel_flag
+            .map(|flag| flag.load(Ordering::Relaxed))
+            .unwrap_or(false)
+          {
+            return None;
           }
-        }
-        if let Ok(hash) = partial_hash_file(path) {
-          partial_map.entry(hash).or_default().push(path.clone());
+          partial_hash_file(&candidate.path)
+            .ok()
+            .map(|hash| (hash, candidate.clone()))
+        })
+        .collect::<Vec<_>>();
+      if let Some(flag) = cancel_flag {
+        if flag.load(Ordering::Relaxed) {
+          return Err("Scan cancelled".into());
         }
       }
+      for (hash, path) in partial_hashes {
+        partial_map.entry(hash).or_default().push(path);
+      }
 
-      // Stage 3: full hash only for remaining candidate groups.
+      // Stage 3: full hash only for remaining candidate groups with early termination.
       for partial_group in partial_map.into_values() {
         if partial_group.len() < 2 {
           continue;
         }
+        if partial_group.len() < 2 {
+          continue;
+        }
         let mut full_hash_map: HashMap<String, Vec<PathBuf>> = HashMap::new();
-        for path in partial_group {
+        let mut missing = Vec::new();
+        if let Some(cache) = hash_cache.as_deref() {
+          for candidate in &partial_group {
+            if let Some(hash) = cached_full_hash(candidate, cache) {
+              full_hash_map.entry(hash).or_default().push(candidate.path.clone());
+            } else {
+              missing.push(candidate.clone());
+            }
+          }
+        } else {
+          missing = partial_group.clone();
+        }
+        
+        if !missing.is_empty() {
+          let full_hashes = missing
+            .par_iter()
+            .filter_map(|candidate| {
+              if cancel_flag
+                .map(|flag| flag.load(Ordering::Relaxed))
+                .unwrap_or(false)
+              {
+                return None;
+              }
+              hash_file(&candidate.path).ok().map(|hash| (hash, candidate.clone()))
+            })
+            .collect::<Vec<_>>();
           if let Some(flag) = cancel_flag {
             if flag.load(Ordering::Relaxed) {
               return Err("Scan cancelled".into());
             }
           }
-          if let Ok(hash) = hash_file(&path) {
-            full_hash_map.entry(hash).or_default().push(path);
+          for (hash, candidate) in full_hashes {
+            if let Some(cache) = hash_cache.as_deref_mut() {
+              insert_cached_full_hash(&candidate, hash.clone(), cache);
+            }
+            full_hash_map.entry(hash).or_default().push(candidate.path);
           }
         }
-        for (hash, files) in full_hash_map {
+        
+        for (hash, files) in full_hash_map.into_iter() {
           if files.len() > 1 {
             for path in files {
               duplicates.insert(path.clone(), hash.clone());
@@ -2511,8 +3092,8 @@ fn find_duplicate_groups(
       }
     } else {
       let group_key = format!("size-{}", size);
-      for path in group {
-        duplicates.insert(path.clone(), group_key.clone());
+      for candidate in group {
+        duplicates.insert(candidate.path.clone(), group_key.clone());
       }
     }
   }
@@ -2885,9 +3466,11 @@ fn main() {
       let trash_dir = app_data_dir.join("trash");
       let crash_dir = app_data_dir.join("crash-reports");
       let batches_dir = app_data_dir.join(APPLIED_BATCHES_DIR);
+      let hash_cache_path = hash_cache_file_path(&app_data_dir);
       fs::create_dir_all(&trash_dir).map_err(|error| error.to_string())?;
       fs::create_dir_all(&crash_dir).map_err(|error| error.to_string())?;
       fs::create_dir_all(&batches_dir).map_err(|error| error.to_string())?;
+      let hash_cache = load_hash_cache(&hash_cache_path);
       if let Some(previous_session) = load_session_info(&crash_dir) {
         if !previous_session.clean_shutdown {
           let skip_report = load_last_crash_report(&crash_dir)
@@ -2925,6 +3508,9 @@ fn main() {
       clear_trash_dir_best_effort(&trash_dir);
       app.manage(AppState {
         map: Mutex::new(HashMap::new()),
+        index: Mutex::new(IndexStore::default()),
+        hash_cache: Mutex::new(hash_cache),
+        hash_cache_path,
         preview_map: Mutex::new(HashMap::new()),
         destination: Mutex::new(None),
         scan_cancellations: Mutex::new(HashMap::new()),
@@ -2953,6 +3539,9 @@ fn main() {
       update_heartbeat,
       scan_folder,
       scan_folder_v2,
+      query_index,
+      get_index_stats,
+      get_file_by_id,
       cancel_scan,
       build_cleanup_suggestions,
       apply_action_batch,
@@ -2990,6 +3579,19 @@ fn main() {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  fn test_entry(id: &str, name: &str, kind: FileKind, size: u64, duplicate_group: Option<&str>) -> FileEntry {
+    FileEntry {
+      id: id.to_string(),
+      name: name.to_string(),
+      kind,
+      path: format!("/tmp/{}", name),
+      size_bytes: size,
+      modified_ms: Some(size),
+      mime: "application/octet-stream".to_string(),
+      duplicate_group: duplicate_group.map(|value| value.to_string()),
+    }
+  }
 
   #[test]
   fn clear_trash_dir_removes_contents() {
@@ -3079,6 +3681,121 @@ mod tests {
     let a_group = duplicates.get(&a).cloned();
     let b_group = duplicates.get(&b).cloned();
     assert_eq!(a_group, b_group);
+
+    let below_min_size =
+      find_duplicate_groups(&[a.clone(), b.clone()], true, 2_000_000, None).unwrap();
+    assert!(below_min_size.is_empty());
+
+    let _ = fs::remove_dir_all(base);
+  }
+
+  #[test]
+  fn index_store_queries_sorted_filtered_and_duplicate_pages() {
+    let mut index = IndexStore::default();
+    index.replace(
+      "/tmp".to_string(),
+      vec![
+        test_entry("a", "alpha.txt", FileKind::Text, 10, None),
+        test_entry("b", "beta.jpg", FileKind::Image, 30, Some("hash-1")),
+        test_entry("c", "gamma.jpg", FileKind::Image, 20, Some("hash-1")),
+      ],
+    );
+
+    let result = index.query(QueryIndexRequest {
+      filter_mode: Some("images".to_string()),
+      selected_extensions: Some(vec!["jpg".to_string()]),
+      sort_mode: Some("size_desc".to_string()),
+      group_mode: Some("extension".to_string()),
+      offset: Some(0),
+      limit: Some(1),
+    });
+    assert_eq!(result.total, 2);
+    assert_eq!(result.files[0].id, "b");
+    assert_eq!(result.groups[0].key, "jpg");
+    assert_eq!(result.groups[0].count, 2);
+
+    let duplicates = index.query(QueryIndexRequest {
+      filter_mode: Some("duplicates".to_string()),
+      selected_extensions: None,
+      sort_mode: Some("name_asc".to_string()),
+      group_mode: Some("duplicates".to_string()),
+      offset: Some(0),
+      limit: Some(10),
+    });
+    assert_eq!(duplicates.total, 2);
+    assert!(duplicates.files.iter().all(|file| file.duplicate_group.is_some()));
+
+    index.remove("b");
+    let stats = index.stats();
+    assert_eq!(stats.total, 2);
+    assert_eq!(stats.duplicate_groups, 1);
+  }
+
+  #[test]
+  fn duplicate_grouping_reuses_cached_full_hashes_for_unchanged_files() {
+    let base = PathBuf::from(format!("/tmp/tidy-hash-cache-{}", Uuid::new_v4()));
+    fs::create_dir_all(&base).unwrap();
+    let a = base.join("a.bin");
+    let b = base.join("b.bin");
+    fs::write(&a, vec![5u8; 1_200_000]).unwrap();
+    fs::write(&b, vec![5u8; 1_200_000]).unwrap();
+    let metadata_a = fs::metadata(&a).unwrap();
+    let metadata_b = fs::metadata(&b).unwrap();
+    let candidates = vec![
+      DuplicateCandidate {
+        path: a.clone(),
+        size_bytes: metadata_a.len(),
+        modified_ms: modified_ms_from_metadata(&metadata_a),
+      },
+      DuplicateCandidate {
+        path: b.clone(),
+        size_bytes: metadata_b.len(),
+        modified_ms: modified_ms_from_metadata(&metadata_b),
+      },
+    ];
+
+    let mut cache = HashCache::default();
+    let first = find_duplicate_groups_from_candidates_with_cache(
+      &candidates,
+      true,
+      1_000_000,
+      None,
+      Some(&mut cache),
+    )
+    .unwrap();
+    assert_eq!(first.len(), 2);
+    assert_eq!(cache.entries.len(), 2);
+
+    let cached_hashes = cache
+      .entries
+      .values()
+      .map(|entry| entry.hash.clone())
+      .collect::<std::collections::HashSet<_>>();
+    let second = find_duplicate_groups_from_candidates_with_cache(
+      &candidates,
+      true,
+      1_000_000,
+      None,
+      Some(&mut cache),
+    )
+    .unwrap();
+    assert_eq!(second.len(), 2);
+    assert_eq!(cache.entries.len(), 2);
+    assert_eq!(
+      cached_hashes,
+      cache
+        .entries
+        .values()
+        .map(|entry| entry.hash.clone())
+        .collect::<std::collections::HashSet<_>>()
+    );
+    let changed_candidate = DuplicateCandidate {
+      path: a.clone(),
+      size_bytes: metadata_a.len(),
+      modified_ms: candidates[0].modified_ms.map(|value| value + 1).or(Some(1)),
+    };
+    assert!(cached_full_hash(&changed_candidate, &cache).is_none());
+
     let _ = fs::remove_dir_all(base);
   }
 

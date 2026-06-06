@@ -44,6 +44,9 @@ license managment
 .Smooth scrollIntoView
 .Responsive layout clamps
 .Smoother selection highlight transition and stable scroll behavior
+clear loading when an operation takes time
+auto load to last opened file in view
+
 
 BUG
 .next and prev absoute
@@ -57,6 +60,7 @@ sorting size bugged in tree view
 .app trash does not clean up after exiting
 .better responsive settings modal
 .previews that take time hung the application and crashes
+files with wrong extension or corrupted crash the app
 
 REFACTORING
 .refactor app structure in app, components, constansts, lib, styles, types

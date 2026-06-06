@@ -3577,6 +3577,9 @@ export default function App() {
         ? `Indexing ${scanProgress.scanned}/${scanProgress.total} files...`
         : `Indexing ${scanProgress.scanned} files...`;
     }
+    if (!scanProgress.total) {
+      return `Scanning ${scanProgress.scanned} files · ${scanProgress.matched} matched`;
+    }
     const percent = scanProgress.total
       ? Math.min(
           100,

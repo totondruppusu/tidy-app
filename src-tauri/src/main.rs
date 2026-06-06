@@ -472,6 +472,65 @@ struct ScanBatch {
   files: Vec<FileEntry>,
 }
 
+fn emit_scan_progress(
+  window: &tauri::Window,
+  scan_id: &str,
+  scanned: usize,
+  matched: usize,
+  total: usize,
+  phase: &str,
+) {
+  let _ = window.emit(
+    "scan_progress",
+    ScanProgress {
+      scan_id: scan_id.to_string(),
+      scanned,
+      matched,
+      total,
+      phase: phase.to_string(),
+    },
+  );
+}
+
+fn build_scan_entries_for_candidates(
+  chunk: &[IndexedCandidate],
+  filter: &str,
+  duplicate_groups: Option<&HashMap<PathBuf, String>>,
+  cancel_flag: &Arc<AtomicBool>,
+) -> Vec<(FileEntry, PathBuf)> {
+  chunk
+    .par_iter()
+    .filter_map(|candidate| {
+      if cancel_flag.load(Ordering::Relaxed) {
+        return None;
+      }
+      let duplicate_group = duplicate_groups
+        .and_then(|duplicates| duplicates.get(&candidate.path).cloned());
+      let is_match = if duplicate_groups.is_some() {
+        duplicate_group.is_some()
+      } else {
+        matches_candidate_filter(filter, candidate)
+      };
+      if !is_match {
+        return None;
+      }
+
+      let id = Uuid::new_v4().to_string();
+      let entry = FileEntry {
+        id,
+        name: candidate.name.clone(),
+        kind: candidate.kind.clone(),
+        path: candidate.path_display.clone(),
+        size_bytes: candidate.size_bytes,
+        modified_ms: candidate.modified_ms,
+        mime: resolve_mime_type(candidate),
+        duplicate_group,
+      };
+      Some((entry, candidate.path.clone()))
+    })
+    .collect()
+}
+
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct QueryIndexRequest {
@@ -1485,81 +1544,130 @@ async fn scan_folder(
       return Err("Folder not found".into());
     }
 
-    let paths: Vec<PathBuf> = if include_subfolders {
-      WalkDir::new(&folder)
+    let filter = filter_mode.as_str();
+    let is_duplicate_scan = filter == "duplicates";
+    emit_scan_progress(&window, &scan_id, 0, 0, 0, "indexing");
+
+    let mut candidates: Vec<IndexedCandidate> = Vec::new();
+    let mut discovered = 0usize;
+    let mut indexed = 0usize;
+    let index_chunk_size = 1024usize;
+    let scan_chunk_size = 1024usize;
+    let mut scanned = 0usize;
+    let mut last_emit = 0usize;
+    let mut matched = 0usize;
+    let mut batch = Vec::with_capacity(500);
+    let mut next_map = HashMap::new();
+    let mut pending_paths = Vec::with_capacity(index_chunk_size);
+
+    let mut flush_index_chunk =
+      |pending_paths: &mut Vec<PathBuf>, discovered_total: usize| -> Result<(), String> {
+        if pending_paths.is_empty() {
+          return Ok(());
+        }
+        if cancel_flag.load(Ordering::Relaxed) {
+          return Err("Scan cancelled".into());
+        }
+
+        let chunk_paths = std::mem::take(pending_paths);
+        let chunk_len = chunk_paths.len();
+        let indexed_chunk: Vec<IndexedCandidate> =
+          chunk_paths.into_par_iter().map(index_scan_candidate).collect();
+        indexed += chunk_len;
+        emit_scan_progress(&window, &scan_id, indexed, 0, discovered_total, "indexing");
+
+        if is_duplicate_scan {
+          candidates.extend(indexed_chunk);
+          return Ok(());
+        }
+
+        let chunk_results = build_scan_entries_for_candidates(
+          &indexed_chunk,
+          filter,
+          None,
+          &cancel_flag,
+        );
+        if cancel_flag.load(Ordering::Relaxed) {
+          return Err("Scan cancelled".into());
+        }
+
+        scanned += indexed_chunk.len();
+        matched += chunk_results.len();
+        for (entry, path) in chunk_results {
+          next_map.insert(entry.id.clone(), path);
+          entries.push(entry.clone());
+          batch.push(entry);
+          if batch.len() >= 500 {
+            let _ = window.emit(
+              "scan_batch",
+              ScanBatch {
+                scan_id: scan_id.clone(),
+                files: std::mem::take(&mut batch),
+              },
+            );
+          }
+        }
+
+        if scanned.saturating_sub(last_emit) >= scan_chunk_size {
+          emit_scan_progress(&window, &scan_id, scanned, matched, 0, "scanning");
+          last_emit = scanned;
+        }
+        Ok(())
+      };
+
+    if include_subfolders {
+      for entry in WalkDir::new(&folder)
         .follow_links(false)
         .into_iter()
         .filter_entry(|entry| include_hidden || !is_hidden_entry(entry.path(), &folder))
-        .filter_map(|entry| entry.ok())
-        .filter(|entry| entry.file_type().is_file())
-        .map(|entry| entry.path().to_path_buf())
-        .collect()
+      {
+        if cancel_flag.load(Ordering::Relaxed) {
+          return Err("Scan cancelled".into());
+        }
+        let entry = match entry {
+          Ok(entry) => entry,
+          Err(_) => continue,
+        };
+        if !entry.file_type().is_file() {
+          continue;
+        }
+        pending_paths.push(entry.path().to_path_buf());
+        discovered += 1;
+        if pending_paths.len() >= index_chunk_size {
+          flush_index_chunk(&mut pending_paths, 0)?;
+        }
+      }
     } else {
-      fs::read_dir(&folder)
-        .map_err(|error| error.to_string())?
-        .filter_map(|entry| entry.ok())
-        .filter(|entry| entry.file_type().map(|ft| ft.is_file()).unwrap_or(false))
-        .filter(|entry| include_hidden || !is_hidden_entry(&entry.path(), &folder))
-        .map(|entry| entry.path())
-        .collect()
-    };
-
-    let filter = filter_mode.as_str();
-    let path_count = paths.len();
-    let _ = window.emit(
-      "scan_progress",
-      ScanProgress {
-        scan_id: scan_id.clone(),
-        scanned: 0,
-        matched: 0,
-        total: path_count,
-        phase: "indexing".to_string(),
-      },
-    );
-    let mut candidates: Vec<IndexedCandidate> = Vec::with_capacity(path_count);
-    let mut processed = 0usize;
-    let mut index_last_emit = 0usize;
-    let index_chunk_size = 1024usize;
-    for chunk in paths.chunks(index_chunk_size) {
-      if cancel_flag.load(Ordering::Relaxed) {
-        return Err("Scan cancelled".into());
-      }
-      let mut partial: Vec<IndexedCandidate> = chunk
-        .par_iter()
-        .map(|p| index_scan_candidate(p.clone()))
-        .collect();
-      processed += partial.len();
-      candidates.append(&mut partial);
-      if processed.saturating_sub(index_last_emit) >= index_chunk_size {
-        let _ = window.emit(
-          "scan_progress",
-          ScanProgress {
-            scan_id: scan_id.clone(),
-            scanned: processed,
-            matched: 0,
-            total: path_count,
-            phase: "indexing".to_string(),
-          },
-        );
-        index_last_emit = processed;
+      for entry in fs::read_dir(&folder).map_err(|error| error.to_string())? {
+        if cancel_flag.load(Ordering::Relaxed) {
+          return Err("Scan cancelled".into());
+        }
+        let entry = match entry {
+          Ok(entry) => entry,
+          Err(_) => continue,
+        };
+        let path = entry.path();
+        if !entry.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
+          continue;
+        }
+        if !include_hidden && is_hidden_entry(&path, &folder) {
+          continue;
+        }
+        pending_paths.push(path);
+        discovered += 1;
+        if pending_paths.len() >= index_chunk_size {
+          flush_index_chunk(&mut pending_paths, 0)?;
+        }
       }
     }
+    flush_index_chunk(&mut pending_paths, discovered)?;
 
-    if processed != index_last_emit {
-      let _ = window.emit(
-        "scan_progress",
-        ScanProgress {
-          scan_id: scan_id.clone(),
-          scanned: processed,
-          matched: 0,
-          total: path_count,
-          phase: "indexing".to_string(),
-        },
-      );
+    let total = discovered;
+    if !is_duplicate_scan {
+      emit_scan_progress(&window, &scan_id, scanned, matched, total, "scanning");
     }
 
-    let total = candidates.len();
-    let duplicate_groups = if filter == "duplicates" {
+    let duplicate_groups = if is_duplicate_scan {
       if cancel_flag.load(Ordering::Relaxed) {
         return Err("Scan cancelled".into());
       }
@@ -1584,81 +1692,45 @@ async fn scan_folder(
     } else {
       None
     };
-    let mut scanned = 0usize;
-    let mut last_emit = 0usize;
-    let mut matched = 0usize;
-    let mut batch = Vec::with_capacity(500);
-    let mut next_map = HashMap::new();
-    let scan_chunk_size = 1024usize;
-    for chunk in candidates.chunks(scan_chunk_size) {
-      if cancel_flag.load(Ordering::Relaxed) {
-        return Err("Scan cancelled".into());
-      }
-      let chunk_results: Vec<(FileEntry, PathBuf)> = chunk
-        .par_iter()
-        .filter_map(|candidate| {
-          if cancel_flag.load(Ordering::Relaxed) {
-            return None;
-          }
-          let duplicate_group = duplicate_groups
-            .as_ref()
-            .and_then(|duplicates| duplicates.get(&candidate.path).cloned());
-          let is_match = if duplicate_groups.is_some() {
-            duplicate_group.is_some()
-          } else {
-            matches_candidate_filter(filter, candidate)
-          };
-          if !is_match {
-            return None;
-          }
-
-          let id = Uuid::new_v4().to_string();
-          let entry = FileEntry {
-            id,
-            name: candidate.name.clone(),
-            kind: candidate.kind.clone(),
-            path: candidate.path_display.clone(),
-            size_bytes: candidate.size_bytes,
-            modified_ms: candidate.modified_ms,
-            mime: resolve_mime_type(candidate),
-            duplicate_group,
-          };
-          Some((entry, candidate.path.clone()))
-        })
-        .collect();
-      if cancel_flag.load(Ordering::Relaxed) {
-        return Err("Scan cancelled".into());
-      }
-
-      scanned += chunk.len();
-      matched += chunk_results.len();
-      for (entry, path) in chunk_results {
-        next_map.insert(entry.id.clone(), path);
-        entries.push(entry.clone());
-        batch.push(entry);
-        if batch.len() >= 500 {
-          let _ = window.emit(
-            "scan_batch",
-            ScanBatch {
-              scan_id: scan_id.clone(),
-              files: std::mem::take(&mut batch),
-            },
-          );
+    if is_duplicate_scan {
+      scanned = 0;
+      last_emit = 0;
+      matched = 0;
+      for chunk in candidates.chunks(scan_chunk_size) {
+        if cancel_flag.load(Ordering::Relaxed) {
+          return Err("Scan cancelled".into());
         }
-      }
-
-      if scanned.saturating_sub(last_emit) >= scan_chunk_size {
-        let _ = window.emit(
-          "scan_progress",
-          ScanProgress {
-            scan_id: scan_id.clone(),
-            scanned,
-            matched,
-            total,
-            phase: "scanning".to_string(),
-          },
+        let chunk_results = build_scan_entries_for_candidates(
+          chunk,
+          filter,
+          duplicate_groups.as_ref(),
+          &cancel_flag,
         );
-        last_emit = scanned;
+        if cancel_flag.load(Ordering::Relaxed) {
+          return Err("Scan cancelled".into());
+        }
+
+        scanned += chunk.len();
+        matched += chunk_results.len();
+        for (entry, path) in chunk_results {
+          next_map.insert(entry.id.clone(), path);
+          entries.push(entry.clone());
+          batch.push(entry);
+          if batch.len() >= 500 {
+            let _ = window.emit(
+              "scan_batch",
+              ScanBatch {
+                scan_id: scan_id.clone(),
+                files: std::mem::take(&mut batch),
+              },
+            );
+          }
+        }
+
+        if scanned.saturating_sub(last_emit) >= scan_chunk_size {
+          emit_scan_progress(&window, &scan_id, scanned, matched, total, "scanning");
+          last_emit = scanned;
+        }
       }
     }
 
@@ -1673,16 +1745,7 @@ async fn scan_folder(
     }
 
     if scanned != last_emit || matched > 0 {
-      let _ = window.emit(
-        "scan_progress",
-        ScanProgress {
-          scan_id: scan_id.clone(),
-          scanned,
-          matched,
-          total,
-          phase: "scanning".to_string(),
-        },
-      );
+      emit_scan_progress(&window, &scan_id, scanned, matched, total, "scanning");
     }
     if !batch.is_empty() {
       let _ = window.emit(

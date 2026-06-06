@@ -32,7 +32,7 @@ FEAT
 .Sorting defaults: pick default sort + group mode on launch.
 .microsoft windows support
 auto updater
-license managment
+?license managment
 .shift+up to permanently delete
 .ctrl+left or right to skip/back 10s in vid and music
 .spinner if the delete/move ops takes time
@@ -46,6 +46,8 @@ license managment
 .Smoother selection highlight transition and stable scroll behavior
 clear loading when an operation takes time
 auto load to last opened file in view
+.smoother scroll file list for huge lists
+.selected file always visible in list
 
 
 BUG

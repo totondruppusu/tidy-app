@@ -3573,7 +3573,9 @@ export default function App() {
       return null;
     }
     if (scanProgress.phase === "indexing") {
-      return `Indexing ${scanProgress.scanned} files...`;
+      return scanProgress.total
+        ? `Indexing ${scanProgress.scanned}/${scanProgress.total} files...`
+        : `Indexing ${scanProgress.scanned} files...`;
     }
     const percent = scanProgress.total
       ? Math.min(

@@ -52,6 +52,7 @@ struct FileEntry {
 #[derive(Clone)]
 struct IndexedCandidate {
   path: PathBuf,
+  path_display: String,
   name: String,
   kind: FileKind,
   size_bytes: u64,
@@ -771,7 +772,7 @@ fn store_hash_cache(path: &Path, cache: &HashCache) -> Result<(), String> {
   if let Some(parent) = path.parent() {
     fs::create_dir_all(parent).map_err(|error| error.to_string())?;
   }
-  let serialized = serde_json::to_string_pretty(cache).map_err(|error| error.to_string())?;
+  let serialized = serde_json::to_string(cache).map_err(|error| error.to_string())?;
   fs::write(path, serialized).map_err(|error| error.to_string())
 }
 
@@ -784,8 +785,12 @@ fn modified_ms_from_metadata(metadata: &fs::Metadata) -> Option<u64> {
 }
 
 fn hash_cache_key(path: &Path, size_bytes: u64, modified_ms: Option<u64>) -> String {
-  let path = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-  format!("{}|{}|{}", path.to_string_lossy(), size_bytes, modified_ms.unwrap_or(0))
+  format!(
+    "{}|{}|{}",
+    path.to_string_lossy(),
+    size_bytes,
+    modified_ms.unwrap_or(0)
+  )
 }
 
 fn cached_full_hash(candidate: &DuplicateCandidate, cache: &HashCache) -> Option<String> {
@@ -1501,11 +1506,21 @@ async fn scan_folder(
 
     let filter = filter_mode.as_str();
     let path_count = paths.len();
+    let _ = window.emit(
+      "scan_progress",
+      ScanProgress {
+        scan_id: scan_id.clone(),
+        scanned: 0,
+        matched: 0,
+        total: path_count,
+        phase: "indexing".to_string(),
+      },
+    );
     let mut candidates: Vec<IndexedCandidate> = Vec::with_capacity(path_count);
     let mut processed = 0usize;
     let mut index_last_emit = 0usize;
-    let chunk_size = 1000usize;
-    for chunk in paths.chunks(chunk_size) {
+    let index_chunk_size = 1024usize;
+    for chunk in paths.chunks(index_chunk_size) {
       if cancel_flag.load(Ordering::Relaxed) {
         return Err("Scan cancelled".into());
       }
@@ -1515,7 +1530,7 @@ async fn scan_folder(
         .collect();
       processed += partial.len();
       candidates.append(&mut partial);
-      if processed.saturating_sub(index_last_emit) >= 200 {
+      if processed.saturating_sub(index_last_emit) >= index_chunk_size {
         let _ = window.emit(
           "scan_progress",
           ScanProgress {
@@ -1574,37 +1589,53 @@ async fn scan_folder(
     let mut matched = 0usize;
     let mut batch = Vec::with_capacity(500);
     let mut next_map = HashMap::new();
-    for candidate in candidates {
+    let scan_chunk_size = 1024usize;
+    for chunk in candidates.chunks(scan_chunk_size) {
       if cancel_flag.load(Ordering::Relaxed) {
         return Err("Scan cancelled".into());
       }
-      scanned += 1;
-      let is_match = if let Some(duplicates) = duplicate_groups.as_ref() {
-        duplicates.contains_key(&candidate.path)
-      } else {
-        matches_candidate_filter(filter, &candidate)
-      };
-      if is_match {
-        let id = Uuid::new_v4().to_string();
-        let path_display = candidate.path.to_string_lossy().to_string();
-        let mime = resolve_mime_type(&candidate);
-        let duplicate_group = duplicate_groups
-          .as_ref()
-          .and_then(|duplicates| duplicates.get(&candidate.path).cloned());
-        next_map.insert(id.clone(), candidate.path.clone());
-        let entry = FileEntry {
-          id,
-          name: candidate.name,
-          kind: candidate.kind,
-          path: path_display,
-          size_bytes: candidate.size_bytes,
-          modified_ms: candidate.modified_ms,
-          mime,
-          duplicate_group,
-        };
+      let chunk_results: Vec<(FileEntry, PathBuf)> = chunk
+        .par_iter()
+        .filter_map(|candidate| {
+          if cancel_flag.load(Ordering::Relaxed) {
+            return None;
+          }
+          let duplicate_group = duplicate_groups
+            .as_ref()
+            .and_then(|duplicates| duplicates.get(&candidate.path).cloned());
+          let is_match = if duplicate_groups.is_some() {
+            duplicate_group.is_some()
+          } else {
+            matches_candidate_filter(filter, candidate)
+          };
+          if !is_match {
+            return None;
+          }
+
+          let id = Uuid::new_v4().to_string();
+          let entry = FileEntry {
+            id,
+            name: candidate.name.clone(),
+            kind: candidate.kind.clone(),
+            path: candidate.path_display.clone(),
+            size_bytes: candidate.size_bytes,
+            modified_ms: candidate.modified_ms,
+            mime: resolve_mime_type(candidate),
+            duplicate_group,
+          };
+          Some((entry, candidate.path.clone()))
+        })
+        .collect();
+      if cancel_flag.load(Ordering::Relaxed) {
+        return Err("Scan cancelled".into());
+      }
+
+      scanned += chunk.len();
+      matched += chunk_results.len();
+      for (entry, path) in chunk_results {
+        next_map.insert(entry.id.clone(), path);
         entries.push(entry.clone());
         batch.push(entry);
-        matched += 1;
         if batch.len() >= 500 {
           let _ = window.emit(
             "scan_batch",
@@ -1615,7 +1646,8 @@ async fn scan_folder(
           );
         }
       }
-      if scanned.saturating_sub(last_emit) >= 1000 {
+
+      if scanned.saturating_sub(last_emit) >= scan_chunk_size {
         let _ = window.emit(
           "scan_progress",
           ScanProgress {
@@ -1630,7 +1662,7 @@ async fn scan_folder(
       }
     }
 
-    entries.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    entries.sort_by_cached_key(|entry| entry.name.to_lowercase());
     {
       let mut map = state.map.lock().expect("map lock");
       *map = next_map;
@@ -2841,6 +2873,7 @@ fn move_dir(source: &Path, target: &Path) -> Result<(), String> {
 }
 
 fn index_scan_candidate(path: PathBuf) -> IndexedCandidate {
+  let path_display = path.to_string_lossy().to_string();
   let name = path
     .file_name()
     .and_then(|name| name.to_str())
@@ -2853,6 +2886,7 @@ fn index_scan_candidate(path: PathBuf) -> IndexedCandidate {
 
   IndexedCandidate {
     path,
+    path_display,
     name,
     kind,
     size_bytes,
@@ -2878,7 +2912,7 @@ fn file_entry_from_path(id: String, path: &Path) -> FileEntry {
     id,
     name: candidate.name,
     kind: candidate.kind,
-    path: candidate.path.to_string_lossy().to_string(),
+    path: candidate.path_display,
     size_bytes: candidate.size_bytes,
     modified_ms: candidate.modified_ms,
     mime,
@@ -2955,12 +2989,7 @@ fn matches_filter(filter: &str, kind: &FileKind) -> bool {
 }
 
 fn matches_candidate_filter(filter: &str, candidate: &IndexedCandidate) -> bool {
-  matches_file_filter(
-    filter,
-    &candidate.name,
-    &candidate.path.to_string_lossy(),
-    &candidate.kind,
-  )
+  matches_file_filter(filter, &candidate.name, &candidate.path_display, &candidate.kind)
 }
 
 fn matches_file_filter(filter: &str, name: &str, path: &str, kind: &FileKind) -> bool {

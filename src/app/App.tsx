@@ -269,6 +269,7 @@ export default function App() {
   >(null);
   const mutationSpinnerTimeoutRef = useRef<number | null>(null);
   const isMutatingRef = useRef(false);
+  const resetSelectionToFirstRef = useRef(false);
   const blockingOverlayShowFrameRef = useRef<number | null>(null);
   const blockingOverlayHideFrameRef = useRef<number | null>(null);
   const [isCancellingScan, setIsCancellingScan] = useState(false);
@@ -1445,7 +1446,16 @@ export default function App() {
 
   useEffect(() => {
     if (sortedFiles.length === 0) {
+      resetSelectionToFirstRef.current = false;
       currentFileIdRef.current = null;
+      if (currentIndex !== 0) {
+        setCurrentIndex(0);
+      }
+      return;
+    }
+    if (resetSelectionToFirstRef.current) {
+      resetSelectionToFirstRef.current = false;
+      currentFileIdRef.current = sortedFiles[0]?.id ?? null;
       if (currentIndex !== 0) {
         setCurrentIndex(0);
       }
@@ -1803,6 +1813,7 @@ export default function App() {
   const applyScanResult = useCallback(
     (folderPath: string, result: ScanResult) => {
       cancelPendingScanBatchFlush();
+      resetSelectionToFirstRef.current = true;
       setFiles(result.files);
       setCurrentFolder(folderPath);
       currentFileIdRef.current = null;
@@ -1887,7 +1898,18 @@ export default function App() {
   );
 
   const loadCachedScan = useCallback(
-    (cachedScan: CachedScan) => {
+    async (cachedScan: CachedScan) => {
+      try {
+        await invokeCommand("hydrate_cached_scan", {
+          request: {
+            folderPath: cachedScan.folderPath,
+            files: cachedScan.files,
+          },
+        });
+      } catch (error) {
+        updateStatus(`Failed to load cached scan: ${String(error)}`);
+        return;
+      }
       setScanCachePrompt(null);
       setIsLoading(false);
       setScanProgress(null);
@@ -1899,7 +1921,7 @@ export default function App() {
         total: cachedScan.total,
       });
     },
-    [applyScanResult],
+    [applyScanResult, updateStatus],
   );
 
   const handleScan = useCallback(
@@ -3702,7 +3724,7 @@ export default function App() {
         actions: [
           {
             label: "Load previous scan",
-            onClick: () => loadCachedScan(scanCachePrompt.cachedScan),
+            onClick: () => void loadCachedScan(scanCachePrompt.cachedScan),
           },
           {
             label: "Scan again",

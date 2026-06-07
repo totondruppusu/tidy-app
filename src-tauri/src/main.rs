@@ -328,6 +328,13 @@ struct CachedScan {
   total: usize,
 }
 
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HydrateCachedScanRequest {
+  folder_path: String,
+  files: Vec<FileEntry>,
+}
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "lowercase")]
 enum SafetyLevel {
@@ -1558,6 +1565,32 @@ fn store_cached_scan_result(
     total: result.total,
   };
   store_cached_scan(&path, &cached_scan)
+}
+
+#[tauri::command]
+fn hydrate_cached_scan(
+  state: tauri::State<'_, AppState>,
+  request: HydrateCachedScanRequest,
+) -> Result<(), String> {
+  let next_map = request
+    .files
+    .iter()
+    .map(|file| (file.id.clone(), PathBuf::from(&file.path)))
+    .collect::<HashMap<_, _>>();
+  {
+    let mut map = state.map.lock().expect("map lock");
+    *map = next_map;
+  }
+  {
+    let mut index = state.index.lock().expect("index lock");
+    index.replace(request.folder_path, request.files);
+  }
+  state
+    .preview_map
+    .lock()
+    .expect("preview map lock")
+    .clear();
+  Ok(())
 }
 
 #[tauri::command]
@@ -4296,6 +4329,7 @@ fn main() {
       get_preview_capabilities,
       get_cached_scan,
       store_cached_scan_result,
+      hydrate_cached_scan,
       update_heartbeat,
       scan_folder,
       scan_folder_v2,

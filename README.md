@@ -1,5 +1,9 @@
 # Tidy App
 
+<p align="center">
+  <img src="src-tauri/icons/icon.png" alt="Tidy App icon" width="128" height="128">
+</p>
+
 Tidy App is a desktop file-triage tool built with Tauri, React, TypeScript, and Rust. It helps you scan folders, inspect clutter quickly, preview common file formats, detect duplicates, and clean up files with safety controls and undo support.
 
 The project is designed for local-first cleanup workflows. Scanning, preview generation, duplicate analysis, and cleanup actions run on the machine where the app is installed.
@@ -254,3 +258,7 @@ npm run test:all
 - Use `npm run test:e2e` when UI workflows or bridge behavior change.
 - Use `npm run test:rust` when touching Tauri commands, scan logic, previews, or filesystem actions.
 - Use `npm run test:all` before merging larger changes.
+
+## License
+
+This project is licensed under the GNU Affero General Public License v3. See [LICENSE](/Users/simone/Documents/software_projects/tidy-app/LICENSE).

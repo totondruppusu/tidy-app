@@ -203,7 +203,7 @@ describe("App integration", () => {
     expect(container.querySelector(".file-list")?.textContent).toContain("gamma.txt");
   });
 
-  it("builds and previews suggestions", async () => {
+  it("shows the suggestions entrypoint as work in progress", async () => {
     const controller = createMockBridge();
     installBaseHandlers(controller);
     window.__TIDY_DESKTOP_BRIDGE__ = controller.bridge;
@@ -263,11 +263,12 @@ describe("App integration", () => {
       expect(container.querySelector(".file-list")?.textContent).toContain("old.zip")
     );
 
-    await user.click(screen.getByRole("button", { name: "Open AI suggestions" }));
-    await user.click(screen.getByRole("button", { name: "Build suggestions" }));
-    expect(await screen.findByText("Old archive")).toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: "Preview selected" }));
-    expect(await screen.findByText("Preview ready")).toBeInTheDocument();
+    const suggestionsButton = screen.getByRole("button", {
+      name: "AI suggestions (work in progress)",
+    });
+    expect(suggestionsButton).toBeDisabled();
+    expect(
+      suggestionsButton.closest(".icon-button-tooltip-anchor"),
+    ).toHaveAttribute("title", "Work in progress");
   });
 });

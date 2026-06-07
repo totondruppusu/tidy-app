@@ -15,6 +15,7 @@ serde_json = "1"
 trash = "3.0"
 walkdir = "2.5"
 mime_guess = "2.0"
+rayon = "1"
 uuid = { version = "1", features = ["v4"] }
 tauri-plugin-dialog = "2"
 zip = "0.6"
@@ -23,6 +24,7 @@ flate2 = "1"
 bzip2 = "0.4"
 xz2 = "0.1"
 sha2 = "0.10"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "webp", "tiff"] }
 
 [features]
 default = ["custom-protocol"]

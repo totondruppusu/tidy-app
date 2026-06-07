@@ -1,6 +1,7 @@
 export type FilterMode =
   | "all"
   | "images"
+  | "screenshots"
   | "videos"
   | "images_videos"
   | "audio"
@@ -31,6 +32,9 @@ export type ViewMode = "tree" | "list";
 export type ExtensionFilterMode = "all" | "remember" | "common";
 export type TrashBehavior = "system" | "permanent";
 export type SafetyLevel = "safe" | "review" | "manual";
+export type SuggestionSortMode = "largest_first" | "safest_first" | "path_asc";
+export type SuggestionActionFilter = "all" | "trash" | "remove-empty-folder" | "move" | "delete";
+export type SuggestionsMode = "review" | "advanced";
 
 export type FileEntry = {
   id: string;
@@ -67,6 +71,18 @@ export type ScanResult = {
   total: number;
 };
 
+export type CachedScan = {
+  folderPath: string;
+  filterMode: FilterMode;
+  includeSubfolders: boolean;
+  includeHidden: boolean;
+  useHashForDuplicates: boolean;
+  duplicateMinSizeBytes: number;
+  cachedAtMs: number;
+  files: FileEntry[];
+  total: number;
+};
+
 export type ScanStats = {
   indexed: number;
   matched: number;
@@ -98,6 +114,35 @@ export type ScanProgress = {
 export type ScanBatch = {
   scanId: string;
   files: FileEntry[];
+};
+
+export type QueryIndexRequest = {
+  filterMode?: FilterMode;
+  selectedExtensions?: string[];
+  sortMode?: SortMode;
+  groupMode?: GroupMode;
+  offset?: number;
+  limit?: number;
+};
+
+export type GroupCount = {
+  key: string;
+  count: number;
+};
+
+export type QueryIndexResult = {
+  files: FileEntry[];
+  total: number;
+  offset: number;
+  limit: number;
+  groups: GroupCount[];
+};
+
+export type IndexStats = {
+  folderPath?: string | null;
+  total: number;
+  extensions: GroupCount[];
+  duplicateGroups: number;
 };
 
 export type MoveResult = {
@@ -289,4 +334,24 @@ export type StoredSettings = {
   extensionFilterMode?: ExtensionFilterMode;
   extensionSelection?: string[];
   destinationSlots?: (string | null)[];
+  suggestionStaleDays?: number;
+  suggestionMinLargeFileBytes?: number;
+  suggestionMaxResults?: number;
+  suggestionSortMode?: SuggestionSortMode;
+  suggestionActionFilter?: SuggestionActionFilter;
+  suggestionsMode?: SuggestionsMode;
+  suggestionPresetId?: string;
+  suggestionPresets?: SuggestionPreset[];
+};
+
+export type SuggestionPreset = {
+  id: string;
+  name: string;
+  staleDays: number;
+  minLargeFileBytes: number;
+  maxResults: number;
+  safetyFilter: SafetyLevel;
+  actionFilter: SuggestionActionFilter;
+  sortMode: SuggestionSortMode;
+  searchQuery?: string;
 };

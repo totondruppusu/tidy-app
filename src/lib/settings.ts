@@ -13,6 +13,11 @@ import type {
   ExtensionFilterMode,
   FilterMode,
   GroupMode,
+  SafetyLevel,
+  SuggestionPreset,
+  SuggestionActionFilter,
+  SuggestionSortMode,
+  SuggestionsMode,
   SortMode,
   StoredSettings,
   ThemeMode,
@@ -54,6 +59,75 @@ export const isExtensionFilterMode = (value: unknown): value is ExtensionFilterM
 
 export const isTrashBehavior = (value: unknown): value is TrashBehavior =>
   typeof value === "string" && TRASH_BEHAVIORS.includes(value as TrashBehavior);
+
+const SUGGESTION_SORT_MODES: SuggestionSortMode[] = ["largest_first", "safest_first", "path_asc"];
+const SUGGESTION_ACTION_FILTERS: SuggestionActionFilter[] = [
+  "all",
+  "trash",
+  "remove-empty-folder",
+  "move",
+  "delete",
+];
+const SUGGESTIONS_MODES: SuggestionsMode[] = ["review", "advanced"];
+const SUGGESTION_SAFETY_LEVELS: SafetyLevel[] = ["safe", "review", "manual"];
+
+export const isSuggestionSortMode = (value: unknown): value is SuggestionSortMode =>
+  typeof value === "string" && SUGGESTION_SORT_MODES.includes(value as SuggestionSortMode);
+
+export const isSuggestionActionFilter = (value: unknown): value is SuggestionActionFilter =>
+  typeof value === "string" && SUGGESTION_ACTION_FILTERS.includes(value as SuggestionActionFilter);
+
+export const isSuggestionsMode = (value: unknown): value is SuggestionsMode =>
+  typeof value === "string" && SUGGESTIONS_MODES.includes(value as SuggestionsMode);
+
+const isSuggestionSafetyLevel = (value: unknown): value is SafetyLevel =>
+  typeof value === "string" && SUGGESTION_SAFETY_LEVELS.includes(value as SafetyLevel);
+
+const normalizeSuggestionPreset = (value: unknown): SuggestionPreset | null => {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const preset = value as Record<string, unknown>;
+  if (typeof preset.id !== "string" || preset.id.trim().length === 0) {
+    return null;
+  }
+  if (typeof preset.name !== "string" || preset.name.trim().length === 0) {
+    return null;
+  }
+  if (
+    typeof preset.staleDays !== "number" ||
+    !Number.isFinite(preset.staleDays) ||
+    typeof preset.minLargeFileBytes !== "number" ||
+    !Number.isFinite(preset.minLargeFileBytes) ||
+    typeof preset.maxResults !== "number" ||
+    !Number.isFinite(preset.maxResults)
+  ) {
+    return null;
+  }
+  if (!isSuggestionSafetyLevel(preset.safetyFilter)) {
+    return null;
+  }
+  if (!isSuggestionActionFilter(preset.actionFilter)) {
+    return null;
+  }
+  if (!isSuggestionSortMode(preset.sortMode)) {
+    return null;
+  }
+  if (preset.searchQuery != null && typeof preset.searchQuery !== "string") {
+    return null;
+  }
+  return {
+    id: preset.id,
+    name: preset.name,
+    staleDays: preset.staleDays,
+    minLargeFileBytes: preset.minLargeFileBytes,
+    maxResults: preset.maxResults,
+    safetyFilter: preset.safetyFilter,
+    actionFilter: preset.actionFilter,
+    sortMode: preset.sortMode,
+    searchQuery: typeof preset.searchQuery === "string" ? preset.searchQuery : undefined,
+  };
+};
 
 export const normalizeDestinationSlots = (value: unknown): (string | null)[] | null => {
   if (!Array.isArray(value)) {
@@ -135,6 +209,41 @@ export const getStoredSettings = (): StoredSettings => {
     const storedSlots = normalizeDestinationSlots(parsed.destinationSlots);
     if (storedSlots) {
       settings.destinationSlots = storedSlots;
+    }
+    if (
+      typeof parsed.suggestionStaleDays === "number" &&
+      Number.isFinite(parsed.suggestionStaleDays)
+    ) {
+      settings.suggestionStaleDays = parsed.suggestionStaleDays;
+    }
+    if (
+      typeof parsed.suggestionMinLargeFileBytes === "number" &&
+      Number.isFinite(parsed.suggestionMinLargeFileBytes)
+    ) {
+      settings.suggestionMinLargeFileBytes = parsed.suggestionMinLargeFileBytes;
+    }
+    if (
+      typeof parsed.suggestionMaxResults === "number" &&
+      Number.isFinite(parsed.suggestionMaxResults)
+    ) {
+      settings.suggestionMaxResults = parsed.suggestionMaxResults;
+    }
+    if (isSuggestionSortMode(parsed.suggestionSortMode)) {
+      settings.suggestionSortMode = parsed.suggestionSortMode;
+    }
+    if (isSuggestionActionFilter(parsed.suggestionActionFilter)) {
+      settings.suggestionActionFilter = parsed.suggestionActionFilter;
+    }
+    if (isSuggestionsMode(parsed.suggestionsMode)) {
+      settings.suggestionsMode = parsed.suggestionsMode;
+    }
+    if (typeof parsed.suggestionPresetId === "string") {
+      settings.suggestionPresetId = parsed.suggestionPresetId;
+    }
+    if (Array.isArray(parsed.suggestionPresets)) {
+      settings.suggestionPresets = parsed.suggestionPresets
+        .map((entry) => normalizeSuggestionPreset(entry))
+        .filter((entry): entry is SuggestionPreset => Boolean(entry));
     }
     return settings;
   } catch (error) {

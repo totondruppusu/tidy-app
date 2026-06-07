@@ -32,7 +32,7 @@ FEAT
 .Sorting defaults: pick default sort + group mode on launch.
 .microsoft windows support
 auto updater
-license managment
+?license managment
 .shift+up to permanently delete
 .ctrl+left or right to skip/back 10s in vid and music
 .spinner if the delete/move ops takes time
@@ -44,6 +44,13 @@ license managment
 .Smooth scrollIntoView
 .Responsive layout clamps
 .Smoother selection highlight transition and stable scroll behavior
+.clear loading when an operation takes time
+auto load to last opened file in view
+.smoother scroll file list for huge lists
+.selected file always visible in list
+.screenshots and memes identification
+.possibility to load old scans and indexing
+
 
 BUG
 .next and prev absoute
@@ -57,6 +64,8 @@ sorting size bugged in tree view
 .app trash does not clean up after exiting
 .better responsive settings modal
 .previews that take time hung the application and crashes
+?files with wrong extension or corrupted crash the app
+.in duplicates view when i delete a file the order changes and the selected file is not the next one
 
 REFACTORING
 .refactor app structure in app, components, constansts, lib, styles, types

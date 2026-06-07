@@ -3,3 +3,8 @@ node_modules
 /src-tauri/target
 .env
 .DS_Store
+.playwright-mcp
+.codex
+coverage
+test-results
+playwright-report

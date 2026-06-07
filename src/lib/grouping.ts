@@ -57,19 +57,7 @@ export const groupFilesByMode = (mode: GroupMode, list: FileEntry[]) => {
     }
   });
   let keys = Array.from(groups.keys());
-  if (mode === "duplicates") {
-    keys.sort((a, b) => {
-      const groupA = groups.get(a) ?? [];
-      const groupB = groups.get(b) ?? [];
-      const countDelta = groupB.length - groupA.length;
-      if (countDelta !== 0) {
-        return countDelta;
-      }
-      const nameA = groupA[0]?.name ?? "";
-      const nameB = groupB[0]?.name ?? "";
-      return nameA.localeCompare(nameB, undefined, { sensitivity: "base" });
-    });
-  } else {
+  if (mode !== "duplicates") {
     keys = sortGroupKeys(mode, keys);
   }
   return { groups, keys };

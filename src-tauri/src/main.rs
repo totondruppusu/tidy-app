@@ -191,6 +191,7 @@ const OPERATION_HISTORY_FILE: &str = "operation-history.jsonl";
 const UNDO_ACTIONS_FILE: &str = "undo-actions.json";
 const APPLIED_BATCHES_DIR: &str = "applied-batches";
 const HASH_CACHE_FILE: &str = "hash-cache.json";
+const SCAN_CACHE_DIR: &str = "scan-cache";
 const PARTIAL_HASH_BYTES: usize = 65_536;
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -300,6 +301,31 @@ struct ScanRequestV2 {
   use_hash_for_duplicates: bool,
   duplicate_min_size_bytes: u64,
   scan_id: Option<String>,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ScanCacheRequest {
+  folder_path: String,
+  filter_mode: String,
+  include_subfolders: bool,
+  include_hidden: bool,
+  use_hash_for_duplicates: bool,
+  duplicate_min_size_bytes: u64,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CachedScan {
+  folder_path: String,
+  filter_mode: String,
+  include_subfolders: bool,
+  include_hidden: bool,
+  use_hash_for_duplicates: bool,
+  duplicate_min_size_bytes: u64,
+  cached_at_ms: u64,
+  files: Vec<FileEntry>,
+  total: usize,
 }
 
 #[derive(Clone, Serialize)]
@@ -422,7 +448,7 @@ struct OfficeFallbackPreview {
   excerpt: String,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct ScanResult {
   files: Vec<FileEntry>,
   total: usize,
@@ -820,6 +846,29 @@ fn hash_cache_file_path(app_data_dir: &Path) -> PathBuf {
   app_data_dir.join(HASH_CACHE_FILE)
 }
 
+fn scan_cache_dir(app_data_dir: &Path) -> PathBuf {
+  app_data_dir.join(SCAN_CACHE_DIR)
+}
+
+fn scan_cache_key(request: &ScanCacheRequest) -> String {
+  let payload = format!(
+    "{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}",
+    request.folder_path,
+    request.filter_mode,
+    request.include_subfolders,
+    request.include_hidden,
+    request.use_hash_for_duplicates,
+    request.duplicate_min_size_bytes
+  );
+  let mut hasher = Sha256::new();
+  hasher.update(payload.as_bytes());
+  format!("{:x}", hasher.finalize())
+}
+
+fn scan_cache_file_path(app_data_dir: &Path, request: &ScanCacheRequest) -> PathBuf {
+  scan_cache_dir(app_data_dir).join(format!("{}.json", scan_cache_key(request)))
+}
+
 fn load_hash_cache(path: &Path) -> HashCache {
   fs::read_to_string(path)
     .ok()
@@ -832,6 +881,21 @@ fn store_hash_cache(path: &Path, cache: &HashCache) -> Result<(), String> {
     fs::create_dir_all(parent).map_err(|error| error.to_string())?;
   }
   let serialized = serde_json::to_string(cache).map_err(|error| error.to_string())?;
+  fs::write(path, serialized).map_err(|error| error.to_string())
+}
+
+fn load_cached_scan(path: &Path) -> Option<CachedScan> {
+  fs::read_to_string(path)
+    .ok()
+    .and_then(|contents| serde_json::from_str(&contents).ok())
+}
+
+fn store_cached_scan(path: &Path, cached_scan: &CachedScan) -> Result<(), String> {
+  if let Some(parent) = path.parent() {
+    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+  }
+  let serialized =
+    serde_json::to_string(cached_scan).map_err(|error| error.to_string())?;
   fs::write(path, serialized).map_err(|error| error.to_string())
 }
 
@@ -1452,6 +1516,48 @@ fn get_preview_capabilities() -> PreviewCapabilities {
     office_fallback_preview: true,
     notes,
   }
+}
+
+#[tauri::command]
+fn get_cached_scan(
+  app_handle: AppHandle,
+  request: ScanCacheRequest,
+) -> Result<Option<CachedScan>, String> {
+  let app_data_dir = app_handle
+    .path()
+    .app_data_dir()
+    .map_err(|error| error.to_string())?;
+  let path = scan_cache_file_path(&app_data_dir, &request);
+  Ok(load_cached_scan(&path))
+}
+
+#[tauri::command]
+fn store_cached_scan_result(
+  app_handle: AppHandle,
+  request: ScanCacheRequest,
+  result: ScanResult,
+) -> Result<(), String> {
+  let app_data_dir = app_handle
+    .path()
+    .app_data_dir()
+    .map_err(|error| error.to_string())?;
+  let path = scan_cache_file_path(&app_data_dir, &request);
+  let cached_at_ms = SystemTime::now()
+    .duration_since(UNIX_EPOCH)
+    .unwrap_or_default()
+    .as_millis() as u64;
+  let cached_scan = CachedScan {
+    folder_path: request.folder_path,
+    filter_mode: request.filter_mode,
+    include_subfolders: request.include_subfolders,
+    include_hidden: request.include_hidden,
+    use_hash_for_duplicates: request.use_hash_for_duplicates,
+    duplicate_min_size_bytes: request.duplicate_min_size_bytes,
+    cached_at_ms,
+    files: result.files,
+    total: result.total,
+  };
+  store_cached_scan(&path, &cached_scan)
 }
 
 #[tauri::command]
@@ -4188,6 +4294,8 @@ fn main() {
       get_recent_undo_actions,
       store_recent_undo_actions,
       get_preview_capabilities,
+      get_cached_scan,
+      store_cached_scan_result,
       update_heartbeat,
       scan_folder,
       scan_folder_v2,

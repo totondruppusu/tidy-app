@@ -71,6 +71,18 @@ export type ScanResult = {
   total: number;
 };
 
+export type CachedScan = {
+  folderPath: string;
+  filterMode: FilterMode;
+  includeSubfolders: boolean;
+  includeHidden: boolean;
+  useHashForDuplicates: boolean;
+  duplicateMinSizeBytes: number;
+  cachedAtMs: number;
+  files: FileEntry[];
+  total: number;
+};
+
 export type ScanStats = {
   indexed: number;
   matched: number;

@@ -49,6 +49,7 @@ auto load to last opened file in view
 .smoother scroll file list for huge lists
 .selected file always visible in list
 .screenshots and memes identification
+.possibility to load old scans and indexing
 
 
 BUG

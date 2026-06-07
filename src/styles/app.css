@@ -1893,6 +1893,13 @@ input {
   color: var(--color-text-muted);
 }
 
+.modal-action-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--space-2);
+}
+
 .loading-meter {
   position: relative;
   width: 100%;

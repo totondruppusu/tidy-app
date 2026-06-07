@@ -10,6 +10,7 @@ import type {
   ArchivePreview,
   ActivitySnapshot,
   ActionBatchResult,
+  CachedScan,
   CrashReport,
   DensityMode,
   ExtensionFilterMode,
@@ -146,6 +147,20 @@ type BlockingOverlayState = {
   subtitle: string;
 };
 
+type ScanCacheRequest = {
+  folderPath: string;
+  filterMode: FilterMode;
+  includeSubfolders: boolean;
+  includeHidden: boolean;
+  useHashForDuplicates: boolean;
+  duplicateMinSizeBytes: number;
+};
+
+type ScanCachePromptState = {
+  request: ScanCacheRequest;
+  cachedScan: CachedScan;
+};
+
 export default function App() {
   const [storedSettings] = useState(() => getStoredSettings());
   const [files, setFiles] = useState<FileEntry[]>([]);
@@ -244,6 +259,8 @@ export default function App() {
     initialFolder,
   );
   const [isLoading, setIsLoading] = useState(false);
+  const [scanCachePrompt, setScanCachePrompt] =
+    useState<ScanCachePromptState | null>(null);
   const [isMutating, setIsMutating] = useState(false);
   const [blockingOverlay, setBlockingOverlay] =
     useState<BlockingOverlayState | null>(null);
@@ -1745,29 +1762,49 @@ export default function App() {
     };
   }, [currentIndex]);
 
-  const handleScan = useCallback(
-    async (folderPath?: string) => {
-      if (!folderPath) {
-        updateStatus("No folder selected.");
-        return;
-      }
-      setLastScanFilterMode(filterMode);
-      const scanId =
-        typeof crypto?.randomUUID === "function"
-          ? crypto.randomUUID()
-          : `${Date.now()}`;
-      activeScanId.current = scanId;
-      setIsCancellingScan(false);
-      setIsLoading(true);
-      setScanProgress({
-        scanId,
-        scanned: 0,
-        matched: 0,
-        total: 0,
-        phase: "indexing",
-      });
+  const buildScanCacheRequest = useCallback(
+    (folderPath: string): ScanCacheRequest => ({
+      folderPath,
+      filterMode,
+      includeSubfolders,
+      includeHidden,
+      useHashForDuplicates,
+      duplicateMinSizeBytes,
+    }),
+    [
+      duplicateMinSizeBytes,
+      filterMode,
+      includeHidden,
+      includeSubfolders,
+      useHashForDuplicates,
+    ],
+  );
+
+  const resetScanViewState = useCallback(() => {
+    cancelPendingScanBatchFlush();
+    setFiles([]);
+    currentFileIdRef.current = null;
+    setCurrentIndex(0);
+    setRenderCount(0);
+    setUndoStack([]);
+    setSuggestions([]);
+    setSelectedSuggestionIds([]);
+    setSuggestionTotalReclaimableBytes(0);
+    setSuggestionsError(null);
+    setSuggestionsStatus("idle");
+    setSuggestionDryRunResult(null);
+    setSuggestionDryRunSelectionKey(null);
+    setSuggestionDryRunStatus("idle");
+    setSuggestionDryRunError(null);
+    setCollapsedGroups({});
+    setCollapsedFolders({});
+  }, [cancelPendingScanBatchFlush]);
+
+  const applyScanResult = useCallback(
+    (folderPath: string, result: ScanResult) => {
       cancelPendingScanBatchFlush();
-      setFiles([]);
+      setFiles(result.files);
+      setCurrentFolder(folderPath);
       currentFileIdRef.current = null;
       setCurrentIndex(0);
       setRenderCount(0);
@@ -1783,28 +1820,50 @@ export default function App() {
       setSuggestionDryRunError(null);
       setCollapsedGroups({});
       setCollapsedFolders({});
+      updateStatus(`Loaded ${result.files.length} items from ${folderPath}.`);
+    },
+    [cancelPendingScanBatchFlush, updateStatus],
+  );
+
+  const runFreshScan = useCallback(
+    async (request: ScanCacheRequest) => {
+      const { folderPath } = request;
+      setLastScanFilterMode(request.filterMode);
+      const scanId =
+        typeof crypto?.randomUUID === "function"
+          ? crypto.randomUUID()
+          : `${Date.now()}`;
+      activeScanId.current = scanId;
+      setScanCachePrompt(null);
+      setIsCancellingScan(false);
+      setIsLoading(true);
+      setScanProgress({
+        scanId,
+        scanned: 0,
+        matched: 0,
+        total: 0,
+        phase: "indexing",
+      });
+      resetScanViewState();
       updateStatus(
-        includeSubfolders
+        request.includeSubfolders
           ? "Scanning folders and subfolders..."
           : "Scanning folder...",
       );
       try {
         const result = await invokeCommand<ScanResult>("scan_folder", {
-          folderPath,
-          filterMode,
-          includeSubfolders,
-          includeHidden,
-          useHashForDuplicates,
-          duplicateMinSizeBytes,
+          ...request,
           scanId,
         });
         if (activeScanId.current !== scanId) {
           return;
         }
-        cancelPendingScanBatchFlush();
-        setFiles(result.files);
-        setCurrentFolder(folderPath);
-        updateStatus(`Loaded ${result.files.length} items from ${folderPath}.`);
+        applyScanResult(folderPath, result);
+        try {
+          await invokeCommand("store_cached_scan_result", { request, result });
+        } catch (cacheError) {
+          console.warn("Failed to store cached scan.", cacheError);
+        }
       } catch (error) {
         if (activeScanId.current !== scanId) {
           return;
@@ -1824,15 +1883,49 @@ export default function App() {
         }
       }
     },
-    [
-      filterMode,
-      includeSubfolders,
-      includeHidden,
-      useHashForDuplicates,
-      duplicateMinSizeBytes,
-      updateStatus,
-      cancelPendingScanBatchFlush,
-    ],
+    [applyScanResult, resetScanViewState, updateStatus],
+  );
+
+  const loadCachedScan = useCallback(
+    (cachedScan: CachedScan) => {
+      setScanCachePrompt(null);
+      setIsLoading(false);
+      setScanProgress(null);
+      activeScanId.current = null;
+      setIsCancellingScan(false);
+      setLastScanFilterMode(cachedScan.filterMode);
+      applyScanResult(cachedScan.folderPath, {
+        files: cachedScan.files,
+        total: cachedScan.total,
+      });
+    },
+    [applyScanResult],
+  );
+
+  const handleScan = useCallback(
+    async (folderPath?: string) => {
+      if (!folderPath) {
+        updateStatus("No folder selected.");
+        return;
+      }
+      const request = buildScanCacheRequest(folderPath);
+      setScanCachePrompt(null);
+      try {
+        const cachedScan = await invokeCommand<CachedScan | null>(
+          "get_cached_scan",
+          { request },
+        );
+        if (cachedScan) {
+          setScanCachePrompt({ request, cachedScan });
+          updateStatus("Previous scan found. Choose how to continue.");
+          return;
+        }
+      } catch (error) {
+        console.warn("Failed to load cached scan.", error);
+      }
+      await runFreshScan(request);
+    },
+    [buildScanCacheRequest, runFreshScan, updateStatus],
   );
 
   const cancelActiveScan = useCallback(async () => {
@@ -3594,18 +3687,41 @@ export default function App() {
       return {
         title: blockingOverlay.title,
         subtitle: blockingOverlay.subtitle,
+        showSpinner: true,
         showCancel: false,
+        actions: [] as { label: string; onClick: () => void; disabled?: boolean }[],
+      };
+    }
+    if (scanCachePrompt) {
+      return {
+        title: "Previous scan available",
+        subtitle:
+          "A cached scan matches this folder and these scan options. Load it now or run a fresh scan.",
+        showSpinner: false,
+        showCancel: false,
+        actions: [
+          {
+            label: "Load previous scan",
+            onClick: () => loadCachedScan(scanCachePrompt.cachedScan),
+          },
+          {
+            label: "Scan again",
+            onClick: () => void runFreshScan(scanCachePrompt.request),
+          },
+        ],
       };
     }
     if (isLoading) {
       return {
         title: "Scanning files",
         subtitle: loadingMessage ?? "Collecting file list...",
+        showSpinner: true,
         showCancel: true,
+        actions: [] as { label: string; onClick: () => void; disabled?: boolean }[],
       };
     }
     return null;
-  }, [blockingOverlay, isLoading, loadingMessage]);
+  }, [blockingOverlay, isLoading, loadCachedScan, loadingMessage, runFreshScan, scanCachePrompt]);
 
   const isInteractionBlocked = Boolean(activeBlockingOverlay);
   const areControlsDisabled = isLoading || isInteractionBlocked;
@@ -4436,11 +4552,28 @@ export default function App() {
       {activeBlockingOverlay && (
         <div className="blocking-overlay" role="alert" aria-live="assertive">
           <div className="loading-state blocking-overlay-card">
-            <div className="spinner" aria-hidden="true" />
+            {activeBlockingOverlay.showSpinner && (
+              <div className="spinner" aria-hidden="true" />
+            )}
             <div className="loading-title">{activeBlockingOverlay.title}</div>
             <div className="loading-subtitle">
               {activeBlockingOverlay.subtitle}
             </div>
+            {activeBlockingOverlay.actions.length > 0 && (
+              <div className="modal-action-row">
+                {activeBlockingOverlay.actions.map((action) => (
+                  <button
+                    key={action.label}
+                    type="button"
+                    className="preview-action-button"
+                    onClick={action.onClick}
+                    disabled={action.disabled}
+                  >
+                    {action.label}
+                  </button>
+                ))}
+              </div>
+            )}
             {activeBlockingOverlay.showCancel && (
               <button
                 type="button"

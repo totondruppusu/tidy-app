@@ -918,6 +918,14 @@ input {
   cursor: not-allowed;
 }
 
+.icon-button-tooltip-anchor {
+  display: inline-flex;
+}
+
+.icon-button-tooltip-anchor > .icon-button {
+  pointer-events: none;
+}
+
 .rendering {
   font-size: 12px;
   color: var(--color-text-muted);

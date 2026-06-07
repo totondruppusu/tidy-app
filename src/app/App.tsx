@@ -3766,25 +3766,26 @@ export default function App() {
           </svg>
         </button>
       )}
-      <button
-        type="button"
-        className="icon-button settings-button app-suggestions-button"
-        onClick={() => setIsSuggestionsOpen(true)}
-        aria-label="Open AI suggestions"
-        aria-haspopup="dialog"
-        aria-expanded={isSuggestionsOpen}
-        title="AI suggestions"
-      >
-        <svg
-          viewBox="0 0 24 24"
-          aria-hidden="true"
-          focusable="false"
-          width="24"
-          height="24"
+      <span className="icon-button-tooltip-anchor" title="Work in progress">
+        <button
+          type="button"
+          className="icon-button settings-button app-suggestions-button"
+          disabled
+          aria-label="AI suggestions (work in progress)"
+          aria-haspopup="dialog"
+          aria-expanded={false}
         >
-          <path d="M12 2.8 14.9 8.5 21.2 9.4l-4.6 4.4 1.1 6.3L12 17.1 6.3 20.1l1.1-6.3-4.6-4.4 6.3-.9L12 2.8Z" />
-        </svg>
-      </button>
+          <svg
+            viewBox="0 0 24 24"
+            aria-hidden="true"
+            focusable="false"
+            width="24"
+            height="24"
+          >
+            <path d="M12 2.8 14.9 8.5 21.2 9.4l-4.6 4.4 1.1 6.3L12 17.1 6.3 20.1l1.1-6.3-4.6-4.4 6.3-.9L12 2.8Z" />
+          </svg>
+        </button>
+      </span>
       <button
         type="button"
         className="icon-button settings-button app-settings-button"

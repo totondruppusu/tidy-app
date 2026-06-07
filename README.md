@@ -163,6 +163,20 @@ xcode-select --install
 npm install
 ```
 
+On Linux, install the native libraries Tauri needs before running Rust tests or desktop builds:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y \
+  pkg-config \
+  libglib2.0-dev \
+  libgtk-3-dev \
+  libwebkit2gtk-4.1-dev \
+  libayatana-appindicator3-dev \
+  librsvg2-dev \
+  patchelf
+```
+
 ### Run in Development
 
 Web UI only:

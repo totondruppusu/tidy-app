@@ -1388,6 +1388,19 @@ input {
   font-size: 11px;
 }
 
+.suggestions-tooltip-anchor {
+  display: inline-flex;
+}
+
+.suggestions-tooltip-anchor > .suggestions-quick-button {
+  pointer-events: none;
+}
+
+.suggestions-quick-button.is-work-in-progress {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 .suggestions-last-preset-button {
   max-width: 240px;
   white-space: nowrap;

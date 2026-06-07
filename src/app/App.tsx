@@ -459,38 +459,6 @@ export default function App() {
     setSuggestionDryRunStatus("idle");
     setSuggestionDryRunError(null);
   }, []);
-  const buildSuggestionPreset = useCallback(
-    (name: string, id?: string): SuggestionPreset => ({
-      id:
-        id ??
-        (typeof crypto?.randomUUID === "function"
-          ? crypto.randomUUID()
-          : `preset-${Date.now()}-${Math.floor(Math.random() * 10_000)}`),
-      name,
-      staleDays: Math.max(1, Math.min(3650, Math.round(suggestionStaleDays))),
-      minLargeFileBytes: Math.max(
-        1024 * 1024,
-        Math.min(
-          20 * 1024 * 1024 * 1024,
-          Math.round(suggestionMinLargeFileBytes),
-        ),
-      ),
-      maxResults: Math.max(1, Math.min(2000, Math.round(suggestionMaxResults))),
-      safetyFilter: suggestionSafetyFilter,
-      actionFilter: suggestionActionFilter,
-      sortMode: suggestionSortMode,
-      searchQuery: suggestionSearchQuery.trim() || undefined,
-    }),
-    [
-      suggestionStaleDays,
-      suggestionMinLargeFileBytes,
-      suggestionMaxResults,
-      suggestionSafetyFilter,
-      suggestionActionFilter,
-      suggestionSortMode,
-      suggestionSearchQuery,
-    ],
-  );
   const applySuggestionPreset = useCallback(
     (preset: SuggestionPreset) => {
       setSuggestionStaleDays(preset.staleDays);
@@ -1982,23 +1950,6 @@ export default function App() {
       updateStatus(`Folder picker failed: ${String(error)}`);
     }
   }, [autoScanOnPick, handleScan, updateStatus]);
-
-  const saveSuggestionPreset = useCallback(() => {
-    const suggestedName = activeSuggestionPreset?.name ?? "New preset";
-    const name = window.prompt("Preset name", suggestedName);
-    if (!name) {
-      return;
-    }
-    const trimmed = name.trim();
-    if (!trimmed) {
-      updateStatus("Preset name cannot be empty.");
-      return;
-    }
-    const preset = buildSuggestionPreset(trimmed);
-    setSuggestionPresets((previous) => [...previous, preset]);
-    setSuggestionPresetId(preset.id);
-    updateStatus(`Preset "${preset.name}" saved.`);
-  }, [activeSuggestionPreset?.name, buildSuggestionPreset, updateStatus]);
 
   const applyLastSuggestionPreset = useCallback(() => {
     if (!activeSuggestionPreset) {
@@ -4800,13 +4751,19 @@ export default function App() {
                           Apply last: {activeSuggestionPreset.name}
                         </button>
                       )}
-                      <button
-                        type="button"
-                        className="suggestions-quick-button"
-                        onClick={saveSuggestionPreset}
+                      <span
+                        className="suggestions-tooltip-anchor"
+                        title="Work in progress"
                       >
-                        Save current rules
-                      </button>
+                        <button
+                          type="button"
+                          className="suggestions-quick-button is-work-in-progress"
+                          disabled
+                          aria-label="Save current rules (work in progress)"
+                        >
+                          Save current rules
+                        </button>
+                      </span>
                       <button
                         type="button"
                         className="suggestions-quick-button"

@@ -12,9 +12,9 @@ jobs:
       matrix:
         include:
           - platform: macos-latest
-            args: --bundles app --target aarch64-apple-darwin
+            args: --bundles dmg --target aarch64-apple-darwin
           - platform: macos-latest
-            args: --bundles app --target x86_64-apple-darwin
+            args: --bundles dmg --target x86_64-apple-darwin
           - platform: windows-latest
             args: --bundles nsis
 
@@ -33,6 +33,7 @@ jobs:
       - uses: tauri-apps/tauri-action@v0.6.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_SIGNING_IDENTITY: ${{ matrix.platform == 'macos-latest' && '-' || '' }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: Tidy-app ${{ github.ref_name }}

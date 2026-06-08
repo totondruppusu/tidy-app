@@ -4,135 +4,116 @@
   <img src="src-tauri/icons/icon.png" alt="Tidy App icon" width="128" height="128">
 </p>
 
-Tidy App is a desktop file-triage tool built with Tauri, React, TypeScript, and Rust. It helps you scan folders, inspect clutter quickly, preview common file formats, detect duplicates, and clean up files with safety controls and undo support.
+<p align="center">
+  <strong>Find clutter. Review files faster. Reclaim storage safely.</strong>
+</p>
 
-The project is designed for local-first cleanup workflows. Scanning, preview generation, duplicate analysis, and cleanup actions run on the machine where the app is installed.
+Tidy App is a free, open-source desktop file organizer and cleanup tool built with Tauri, React, TypeScript, and Rust.
 
-## Highlights
+It helps you scan folders, preview files, find duplicates, organize content, and clean up storage with safety controls and undo support.
 
-- Fast folder scanning for top-level folders or recursive scans.
-- File-type filters for images, screenshots/memes, videos, audio, documents, text, archives, executables, binaries, and duplicates.
-- Tree and list browsing modes with sorting, grouping, extension filtering, and density controls.
-- Preview support for images, video, audio, text, PDF, archives, and Office documents.
-- Duplicate detection with optional hash-based verification and minimum-size thresholds.
-- One-click move actions via saved destination slots.
-- Trash, permanent delete, folder trash, and undo flows with guardrails.
-- Cleanup suggestions with dry-run batch previews before applying actions.
-- Cached scans, hash caching, and crash-report recovery.
+Everything runs locally on your machine. No cloud service is required, and your files stay on your computer.
 
-## Feature Overview
+## Why Tidy App?
 
-### Scanning and Browsing
+- ⚡ Fast folder scanning with cached results
+- 👀 Built-in previews for common file types
+- 🔍 Duplicate detection with optional hash verification
+- 🌳 Tree and list views for flexible file review
+- 🚀 One-click organization using saved destinations
+- 🛡️ Trash, delete, undo, and operation history
+- 🔒 Protected-path checks for safer cleanup
+- 💻 Local-first design with no subscription or remote service
 
-- Select a folder and scan only the current level or include subfolders.
-- Optionally include hidden files and hidden directories.
-- Reuse cached scans when the folder and scan options match a previous run.
-- Switch between:
-  - `tree` view for folder-oriented browsing
-  - `list` view for flat triage workflows
-- Sort by name, size, date, type, or extension.
-- Group by type, extension, or duplicate set.
-- Filter by remembered or common extensions.
+## Features
 
-### Preview and Review
+### Smart Scanning
 
-- Image preview with zoom, pan, and reset controls.
-- Video and audio preview with keyboard playback shortcuts.
-- Text and PDF preview in-app.
-- Archive preview for supported compressed formats by listing entries.
-- Office preview:
-  - Rich preview on macOS when Quick Look rendering is available
-  - Text fallback extraction for supported Office document formats on other platforms
-- Reveal files in the system file manager or open them in the default app.
+Quickly inspect folders and understand what is taking up space.
 
-### Cleanup Actions
+- Scan only the current folder or include subfolders
+- Include hidden files and directories when needed
+- Reuse cached scans when scan options match
+- Sort by name, size, date, type, or extension
+- Group files by type, extension, or duplicate set
+- Filter by remembered or common extensions
 
-- Save up to 5 destination slots for fast file moves.
-- Move files into chosen destinations.
-- Send files to the system trash with undo support.
-- Permanently delete files when enabled in settings.
-- Trash folders directly from tree view.
-- Restore recent actions from a persisted undo stack of up to 20 entries.
-- Review paged operation history stored locally for auditability.
+### File Preview
 
-### Duplicate Detection and Suggestions
+Review files without constantly switching apps.
 
-- Duplicate scan mode groups matching files together.
-- Optional hash-based duplicate confirmation improves accuracy.
-- Configurable minimum file size threshold avoids wasting time on tiny files.
-- TODO Built-in cleanup suggestions identify:
-  - duplicate files
-  - stale large downloads/installers
-  - temporary or cache-like files
-  - empty folders
-- TODO Suggestion batches support dry-run previews before real changes are applied.
-- TODO Suggestion presets can be saved locally and reused.
+Supported previews include:
 
-### Reliability and Safety
+- Images
+- Videos
+- Audio files
+- Text files
+- PDFs
+- Archives
+- Office documents
 
-- Protected-path checks block destructive actions in sensitive locations by default.
-- Crash reports are persisted locally and surfaced on next launch after recovery.
-- Heartbeat and activity snapshots help diagnose unclean shutdowns.
-- Large previews can be skipped to reduce memory and rendering cost.
+Additional preview tools include image zoom, pan controls, media shortcuts, file reveal, and opening files in the default system app.
 
-## Technical Details
+### Duplicate Finder
 
-### Stack
+Find wasted storage caused by copied or repeated files.
 
-- Desktop shell: Tauri 2
-- Frontend: React 18, TypeScript, Vite
-- Backend/native layer: Rust
-- Virtualized rendering: `react-window`
-- Testing: Vitest, Testing Library, Playwright, Rust unit tests
+- Group matching duplicate files
+- Use optional SHA-256 hash verification for stronger accuracy
+- Configure minimum file-size thresholds
+- Review duplicate groups before taking action
 
-### Architecture
+### Fast Organization
 
-- `src/app/App.tsx`
-  Main application shell and UI state management.
-- `src/components/`
-  Modal and UI subcomponents such as settings and help.
-- `src/lib/`
-  Frontend helpers for grouping, tree building, formatting, settings, bridge access, and utility logic.
-- `src-tauri/src/main.rs`
-  Native commands for scanning, preview generation, duplicate detection, journaling, undo, suggestions, and file operations.
-- `test/`
-  Unit, integration, and end-to-end test coverage for the web/desktop bridge behavior.
+Move files where they belong with fewer clicks.
 
-### Native Behavior
+- Save up to 5 destination slots
+- Move files into saved destinations
+- Use tree or list workflows depending on the cleanup task
+- Track actions in local operation history
 
-The Rust backend is responsible for:
+### Safe Cleanup
 
-- filesystem traversal with `walkdir`
-- parallel scan/index work with `rayon`
-- MIME/type guessing
-- duplicate detection with optional SHA-256 hashing
-- archive inspection for supported formats
-- preview generation and platform-specific integration
-- journaling, undo persistence, crash recovery, and batch action execution
+Tidy App is designed to make cleanup safer and more reviewable.
 
-### Local Data and Persistence
+- Send files to the system trash
+- Permanently delete only when enabled in settings
+- Trash folders from tree view
+- Undo recent actions from a persisted undo stack
+- Keep up to 20 recent undo entries
+- Block destructive actions in protected paths by default
+- Store operation history locally for auditability
 
-Tidy App stores settings and workflow metadata locally:
+### Cleanup Suggestions
 
-- UI settings and presets are stored in browser/Tauri webview local storage.
-- App data files are stored in the platform app-data directory.
-- Persisted files include:
-  - `operation-history.jsonl`
-  - `undo-actions.json`
-  - `hash-cache.json`
-  - cached scan files under `scan-cache/`
-  - batch records under `applied-batches/`
-  - crash reports under `crash-reports/`
+Tidy App includes cleanup-oriented workflows for identifying likely clutter, such as:
 
-No remote service is required for core functionality.
+- Duplicate files
+- Large stale downloads or installers
+- Temporary or cache-like files
+- Empty folders
+
+Suggestion batches can be reviewed before changes are applied.
+
+## Privacy First
+
+Tidy App is local-first by design.
+
+Scanning, preview generation, duplicate analysis, file operations, caching, undo history, and crash recovery all run on the machine where the app is installed.
+
+No account, cloud backend, subscription, or remote service is required for core functionality.
 
 ## Supported Workflows
 
-- Clean a folder by scanning recursively and reviewing stale large files.
-- Find screenshots or memes using image analysis.
-- Find duplicate media or files.
-- Triage archives, Office files, and PDFs without constantly switching apps.
-- TODO Batch-apply conservative cleanup suggestions after validating them in dry-run mode.
+Tidy App is useful when you want to:
+
+- Clean a messy Downloads folder
+- Find duplicate files and media
+- Review large folders quickly
+- Organize screenshots, memes, documents, archives, and videos
+- Preview PDFs, Office files, archives, and media from one interface
+- Free up storage without blindly deleting files
+- Keep cleanup actions reversible where possible
 
 ## Getting Started
 
@@ -144,11 +125,9 @@ No remote service is required for core functionality.
 - Rust stable toolchain
 - Xcode Command Line Tools
 
-Install Xcode CLI tools if needed:
+Install Xcode Command Line Tools if needed:
 
-```bash
-xcode-select --install
-```
+bash xcode-select --install 
 
 #### Windows
 
@@ -157,122 +136,151 @@ xcode-select --install
 - Microsoft C++ Build Tools
 - WebView2 Runtime
 
-### Install Dependencies
+#### Linux
 
-```bash
-npm install
-```
+- Node.js 18+
+- Rust stable toolchain
+- Native libraries required by Tauri
 
-On Linux, install the native libraries Tauri needs before running Rust tests or desktop builds:
+Install common Linux dependencies:
 
-```bash
-sudo apt-get update
-sudo apt-get install -y \
-  pkg-config \
-  libglib2.0-dev \
-  libgtk-3-dev \
-  libwebkit2gtk-4.1-dev \
-  libayatana-appindicator3-dev \
-  librsvg2-dev \
-  patchelf
-```
+bash sudo apt-get update sudo apt-get install -y \   pkg-config \   libglib2.0-dev \   libgtk-3-dev \   libwebkit2gtk-4.1-dev \   libayatana-appindicator3-dev \   librsvg2-dev \   patchelf 
 
-### Run in Development
+## Install Dependencies
 
-Web UI only:
+bash npm install 
 
-```bash
-npm run dev
-```
+## Run in Development
 
-Desktop app with Tauri:
+Run the web UI only:
 
-```bash
-npm run tauri dev
-```
+bash npm run dev 
+
+Run the desktop app with Tauri:
+
+bash npm run tauri dev 
 
 ## Build
 
 Build the frontend bundle:
 
-```bash
-npm run build
-```
+bash npm run build 
 
 Build the desktop application:
 
-```bash
-npm run tauri build
-```
+bash npm run tauri build 
 
-Tauri is configured to run `npm run build` before packaging, so `npm run tauri build` is the normal release build path.
+Tauri is configured to run the frontend build before packaging, so this is the normal release build command:
+
+bash npm run tauri build 
 
 ## Test Suite
 
 Run frontend unit and integration tests:
 
-```bash
-npm run test
-```
+bash npm run test 
 
 Run coverage:
 
-```bash
-npm run test:coverage
-```
+bash npm run test:coverage 
 
 Run Playwright smoke tests:
 
-```bash
-npm run test:e2e
-```
+bash npm run test:e2e 
 
 Run Rust tests:
 
-```bash
-npm run test:rust
-```
+bash npm run test:rust 
 
-Run the full local gate:
+Run the full local test gate:
 
-```bash
-npm run test:all
-```
+bash npm run test:all 
 
-## Contributor Notes
+## Contributing
 
-### Development Expectations
+Contributions are welcome.
 
-- Keep behavior local-first and conservative around destructive actions.
-- Prefer explicit review flows over automation that hides file mutations.
-- Preserve cross-platform behavior where possible; document platform-specific fallbacks when not.
-- Add or update tests for meaningful scan, cleanup, preview, or persistence changes.
+Please keep changes conservative around file operations and destructive actions. Tidy App should always favor clear review flows, predictable behavior, and user control.
 
-### Repo Workflow
+Recommended workflow:
 
-1. Create a branch for the change.
+1. Create a branch for your change.
 2. Make the smallest coherent change that solves the problem.
 3. Run the relevant tests locally.
 4. Open a pull request with:
    - a clear user-facing summary
-   - risk notes for destructive or filesystem-touching changes
+   - risk notes for filesystem or destructive-action changes
    - test coverage notes
 
-### Areas That Deserve Extra Care
+Areas that deserve extra care:
 
-- File deletion, trash, restore, and batch-action behavior
+- File deletion, trash, restore, and batch actions
 - Duplicate detection accuracy and performance
 - Cached scan correctness
 - Platform-specific preview behavior
-- Crash-report and recovery logic
+- Crash recovery and undo persistence
 
-### Testing Guidance
+## Technical Details
 
-- Use `npm run test` for frontend changes.
-- Use `npm run test:e2e` when UI workflows or bridge behavior change.
-- Use `npm run test:rust` when touching Tauri commands, scan logic, previews, or filesystem actions.
-- Use `npm run test:all` before merging larger changes.
+### Stack
+
+- Desktop shell: Tauri 2
+- Frontend: React 18, TypeScript, Vite
+- Backend/native layer: Rust
+- Virtualized rendering: react-window
+- Testing: Vitest, Testing Library, Playwright, Rust unit tests
+
+### Architecture
+
+text src/   app/     App.tsx   components/   lib/  src-tauri/   src/     main.rs  test/ 
+
+Key areas:
+
+- src/app/App.tsx  
+  Main application shell and UI state management.
+
+- src/components/  
+  UI components, modals, settings, and help interfaces.
+
+- src/lib/  
+  Frontend helpers for grouping, tree building, formatting, settings, bridge access, and utility logic.
+
+- src-tauri/src/main.rs  
+  Native commands for scanning, previews, duplicate detection, journaling, undo, suggestions, and file operations.
+
+- test/  
+  Unit, integration, and end-to-end coverage for frontend and desktop bridge behavior.
+
+### Native Backend Responsibilities
+
+The Rust backend handles:
+
+- Filesystem traversal with walkdir
+- Parallel scan and indexing work with rayon
+- MIME and file-type guessing
+- Duplicate detection
+- Optional SHA-256 hash verification
+- Archive inspection
+- Preview generation
+- Platform-specific integrations
+- Journaling and undo persistence
+- Crash recovery
+- Batch action execution
+
+### Local Data and Persistence
+
+Tidy App stores settings and workflow metadata locally.
+
+UI settings and presets are stored in browser/Tauri webview local storage.
+
+App data files are stored in the platform app-data directory.
+
+Persisted files include:
+
+text operation-history.jsonl undo-actions.json hash-cache.json scan-cache/ applied-batches/ crash-reports/ 
+
+No remote service is required for core functionality.
 
 ## License
 
-This project is licensed under the GNU Affero General Public License v3. See [LICENSE](/Users/simone/Documents/software_projects/tidy-app/LICENSE).
+This project is licensed under the GNU Affero General Public License v3. See LICENSE.

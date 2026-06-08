@@ -8,11 +8,13 @@
   <strong>Find clutter. Review files faster. Reclaim storage safely.</strong>
 </p>
 
-Tidy App is a free, open-source desktop file organizer and cleanup tool built with Tauri, React, TypeScript, and Rust.
+Tidy App is a free, open-source desktop file organizer and cleanup tool built with **Tauri**, **React**, **TypeScript**, and **Rust**.
 
 It helps you scan folders, preview files, find duplicates, organize content, and clean up storage with safety controls and undo support.
 
 Everything runs locally on your machine. No cloud service is required, and your files stay on your computer.
+
+AI can help with almost anything now, but only you know which files are actually worth keeping. Tidy App helps you make those decisions faster, safer, and with less friction.
 
 ## Why Tidy App?
 
@@ -24,6 +26,7 @@ Everything runs locally on your machine. No cloud service is required, and your 
 - 🛡️ Trash, delete, undo, and operation history
 - 🔒 Protected-path checks for safer cleanup
 - 💻 Local-first design with no subscription or remote service
+- 🗑️ Find screenshots and memes for quick cleanup
 
 ## Features
 

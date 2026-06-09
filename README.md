@@ -1,22 +1,22 @@
-# Tidy App
+<div align="center">
 
-<p align="center">
-  <img src="src-tauri/icons/icon.png" alt="Tidy App icon" width="128" height="128">
-</p>
+  <img src="src-tauri/icons/icon.png" alt="Tidy-App icon" width="128"><h3>Tidy-App</h3>
 
-<p align="center">
-  <strong>Find clutter. Review files faster. Reclaim storage safely.</strong>
-</p>
+  <p>
+    <strong>Find clutter. Review files faster. Reclaim storage safely.</strong>
+  </p>
+  <br />
+</div>
 
-Tidy App is a free, open-source desktop file organizer and cleanup tool built with **Tauri**, **React**, **TypeScript**, and **Rust**.
+Tidy-App is a free, open-source desktop file organizer and cleanup tool built with **Tauri**, **React**, **TypeScript**, and **Rust**.
 
 It helps you scan folders, preview files, find duplicates, organize content, and clean up storage with safety controls and undo support.
 
 Everything runs locally on your machine. No cloud service is required, and your files stay on your computer.
 
-AI can help with almost anything now, but only you know which files are actually worth keeping. Tidy App helps you make those decisions faster, safer, and with less friction.
+AI can help with almost anything now, but only you know which files are actually worth keeping. Tidy-App helps you make those decisions faster, safer, and with less friction.
 
-## Why Tidy App?
+## Why Tidy-App?
 
 - ⚡ Fast folder scanning with cached results
 - 👀 Built-in previews for common file types
@@ -77,7 +77,7 @@ Move files where they belong with fewer clicks.
 
 ### Safe Cleanup
 
-Tidy App is designed to make cleanup safer and more reviewable.
+Tidy-App is designed to make cleanup safer and more reviewable.
 
 - Send files to the system trash
 - Permanently delete only when enabled in settings
@@ -89,7 +89,7 @@ Tidy App is designed to make cleanup safer and more reviewable.
 
 ### Cleanup Suggestions
 
-Tidy App includes cleanup-oriented workflows for identifying likely clutter, such as:
+Tidy-App includes cleanup-oriented workflows for identifying likely clutter, such as:
 
 - Duplicate files
 - Large stale downloads or installers
@@ -100,7 +100,7 @@ Suggestion batches can be reviewed before changes are applied.
 
 ## Privacy First
 
-Tidy App is local-first by design.
+Tidy-App is local-first by design.
 
 Scanning, preview generation, duplicate analysis, file operations, caching, undo history, and crash recovery all run on the machine where the app is installed.
 
@@ -108,7 +108,7 @@ No account, cloud backend, subscription, or remote service is required for core 
 
 ## Supported Workflows
 
-Tidy App is useful when you want to:
+Tidy-App is useful when you want to:
 
 - Clean a messy Downloads folder
 - Find duplicate files and media
@@ -237,7 +237,7 @@ npm run test:all
 
 Contributions are welcome.
 
-Please keep changes conservative around file operations and destructive actions. Tidy App should always favor clear review flows, predictable behavior, and user control.
+Please keep changes conservative around file operations and destructive actions. Tidy-App should always favor clear review flows, predictable behavior, and user control.
 
 Recommended workflow:
 
@@ -316,7 +316,7 @@ The Rust backend handles:
 
 ### Local Data and Persistence
 
-Tidy App stores settings and workflow metadata locally.
+Tidy-App stores settings and workflow metadata locally.
 
 UI settings and presets are stored in browser/Tauri webview local storage.
 

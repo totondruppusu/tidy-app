@@ -1,8 +1,11 @@
 [package]
 name = "tidy-app"
-version = "0.1.0"
-description = "Tidy-app media sorter"
-authors = ["you"]
+version = "1.0.0"
+description = "Local-first desktop file organizer and cleanup tool built with Tauri, React, TypeScript, and Rust."
+authors = ["totondruppusu"]
+license = "AGPL-3.0-only"
+repository = "https://github.com/totondruppusu/tidy-app"
+homepage = "https://github.com/totondruppusu/tidy-app"
 edition = "2021"
 
 [build-dependencies]

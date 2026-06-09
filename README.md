@@ -130,7 +130,9 @@ Tidy App is useful when you want to:
 
 Install Xcode Command Line Tools if needed:
 
-bash xcode-select --install 
+```bash
+xcode-select --install
+```
 
 #### Windows
 
@@ -147,57 +149,89 @@ bash xcode-select --install
 
 Install common Linux dependencies:
 
-bash sudo apt-get update sudo apt-get install -y \   pkg-config \   libglib2.0-dev \   libgtk-3-dev \   libwebkit2gtk-4.1-dev \   libayatana-appindicator3-dev \   librsvg2-dev \   patchelf 
+```bash
+sudo apt-get update
+sudo apt-get install -y \
+  pkg-config \
+  libglib2.0-dev \
+  libgtk-3-dev \
+  libwebkit2gtk-4.1-dev \
+  libayatana-appindicator3-dev \
+  librsvg2-dev \
+  patchelf
+```
 
 ## Install Dependencies
 
-bash npm install 
+```bash
+npm install
+```
 
 ## Run in Development
 
 Run the web UI only:
 
-bash npm run dev 
+```bash
+npm run dev
+```
 
 Run the desktop app with Tauri:
 
-bash npm run tauri dev 
+```bash
+npm run tauri dev
+```
 
 ## Build
 
 Build the frontend bundle:
 
-bash npm run build 
+```bash
+npm run build
+```
 
 Build the desktop application:
 
-bash npm run tauri build 
+```bash
+npm run tauri build
+```
 
 Tauri is configured to run the frontend build before packaging, so this is the normal release build command:
 
-bash npm run tauri build 
+```bash
+npm run tauri build
+```
 
 ## Test Suite
 
 Run frontend unit and integration tests:
 
-bash npm run test 
+```bash
+npm run test
+```
 
 Run coverage:
 
-bash npm run test:coverage 
+```bash
+npm run test:coverage
+```
 
 Run Playwright smoke tests:
 
-bash npm run test:e2e 
+```bash
+npm run test:e2e
+```
 
 Run Rust tests:
 
-bash npm run test:rust 
+```bash
+npm run test:rust
+```
 
 Run the full local test gate:
 
-bash npm run test:all 
+```bash
+npm run test:all
+```
 
 ## Contributing
 
@@ -235,7 +269,17 @@ Areas that deserve extra care:
 
 ### Architecture
 
-text src/   app/     App.tsx   components/   lib/  src-tauri/   src/     main.rs  test/ 
+```text
+src/
+  app/
+    App.tsx
+  components/
+  lib/
+src-tauri/
+  src/
+    main.rs
+test/
+```
 
 Key areas:
 
@@ -280,7 +324,14 @@ App data files are stored in the platform app-data directory.
 
 Persisted files include:
 
-text operation-history.jsonl undo-actions.json hash-cache.json scan-cache/ applied-batches/ crash-reports/ 
+```text
+operation-history.jsonl
+undo-actions.json
+hash-cache.json
+scan-cache/
+applied-batches/
+crash-reports/
+```
 
 No remote service is required for core functionality.
 

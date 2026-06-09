@@ -37,18 +37,6 @@ AI can help with many things, but cleanup still depends on your judgment. Tidy-A
 
 ## What It Does
 
-### At a glance
-
-- ⚡ Fast folder scanning with cached results
-- 👀 Built-in previews for common file types
-- 🔍 Duplicate detection with optional hash verification
-- 🌳 Tree and list views for flexible file review
-- 🚀 One-click organization using saved destinations
-- 🛡️ Trash, delete, undo, and operation history
-- 🔒 Protected-path checks for safer cleanup
-- 💻 Local-first design with no subscription or remote service
-- 🗑️ Find screenshots and memes for quick cleanup
-
 ### Core features
 
 | Area | Highlights |

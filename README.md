@@ -1,22 +1,43 @@
 <div align="center">
 
-  <img src="src-tauri/icons/icon.png" alt="Tidy-App icon" width="128"><h3>Tidy-App</h3>
+<img src="src-tauri/icons/icon.png" alt="Tidy-App icon" width="120" />
 
-  <p>
-    <strong>Find clutter. Review files faster. Reclaim storage safely.</strong>
-  </p>
-  <br />
+# Tidy-App
+
+**Find clutter. Review files faster. Reclaim storage safely.**
+
+
+[![GitHub Stars](https://img.shields.io/github/stars/totondruppusu/tidy-app?style=flat)](https://github.com/totondruppusu/tidy-app/stargazers)
+[![GitHub Forks](https://img.shields.io/github/forks/totondruppusu/tidy-app?style=flat)](https://github.com/totondruppusu/tidy-app/network/members)
+[![Build Status](https://img.shields.io/github/actions/workflow/status/totondruppusu/tidy-app/ci.yml?label=build)](https://github.com/totondruppusu/tidy-app/actions/workflows/ci.yml)
+[![Donate](https://img.shields.io/badge/donate-Ko--fi-ff5f5f.svg)](https://ko-fi.com/totondruppusu)
+
 </div>
 
-Tidy-App is a free, open-source, cross-platform desktop file organizer and cleanup tool built with **Tauri**, **React**, **TypeScript**, and **Rust**.
+Tidy-App is a free, open-source, cross-platform desktop file organizer and cleanup tool.
 
 It helps you scan folders, preview files, find duplicates, organize content, and clean up storage with safety controls and undo support.
 
-Everything runs locally on your machine. No cloud service is required, and your files stay on your computer.
+ Everything runs locally on your machine. No cloud service is required, your files stay on your computer.
 
-AI can help with almost anything now, but only you know which files are actually worth keeping. Tidy-App helps you make those decisions faster, safer, and with less friction.
+## Contents
 
-## Why Tidy-App?
+- [Why Tidy-App](#why-tidy-app)
+- [What It Does](#what-it-does)
+- [Supported Workflows](#supported-workflows)
+- [Getting Started](#getting-started)
+- [Development](#development)
+- [Testing](#testing)
+- [Tech Stack](#tech-stack)
+- [License](#license)
+
+## Why Tidy-App
+
+AI can help with many things, but cleanup still depends on your judgment. Tidy-App is built for the part that matters most: helping you inspect files quickly and make safer keep-or-delete decisions.
+
+## What It Does
+
+### At a glance
 
 - ⚡ Fast folder scanning with cached results
 - 👀 Built-in previews for common file types
@@ -28,11 +49,22 @@ AI can help with almost anything now, but only you know which files are actually
 - 💻 Local-first design with no subscription or remote service
 - 🗑️ Find screenshots and memes for quick cleanup
 
-## Features
+### Core features
+
+| Area | Highlights |
+| --- | --- |
+| 💡 Smart scanning | Screenshots and memes, media, large stale files, hidden-file support, cached scans, sorting, grouping, extension filters |
+| 👀 File preview | Images, videos, audio, text, PDFs, archives, Office documents, code |
+| 🔍 Duplicate finder | Grouped matches, optional SHA-256 verification, minimum size thresholds |
+| 🚀 Fast organization | Up to 5 saved destinations, tree/list workflows, local operation history |
+| ⌨️ Keyboard-first speed | Arrow-key navigation, `1-5` quick-move slots, `Enter` reveal, `Space` play/pause, `Ctrl/Cmd + Arrow` video/audio time skip |
+| 🔒 Safe cleanup | System trash, optional permanent delete, protected paths, persisted undo stack |
+| 💡 Smart filter | Screenshots and memes, large stale files, temporary clutter, empty folders |
+
+<details>
+<summary><strong>Feature details</strong></summary>
 
 ### Smart Scanning
-
-Quickly inspect folders and understand what is taking up space.
 
 - Scan only the current folder or include subfolders
 - Include hidden files and directories when needed
@@ -42,10 +74,6 @@ Quickly inspect folders and understand what is taking up space.
 - Filter by remembered or common extensions
 
 ### File Preview
-
-Review files without constantly switching apps.
-
-Supported previews include:
 
 - Images
 - Videos
@@ -59,8 +87,6 @@ Additional preview tools include image zoom, pan controls, media shortcuts, file
 
 ### Duplicate Finder
 
-Find wasted storage caused by copied or repeated files.
-
 - Group matching duplicate files
 - Use optional SHA-256 hash verification for stronger accuracy
 - Configure minimum file-size thresholds
@@ -68,16 +94,22 @@ Find wasted storage caused by copied or repeated files.
 
 ### Fast Organization
 
-Move files where they belong with fewer clicks.
-
 - Save up to 5 destination slots
 - Move files into saved destinations
 - Use tree or list workflows depending on the cleanup task
 - Track actions in local operation history
 
-### Safe Cleanup
+### Keyboard-First Speed
 
-Tidy-App is designed to make cleanup safer and more reviewable.
+- Move through files with `Arrow Left` and `Arrow Right`
+- Trash the current file with `Arrow Up`
+- Undo the last action with `Arrow Down`
+- Send files to destination slots with `1-5`
+- Reveal the current file in the system file manager with `Enter`
+- Play or pause video with `Space`
+- Skip forward or backward 10 seconds in audio or video with `Ctrl/Cmd + Arrow Left/Right`
+
+### Safe Cleanup
 
 - Send files to the system trash
 - Permanently delete only when enabled in settings
@@ -87,24 +119,7 @@ Tidy-App is designed to make cleanup safer and more reviewable.
 - Block destructive actions in protected paths by default
 - Store operation history locally for auditability
 
-### Cleanup Suggestions
-
-Tidy-App includes cleanup-oriented workflows for identifying likely clutter, such as:
-
-- Duplicate files
-- Large stale downloads or installers
-- Temporary or cache-like files
-- Empty folders
-
-Suggestion batches can be reviewed before changes are applied.
-
-## Privacy First
-
-Tidy-App is local-first by design.
-
-Scanning, preview generation, duplicate analysis, file operations, caching, undo history, and crash recovery all run on the machine where the app is installed.
-
-No account, cloud backend, subscription, or remote service is required for core functionality.
+</details>
 
 ## Supported Workflows
 
@@ -124,20 +139,25 @@ Tidy-App is useful when you want to:
 
 #### macOS
 
-- Download the latest release: aarch64 for apple M chips, x64 for Intel chips
-- Install
-- Right-click and open
-- Go to Apple system settings -> Privacy & Security -> scroll down -> open anyway
+1. Download the latest release matching your CPU:
+   - `aarch64` for Apple Silicon
+   - `x64` for Intel
+2. Install the app
+3. Right-click the app and choose `Open`
+4. If macOS blocks the app, go to `System Settings > Privacy & Security` and choose `Open Anyway`
 
 #### Windows
 
-- Install x64
+1. Download the latest `x64` release
+2. Install the app
 
-### Prerequisites for development
+## Development
+
+### Prerequisites
 
 #### macOS
 
-- Node.js 18+
+- Node.js `18+`
 - Rust stable toolchain
 - Xcode Command Line Tools
 
@@ -149,14 +169,14 @@ xcode-select --install
 
 #### Windows
 
-- Node.js 18+
+- Node.js `18+`
 - Rust stable toolchain
 - Microsoft C++ Build Tools
 - WebView2 Runtime
 
 #### Linux
 
-- Node.js 18+
+- Node.js `18+`
 - Rust stable toolchain
 - Native libraries required by Tauri
 
@@ -174,13 +194,13 @@ sudo apt-get install -y \
   patchelf
 ```
 
-## Install Dependencies
+### Install dependencies
 
 ```bash
 npm install
 ```
 
-## Run in Development
+### Run locally
 
 Run the web UI only:
 
@@ -194,7 +214,7 @@ Run the desktop app with Tauri:
 npm run tauri dev
 ```
 
-## Build
+### Build
 
 Build the frontend bundle:
 
@@ -208,13 +228,10 @@ Build the desktop application:
 npm run tauri build
 ```
 
-Tauri is configured to run the frontend build before packaging, so this is the normal release build command:
+> [!TIP]
+> Tauri is configured to run the frontend build before packaging, so `npm run tauri build` is the normal release build command.
 
-```bash
-npm run tauri build
-```
-
-## Test Suite
+## Testing
 
 Run frontend unit and integration tests:
 
@@ -240,114 +257,25 @@ Run Rust tests:
 npm run test:rust
 ```
 
-Run the full local test gate:
+Run the full test suite:
 
 ```bash
 npm run test:all
 ```
 
-## Contributing
+## Tech Stack
 
-Contributions are welcome.
+| Layer | Tools |
+| --- | --- |
+| Desktop shell | Tauri 2 |
+| Frontend | React 18, TypeScript, Vite |
+| Native/backend | Rust |
+| Testing | Vitest, Testing Library, Playwright |
 
-Please keep changes conservative around file operations and destructive actions. Tidy-App should always favor clear review flows, predictable behavior, and user control.
+## Star History
 
-Recommended workflow:
-
-1. Create a branch for your change.
-2. Make the smallest coherent change that solves the problem.
-3. Run the relevant tests locally.
-4. Open a pull request with:
-   - a clear user-facing summary
-   - risk notes for filesystem or destructive-action changes
-   - test coverage notes
-
-Areas that deserve extra care:
-
-- File deletion, trash, restore, and batch actions
-- Duplicate detection accuracy and performance
-- Cached scan correctness
-- Platform-specific preview behavior
-- Crash recovery and undo persistence
-
-## Technical Details
-
-### Stack
-
-- Desktop shell: Tauri 2
-- Frontend: React 18, TypeScript, Vite
-- Backend/native layer: Rust
-- Virtualized rendering: react-window
-- Testing: Vitest, Testing Library, Playwright, Rust unit tests
-
-### Architecture
-
-```text
-src/
-  app/
-    App.tsx
-  components/
-  lib/
-src-tauri/
-  src/
-    main.rs
-test/
-```
-
-Key areas:
-
-- src/app/App.tsx  
-  Main application shell and UI state management.
-
-- src/components/  
-  UI components, modals, settings, and help interfaces.
-
-- src/lib/  
-  Frontend helpers for grouping, tree building, formatting, settings, bridge access, and utility logic.
-
-- src-tauri/src/main.rs  
-  Native commands for scanning, previews, duplicate detection, journaling, undo, suggestions, and file operations.
-
-- test/  
-  Unit, integration, and end-to-end coverage for frontend and desktop bridge behavior.
-
-### Native Backend Responsibilities
-
-The Rust backend handles:
-
-- Filesystem traversal with walkdir
-- Parallel scan and indexing work with rayon
-- MIME and file-type guessing
-- Duplicate detection
-- Optional SHA-256 hash verification
-- Archive inspection
-- Preview generation
-- Platform-specific integrations
-- Journaling and undo persistence
-- Crash recovery
-- Batch action execution
-
-### Local Data and Persistence
-
-Tidy-App stores settings and workflow metadata locally.
-
-UI settings and presets are stored in browser/Tauri webview local storage.
-
-App data files are stored in the platform app-data directory.
-
-Persisted files include:
-
-```text
-operation-history.jsonl
-undo-actions.json
-hash-cache.json
-scan-cache/
-applied-batches/
-crash-reports/
-```
-
-No remote service is required for core functionality.
+[![Star History Chart](https://api.star-history.com/svg?repos=totondruppusu/tidy-app&type=Date)](https://www.star-history.com/#totondruppusu/tidy-app&Date)
 
 ## License
 
-This project is licensed under the GNU Affero General Public License v3. See LICENSE.
+Released under the [AGPL-3.0-only](LICENSE) license.

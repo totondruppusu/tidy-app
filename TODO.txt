@@ -50,6 +50,7 @@ auto load to last opened file in view
 .selected file always visible in list
 .screenshots and memes identification
 .possibility to load old scans and indexing
+?crop images
 
 
 BUG

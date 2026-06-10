@@ -7,7 +7,6 @@ import {
   type SetStateAction,
 } from "react";
 import type {
-  ArchivePreview,
   ActivitySnapshot,
   ActionBatchResult,
   CachedScan,
@@ -20,7 +19,6 @@ import type {
   FolderTrashItem,
   GroupMode,
   MoveResult,
-  OfficeFallbackPreview,
   SuggestionPreset,
   SuggestionActionFilter,
   SuggestionSortMode,
@@ -28,7 +26,6 @@ import type {
   SuggestionSet,
   SuggestionsMode,
   SafetyLevel,
-  PreviewCapabilities,
   ScanBatch,
   ScanProgress,
   ScanResult,
@@ -51,10 +48,6 @@ import {
   HEARTBEAT_INTERVAL_MS,
   LARGE_PREVIEW_SIZE_BYTES,
   MAX_UNDO_STACK,
-  OFFICE_PREVIEW_EXTENSIONS,
-  OFFICE_PREVIEW_DEBOUNCE_MS,
-  PREVIEW_DELAY_MS,
-  ARCHIVE_PREVIEW_DEBOUNCE_MS,
   SETTINGS_KEY,
   TREE_INDENT_PX,
 } from "../constants/appConstants";
@@ -76,14 +69,13 @@ import {
   formatPathLabel,
   formatTimestamp,
 } from "../lib/format";
-import { getExtension } from "../lib/files";
+import { dedupeFileEntries, getExtension } from "../lib/files";
 import { getGroupIdForFile, groupFilesByMode } from "../lib/grouping";
 import {
   buildFileTree,
   getFolderCollapseKey,
   sortTreeNodesByIndex,
 } from "../lib/tree";
-import { clampNumber } from "../lib/number";
 import {
   extractFolder,
   formatRelativeFolder,
@@ -98,7 +90,9 @@ import {
   listenEvent,
   openDialog,
 } from "../lib/desktopBridge";
+import { usePreviewController } from "../hooks/usePreviewController";
 import { getInitialTheme, getStoredSettings } from "../lib/settings";
+import { revealInFileManager } from "../services/fileManagerService";
 import { HelpModal } from "../components/HelpModal";
 import { SettingsModal } from "../components/SettingsModal";
 
@@ -165,7 +159,6 @@ export default function App() {
   const [storedSettings] = useState(() => getStoredSettings());
   const [files, setFiles] = useState<FileEntry[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
-  const [previewIndex, setPreviewIndex] = useState(0);
   const [, setStatus] = useState("Select a folder to begin.");
   const [filterMode, setFilterMode] = useState<FilterMode>(
     storedSettings.filterMode ?? "all",
@@ -324,18 +317,6 @@ export default function App() {
   const [collapsedFolders, setCollapsedFolders] = useState<
     Record<string, boolean>
   >({});
-  const [previewZoom, setPreviewZoom] = useState(1);
-  const [previewPan, setPreviewPan] = useState({ x: 0, y: 0 });
-  const [isPreviewPanning, setIsPreviewPanning] = useState(false);
-  const [allowLargePreview, setAllowLargePreview] = useState(false);
-  const [officePreviewId, setOfficePreviewId] = useState<string | null>(null);
-  const [officeFallbackPreview, setOfficeFallbackPreview] =
-    useState<OfficeFallbackPreview | null>(null);
-  const [officePreviewStatus, setOfficePreviewStatus] = useState<
-    "idle" | "loading" | "error"
-  >("idle");
-  const [previewCapabilities, setPreviewCapabilities] =
-    useState<PreviewCapabilities | null>(null);
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const [suggestionsStatus, setSuggestionsStatus] = useState<
     "idle" | "loading" | "error"
@@ -389,19 +370,6 @@ export default function App() {
     useState<string | null>(null);
   const [suggestionExplainabilityEnabled] = useState(false);
   const [suggestionBatchToolbarEnabled] = useState(false);
-  const [archiveEntries, setArchiveEntries] = useState<string[]>([]);
-  const [archiveTruncated, setArchiveTruncated] = useState(false);
-  const [archiveStatus, setArchiveStatus] = useState<
-    "idle" | "loading" | "error"
-  >("idle");
-  const [archiveError, setArchiveError] = useState<string | null>(null);
-  const previewZoomTargetRef = useRef(1);
-  const previewZoomRafRef = useRef<number | null>(null);
-  const previewPanStartRef = useRef<{ x: number; y: number } | null>(null);
-  const previewPanPointerRef = useRef<{ x: number; y: number } | null>(null);
-  const previewDelayTimeoutRef = useRef<number | null>(null);
-  const officePreviewTimeoutRef = useRef<number | null>(null);
-  const archivePreviewTimeoutRef = useRef<number | null>(null);
   const activeScanId = useRef<string | null>(null);
   const scanBatchBufferRef = useRef<FileEntry[]>([]);
   const scanBatchRafRef = useRef<number | null>(null);
@@ -436,7 +404,7 @@ export default function App() {
       return;
     }
     scanBatchBufferRef.current = [];
-    setFiles((prev) => [...prev, ...pending]);
+    setFiles((prev) => dedupeFileEntries([...prev, ...pending]));
   }, []);
   const queueScanBatchFiles = useCallback(
     (batchFiles: FileEntry[]) => {
@@ -618,14 +586,6 @@ export default function App() {
       return;
     }
     let isMounted = true;
-    invokeCommand<PreviewCapabilities>("get_preview_capabilities")
-      .then((capabilities) => {
-        if (!isMounted) {
-          return;
-        }
-        setPreviewCapabilities(capabilities);
-      })
-      .catch(() => {});
     invokeCommand<UndoAction[]>("get_recent_undo_actions")
       .then((actions) => {
         if (!isMounted) {
@@ -1372,45 +1332,44 @@ export default function App() {
     });
     return map;
   }, [sortedFiles]);
+  const {
+    previewIndex,
+    previewFile,
+    previewExtension,
+    previewZoom,
+    previewPan,
+    isPreviewPanning,
+    previewCapabilities,
+    officePreviewId,
+    officeFallbackPreview,
+    officePreviewStatus,
+    archiveEntries,
+    archiveTruncated,
+    archiveStatus,
+    archiveError,
+    isPreviewSuppressed,
+    isMediaPreview,
+    isAudioPreview,
+    isOfficePreview,
+    isDocumentPreview,
+    isArchivePreview,
+    isFallbackPreview,
+    isZoomablePreview,
+    enableLargePreview,
+    handlePreviewWheel,
+    handleZoomOut,
+    handleZoomIn,
+    handleZoomReset,
+    handlePreviewPanStart,
+    handlePreviewPanMove,
+    handlePreviewPanEnd,
+  } = usePreviewController({
+    sortedFiles,
+    currentIndex,
+    skipLargePreviews,
+  });
   const currentFile = sortedFiles[currentIndex];
-  const previewFile = sortedFiles[previewIndex];
-  const previewExtension = previewFile
-    ? getExtension(previewFile.name)
-    : "none";
-  const isLargePreview =
-    Boolean(previewFile) && previewFile.sizeBytes >= LARGE_PREVIEW_SIZE_BYTES;
-  const isPreviewSuppressed =
-    Boolean(previewFile) &&
-    skipLargePreviews &&
-    isLargePreview &&
-    !allowLargePreview;
-  const canRenderPreview = !isPreviewSuppressed;
-  const isMediaPreview =
-    canRenderPreview &&
-    (previewFile?.kind === "image" || previewFile?.kind === "video");
-  const isAudioPreview = canRenderPreview && previewFile?.kind === "audio";
-  const isTextPreview = canRenderPreview && previewFile?.kind === "text";
-  const isPdfPreview =
-    canRenderPreview &&
-    previewFile?.kind === "docs" &&
-    previewExtension === "pdf";
-  const isOfficePreview =
-    canRenderPreview &&
-    previewFile?.kind === "docs" &&
-    OFFICE_PREVIEW_EXTENSIONS.includes(previewExtension);
-  const isDocumentPreview = isTextPreview || isPdfPreview;
-  const isArchivePreview =
-    canRenderPreview && previewFile?.kind === "compressed";
-  const isFallbackPreview =
-    Boolean(previewFile) &&
-    canRenderPreview &&
-    !isMediaPreview &&
-    !isAudioPreview &&
-    !isDocumentPreview &&
-    !isOfficePreview &&
-    !isArchivePreview;
   const hasFiles = sortedFiles.length > 0;
-  const isZoomablePreview = isMediaPreview;
 
   useEffect(() => {
     if (sortedFiles.length === 0) {
@@ -1445,300 +1404,6 @@ export default function App() {
     }
     currentFileIdRef.current = sortedFiles[boundedIndex]?.id ?? null;
   }, [sortedFiles, sortedIndexById, currentIndex]);
-
-  useEffect(() => {
-    if (officePreviewTimeoutRef.current) {
-      window.clearTimeout(officePreviewTimeoutRef.current);
-      officePreviewTimeoutRef.current = null;
-    }
-    if (!previewFile || !isOfficePreview) {
-      setOfficePreviewId(null);
-      setOfficeFallbackPreview(null);
-      setOfficePreviewStatus("idle");
-      return;
-    }
-    if (!isDesktopRuntime()) {
-      setOfficePreviewId(null);
-      setOfficeFallbackPreview(null);
-      setOfficePreviewStatus("error");
-      return;
-    }
-    let isActive = true;
-    setOfficePreviewId(null);
-    setOfficeFallbackPreview(null);
-    setOfficePreviewStatus("idle");
-    officePreviewTimeoutRef.current = window.setTimeout(() => {
-      if (!isActive) {
-        return;
-      }
-      setOfficePreviewStatus("loading");
-      invokeCommand<string>("generate_preview", { id: previewFile.id })
-        .then((previewId) => {
-          if (!isActive) {
-            return;
-          }
-          setOfficePreviewId(previewId);
-          setOfficePreviewStatus("idle");
-        })
-        .catch((error) => {
-          if (!isActive) {
-            return;
-          }
-          console.warn("Failed to generate office preview.", error);
-          invokeCommand<OfficeFallbackPreview>(
-            "extract_office_fallback_preview",
-            { id: previewFile.id },
-          )
-            .then((fallback) => {
-              if (!isActive) {
-                return;
-              }
-              setOfficePreviewId(null);
-              setOfficeFallbackPreview(fallback);
-              setOfficePreviewStatus("idle");
-            })
-            .catch(() => {
-              if (!isActive) {
-                return;
-              }
-              setOfficePreviewId(null);
-              setOfficeFallbackPreview(null);
-              setOfficePreviewStatus("error");
-            });
-        });
-    }, OFFICE_PREVIEW_DEBOUNCE_MS);
-    return () => {
-      isActive = false;
-      if (officePreviewTimeoutRef.current) {
-        window.clearTimeout(officePreviewTimeoutRef.current);
-        officePreviewTimeoutRef.current = null;
-      }
-    };
-  }, [previewFile?.id, isOfficePreview]);
-
-  useEffect(() => {
-    if (archivePreviewTimeoutRef.current) {
-      window.clearTimeout(archivePreviewTimeoutRef.current);
-      archivePreviewTimeoutRef.current = null;
-    }
-    if (!previewFile || !isArchivePreview) {
-      setArchiveEntries([]);
-      setArchiveTruncated(false);
-      setArchiveStatus("idle");
-      setArchiveError(null);
-      return;
-    }
-    if (!isDesktopRuntime()) {
-      setArchiveEntries([]);
-      setArchiveTruncated(false);
-      setArchiveStatus("error");
-      setArchiveError("Archive preview requires the desktop app.");
-      return;
-    }
-    let isActive = true;
-    setArchiveEntries([]);
-    setArchiveTruncated(false);
-    setArchiveStatus("idle");
-    setArchiveError(null);
-    archivePreviewTimeoutRef.current = window.setTimeout(() => {
-      if (!isActive) {
-        return;
-      }
-      setArchiveStatus("loading");
-      invokeCommand<ArchivePreview>("list_archive_entries", {
-        id: previewFile.id,
-      })
-        .then((result) => {
-          if (!isActive) {
-            return;
-          }
-          setArchiveEntries(result.entries);
-          setArchiveTruncated(result.truncated);
-          setArchiveStatus("idle");
-        })
-        .catch((error) => {
-          if (!isActive) {
-            return;
-          }
-          console.warn("Failed to load archive preview.", error);
-          setArchiveEntries([]);
-          setArchiveTruncated(false);
-          setArchiveStatus("error");
-          setArchiveError("Preview unavailable for this archive.");
-        });
-    }, ARCHIVE_PREVIEW_DEBOUNCE_MS);
-    return () => {
-      isActive = false;
-      if (archivePreviewTimeoutRef.current) {
-        window.clearTimeout(archivePreviewTimeoutRef.current);
-        archivePreviewTimeoutRef.current = null;
-      }
-    };
-  }, [previewFile?.id, isArchivePreview]);
-
-  useEffect(() => {
-    setPreviewZoom(1);
-    previewZoomTargetRef.current = 1;
-    setPreviewPan({ x: 0, y: 0 });
-    if (previewZoomRafRef.current !== null) {
-      cancelAnimationFrame(previewZoomRafRef.current);
-      previewZoomRafRef.current = null;
-    }
-  }, [previewFile?.id]);
-
-  useEffect(() => {
-    setAllowLargePreview(false);
-  }, [previewFile?.id, skipLargePreviews]);
-
-  const handlePreviewWheel = useCallback(
-    (event: React.WheelEvent<HTMLDivElement>) => {
-      if (!event.ctrlKey) {
-        return;
-      }
-      if (!isMediaPreview) {
-        return;
-      }
-      event.preventDefault();
-      if (Math.abs(event.deltaY) < 0.6) {
-        return;
-      }
-      const zoomFactor = Math.exp(-event.deltaY * 0.0045);
-      previewZoomTargetRef.current = clampNumber(
-        previewZoomTargetRef.current * zoomFactor,
-        0.5,
-        4,
-      );
-      if (previewZoomRafRef.current !== null) {
-        return;
-      }
-      const tick = () => {
-        setPreviewZoom((value) => {
-          const target = previewZoomTargetRef.current;
-          const diff = target - value;
-          if (Math.abs(diff) < 0.001) {
-            previewZoomRafRef.current = null;
-            return target;
-          }
-          previewZoomRafRef.current = requestAnimationFrame(tick);
-          return value + diff * 0.18;
-        });
-      };
-      previewZoomRafRef.current = requestAnimationFrame(tick);
-    },
-    [isMediaPreview],
-  );
-
-  const setPreviewZoomValue = useCallback((value: number) => {
-    const clamped = clampNumber(value, 0.5, 4);
-    previewZoomTargetRef.current = clamped;
-    if (previewZoomRafRef.current !== null) {
-      cancelAnimationFrame(previewZoomRafRef.current);
-      previewZoomRafRef.current = null;
-    }
-    setPreviewZoom(clamped);
-  }, []);
-
-  const handleZoomOut = useCallback(() => {
-    if (!isZoomablePreview) {
-      return;
-    }
-    setPreviewZoomValue(previewZoomTargetRef.current / 1.15);
-  }, [isZoomablePreview, setPreviewZoomValue]);
-
-  const handleZoomIn = useCallback(() => {
-    if (!isZoomablePreview) {
-      return;
-    }
-    setPreviewZoomValue(previewZoomTargetRef.current * 1.15);
-  }, [isZoomablePreview, setPreviewZoomValue]);
-
-  const handleZoomReset = useCallback(() => {
-    if (!isZoomablePreview) {
-      return;
-    }
-    setPreviewZoomValue(1);
-    setPreviewPan({ x: 0, y: 0 });
-  }, [isZoomablePreview, setPreviewZoomValue]);
-
-  const handlePreviewPanStart = useCallback(
-    (event: React.PointerEvent<HTMLDivElement>) => {
-      if (previewFile?.kind !== "image") {
-        return;
-      }
-      if (event.button !== 0) {
-        return;
-      }
-      event.preventDefault();
-      event.stopPropagation();
-      event.currentTarget.setPointerCapture(event.pointerId);
-      previewPanStartRef.current = { x: previewPan.x, y: previewPan.y };
-      previewPanPointerRef.current = { x: event.clientX, y: event.clientY };
-      setIsPreviewPanning(true);
-    },
-    [previewFile?.kind, previewPan.x, previewPan.y],
-  );
-
-  const handlePreviewPanMove = useCallback(
-    (event: React.PointerEvent<HTMLDivElement>) => {
-      if (!previewPanStartRef.current || !previewPanPointerRef.current) {
-        return;
-      }
-      const startPan = previewPanStartRef.current;
-      const startPointer = previewPanPointerRef.current;
-      setPreviewPan({
-        x: startPan.x + (event.clientX - startPointer.x),
-        y: startPan.y + (event.clientY - startPointer.y),
-      });
-    },
-    [],
-  );
-
-  const handlePreviewPanEnd = useCallback(
-    (event: React.PointerEvent<HTMLDivElement>) => {
-      if (!previewPanStartRef.current) {
-        return;
-      }
-      previewPanStartRef.current = null;
-      previewPanPointerRef.current = null;
-      event.currentTarget.releasePointerCapture(event.pointerId);
-      setIsPreviewPanning(false);
-    },
-    [],
-  );
-
-  useEffect(() => {
-    return () => {
-      if (previewZoomRafRef.current !== null) {
-        cancelAnimationFrame(previewZoomRafRef.current);
-      }
-    };
-  }, []);
-
-  useEffect(() => {
-    if (sortedFiles.length === 0) {
-      setPreviewIndex(0);
-      return;
-    }
-    if (previewIndex >= sortedFiles.length) {
-      setPreviewIndex(sortedFiles.length - 1);
-    }
-  }, [previewIndex, sortedFiles.length]);
-
-  useEffect(() => {
-    if (previewDelayTimeoutRef.current !== null) {
-      window.clearTimeout(previewDelayTimeoutRef.current);
-    }
-    previewDelayTimeoutRef.current = window.setTimeout(() => {
-      setPreviewIndex(currentIndex);
-      previewDelayTimeoutRef.current = null;
-    }, PREVIEW_DELAY_MS);
-    return () => {
-      if (previewDelayTimeoutRef.current !== null) {
-        window.clearTimeout(previewDelayTimeoutRef.current);
-        previewDelayTimeoutRef.current = null;
-      }
-    };
-  }, [currentIndex]);
 
   const buildScanCacheRequest = useCallback(
     (folderPath: string): ScanCacheRequest => ({
@@ -1782,7 +1447,8 @@ export default function App() {
     (folderPath: string, result: ScanResult) => {
       cancelPendingScanBatchFlush();
       resetSelectionToFirstRef.current = true;
-      setFiles(result.files);
+      const uniqueFiles = dedupeFileEntries(result.files);
+      setFiles(uniqueFiles);
       setCurrentFolder(folderPath);
       currentFileIdRef.current = null;
       setCurrentIndex(0);
@@ -1799,7 +1465,7 @@ export default function App() {
       setSuggestionDryRunError(null);
       setCollapsedGroups({});
       setCollapsedFolders({});
-      updateStatus(`Loaded ${result.files.length} items from ${folderPath}.`);
+      updateStatus(`Loaded ${uniqueFiles.length} items from ${folderPath}.`);
     },
     [cancelPendingScanBatchFlush, updateStatus],
   );
@@ -2722,7 +2388,7 @@ export default function App() {
   const openFileInFinder = useCallback(
     async (file: FileEntry) => {
       try {
-        await invokeCommand("reveal_in_file_manager", {
+        await revealInFileManager({
           path: file.path,
           reveal: true,
         });
@@ -2736,7 +2402,7 @@ export default function App() {
   const openFileInSystem = useCallback(
     async (file: FileEntry) => {
       try {
-        await invokeCommand("reveal_in_file_manager", {
+        await revealInFileManager({
           path: file.path,
           reveal: false,
         });
@@ -3014,91 +2680,10 @@ export default function App() {
     setRenderCount(sortedFiles.length);
   }, [sortedFiles.length]);
 
-  const [visibleRange, setVisibleRange] = useState({ start: 0, end: 100 });
-  const ITEM_HEIGHT = listDensity === "compact" ? 34 : 40;
-  const BUFFER_SIZE = 20; // items to render above/below viewport
-
-  useEffect(() => {
-    if (viewMode !== "list" || effectiveGroupMode !== "none") {
-      setVisibleRange({ start: 0, end: 100 });
-      return;
-    }
-
-    const scrollNode = fileListScrollRef.current;
-    if (!scrollNode) {
-      return;
-    }
-
-    const updateVisibleRange = () => {
-      const scrollTop = scrollNode.scrollTop;
-      const containerHeight = scrollNode.clientHeight;
-
-      const startIndex = Math.max(
-        0,
-        Math.floor(scrollTop / ITEM_HEIGHT) - BUFFER_SIZE,
-      );
-      const endIndex = Math.min(
-        sortedFiles.length,
-        Math.ceil((scrollTop + containerHeight) / ITEM_HEIGHT) + BUFFER_SIZE,
-      );
-
-      setVisibleRange({ start: startIndex, end: endIndex });
-    };
-
-    updateVisibleRange();
-    scrollNode.addEventListener("scroll", updateVisibleRange, {
-      passive: true,
-    });
-    const resizeObserver = new ResizeObserver(updateVisibleRange);
-    resizeObserver.observe(scrollNode);
-    return () => {
-      scrollNode.removeEventListener("scroll", updateVisibleRange);
-      resizeObserver.disconnect();
-    };
-  }, [sortedFiles.length, ITEM_HEIGHT, viewMode, effectiveGroupMode]);
-
-  // When current file changes, scroll it into view (for virtual scrolling)
-  useEffect(() => {
-    if (!currentFile || viewMode !== "list" || effectiveGroupMode !== "none") {
-      return;
-    }
-    const scrollNode = fileListScrollRef.current;
-    if (!scrollNode) return;
-
-    const itemTop = currentIndex * ITEM_HEIGHT;
-    const itemBottom = itemTop + ITEM_HEIGHT;
-    const viewportTop = scrollNode.scrollTop;
-    const viewportBottom = viewportTop + scrollNode.clientHeight;
-    const topPadding = ITEM_HEIGHT * 2;
-    const bottomPadding = ITEM_HEIGHT * 2;
-
-    if (itemTop < viewportTop + topPadding) {
-      scrollNode.scrollTop = Math.max(0, itemTop - topPadding);
-      return;
-    }
-
-    if (itemBottom > viewportBottom - bottomPadding) {
-      scrollNode.scrollTop = Math.max(
-        0,
-        itemBottom - scrollNode.clientHeight + bottomPadding,
-      );
-    }
-  }, [
-    currentFile?.id,
-    currentIndex,
-    viewMode,
-    effectiveGroupMode,
-    ITEM_HEIGHT,
-  ]);
-
   const visibleFiles = useMemo(() => {
-    // For simple list view without grouping, only render visible items + buffer
-    if (viewMode === "list" && effectiveGroupMode === "none") {
-      return sortedFiles.slice(visibleRange.start, visibleRange.end);
-    }
-    // For grouped/tree views, render all (with content-visibility for performance)
+    // Render all current rows and rely on native browser scrolling.
     return sortedFiles.slice(0, renderCount);
-  }, [sortedFiles, renderCount, viewMode, effectiveGroupMode, visibleRange]);
+  }, [sortedFiles, renderCount]);
 
   const folderKeys = useMemo(() => {
     const keys = new Set<string>();
@@ -3196,42 +2781,9 @@ export default function App() {
 
     if (viewMode === "list") {
       if (effectiveGroupMode === "none") {
-        // Virtual scrolling: add spacers above and below
-        const items: JSX.Element[] = [];
-
-        // Spacer above
-        if (visibleRange.start > 0) {
-          items.push(
-            <div
-              key="spacer-top"
-              style={{
-                height: visibleRange.start * ITEM_HEIGHT,
-                flex: "0 0 auto",
-              }}
-              aria-hidden="true"
-            />,
-          );
-        }
-
-        // Visible items with correct indices
-        visibleFiles.forEach((file, i) => {
-          items.push(renderButton(file, visibleRange.start + i));
-        });
-
-        // Spacer below
-        const spacerBottom =
-          (sortedFiles.length - visibleRange.end) * ITEM_HEIGHT;
-        if (spacerBottom > 0) {
-          items.push(
-            <div
-              key="spacer-bottom"
-              style={{ height: spacerBottom, flex: "0 0 auto" }}
-              aria-hidden="true"
-            />,
-          );
-        }
-
-        return { items };
+        return {
+          items: visibleFiles.map((file, index) => renderButton(file, index)),
+        };
       }
 
       const { groups, keys } = groupFilesByMode(
@@ -3612,19 +3164,16 @@ export default function App() {
     if (!currentFile) {
       return;
     }
-    // For grouped/tree views, use native scrollIntoView
-    if (viewMode !== "list" || effectiveGroupMode !== "none") {
-      const node = listItemRefs.current.get(currentFile.id);
-      if (!node) {
-        return;
-      }
-      requestAnimationFrame(() => {
-        node.scrollIntoView({
-          block: "nearest",
-          behavior: "auto",
-        });
-      });
+    const node = listItemRefs.current.get(currentFile.id);
+    if (!node) {
+      return;
     }
+    requestAnimationFrame(() => {
+      node.scrollIntoView({
+        block: "nearest",
+        behavior: "auto",
+      });
+    });
   }, [
     currentFile,
     renderCount,
@@ -4139,7 +3688,7 @@ export default function App() {
                           <button
                             type="button"
                             className="preview-action-button"
-                            onClick={() => setAllowLargePreview(true)}
+                            onClick={enableLargePreview}
                           >
                             Load preview
                           </button>

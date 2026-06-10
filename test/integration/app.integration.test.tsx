@@ -160,6 +160,67 @@ describe("App integration", () => {
     expect(fileNames).toEqual(["final.jpg", "streamed.txt"]);
   });
 
+  it("dedupes repeated files from scan batches and final scan results", async () => {
+    const controller = createMockBridge();
+    installBaseHandlers(controller);
+    window.__TIDY_DESKTOP_BRIDGE__ = controller.bridge;
+
+    const duplicated = createFile({
+      id: "f1",
+      name: "same.txt",
+      kind: "text",
+      path: "/mock/same.txt",
+    });
+    const later = createFile({
+      id: "f2",
+      name: "later.jpg",
+      kind: "image",
+      path: "/mock/later.jpg",
+    });
+    let scanId = "";
+    let resolveScan: ((result: ScanResult) => void) | null = null;
+
+    controller.bridge.open = async () => "/mock";
+    controller.onInvoke("scan_folder", (args) => {
+      scanId = String(args?.scanId ?? "");
+      return new Promise<ScanResult>((resolve) => {
+        resolveScan = resolve;
+      });
+    });
+
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+
+    await clickFolderPicker(user);
+    await user.click(screen.getByRole("button", { name: "Scan folder" }));
+    await waitFor(() => expect(resolveScan).not.toBeNull());
+
+    await act(async () => {
+      controller.emit("scan_batch", {
+        scanId,
+        files: [duplicated, duplicated],
+      });
+    });
+    await waitFor(() =>
+      expect(container.querySelectorAll(".file-item .filename")).toHaveLength(1),
+    );
+
+    await act(async () => {
+      resolveScan?.({
+        files: [duplicated, duplicated, later],
+        total: 3,
+      });
+    });
+    await waitFor(() =>
+      expect(container.querySelector(".file-list")?.textContent).toContain("later.jpg"),
+    );
+
+    const fileNames = Array.from(
+      container.querySelectorAll(".file-item .filename"),
+    ).map((node) => node.textContent?.trim());
+    expect(fileNames).toEqual(["later.jpg", "same.txt"]);
+  });
+
   it("selects the next visible file after repeated trash operations", async () => {
     const controller = createMockBridge();
     installBaseHandlers(controller);

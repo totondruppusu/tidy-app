@@ -479,3 +479,5 @@ export const usePreviewController = ({
     ],
   );
 };
+
+export type PreviewController = ReturnType<typeof usePreviewController>;

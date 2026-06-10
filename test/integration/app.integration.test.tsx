@@ -221,6 +221,61 @@ describe("App integration", () => {
     expect(fileNames).toEqual(["later.jpg", "same.txt"]);
   });
 
+  it("loads a previous cached scan without running a fresh scan", async () => {
+    const controller = createMockBridge();
+    installBaseHandlers(controller);
+    window.__TIDY_DESKTOP_BRIDGE__ = controller.bridge;
+
+    const cachedFile = createFile({
+      id: "f1",
+      name: "cached.txt",
+      kind: "text",
+      path: "/mock/cached.txt",
+    });
+    let scanFolderCalls = 0;
+    let hydrateArgs: Record<string, unknown> | undefined;
+
+    controller.bridge.open = async () => "/mock";
+    controller.onInvoke("get_cached_scan", () => ({
+      folderPath: "/mock",
+      filterMode: "all",
+      includeSubfolders: false,
+      includeHidden: false,
+      useHashForDuplicates: true,
+      duplicateMinSizeBytes: 0,
+      cachedAtMs: Date.now(),
+      files: [cachedFile],
+      total: 1,
+    }));
+    controller.onInvoke("hydrate_cached_scan", (args) => {
+      hydrateArgs = args;
+      return null;
+    });
+    controller.onInvoke("scan_folder", () => {
+      scanFolderCalls += 1;
+      return { files: [], total: 0 };
+    });
+
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+
+    await clickFolderPicker(user);
+    await user.click(screen.getByRole("button", { name: "Scan folder" }));
+    await user.click(screen.getByRole("button", { name: "Load previous scan" }));
+
+    await waitFor(() =>
+      expect(container.querySelector(".file-list")?.textContent).toContain("cached.txt"),
+    );
+
+    expect(scanFolderCalls).toBe(0);
+    expect(hydrateArgs).toEqual({
+      request: {
+        folderPath: "/mock",
+        files: [cachedFile],
+      },
+    });
+  });
+
   it("selects the next visible file after repeated trash operations", async () => {
     const controller = createMockBridge();
     installBaseHandlers(controller);

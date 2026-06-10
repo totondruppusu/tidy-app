@@ -1225,13 +1225,15 @@ export default function App() {
   const loadCachedScan = useCallback(
     async (cachedScan: CachedScan) => {
       const hydrated = await runScanWorkflow(
-        () =>
-          invokeCommand("hydrate_cached_scan", {
+        async () => {
+          await invokeCommand("hydrate_cached_scan", {
             request: {
               folderPath: cachedScan.folderPath,
               files: cachedScan.files,
             },
-          }),
+          });
+          return true;
+        },
         {
           onError: (message) => {
             updateStatus(`Failed to load cached scan: ${message}`);

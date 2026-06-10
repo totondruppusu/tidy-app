@@ -23,13 +23,12 @@ import {
   getPreviewCapabilities,
   listArchiveEntries,
 } from "../services/previewService";
+import { useAsyncWorkflow } from "./useAsyncWorkflow";
 import type {
   FileEntry,
   OfficeFallbackPreview,
   PreviewCapabilities,
 } from "../types";
-
-type PreviewStatus = "idle" | "loading" | "error";
 
 type UsePreviewControllerOptions = {
   sortedFiles: FileEntry[];
@@ -50,14 +49,25 @@ export const usePreviewController = ({
   const [officePreviewId, setOfficePreviewId] = useState<string | null>(null);
   const [officeFallbackPreview, setOfficeFallbackPreview] =
     useState<OfficeFallbackPreview | null>(null);
-  const [officePreviewStatus, setOfficePreviewStatus] =
-    useState<PreviewStatus>("idle");
   const [previewCapabilities, setPreviewCapabilities] =
     useState<PreviewCapabilities | null>(null);
   const [archiveEntries, setArchiveEntries] = useState<string[]>([]);
   const [archiveTruncated, setArchiveTruncated] = useState(false);
-  const [archiveStatus, setArchiveStatus] = useState<PreviewStatus>("idle");
-  const [archiveError, setArchiveError] = useState<string | null>(null);
+  const {
+    status: officePreviewStatus,
+    reset: resetOfficePreview,
+    start: startOfficePreview,
+    succeed: succeedOfficePreview,
+    fail: failOfficePreview,
+  } = useAsyncWorkflow();
+  const {
+    status: archiveStatus,
+    error: archiveError,
+    reset: resetArchivePreview,
+    start: startArchivePreview,
+    succeed: succeedArchivePreview,
+    fail: failArchivePreview,
+  } = useAsyncWorkflow();
   const previewZoomTargetRef = useRef(1);
   const previewZoomRafRef = useRef<number | null>(null);
   const previewPanStartRef = useRef<{ x: number; y: number } | null>(null);
@@ -127,31 +137,31 @@ export const usePreviewController = ({
     if (!previewFile || !isOfficePreview) {
       setOfficePreviewId(null);
       setOfficeFallbackPreview(null);
-      setOfficePreviewStatus("idle");
+      resetOfficePreview();
       return;
     }
     if (!isDesktopRuntime()) {
       setOfficePreviewId(null);
       setOfficeFallbackPreview(null);
-      setOfficePreviewStatus("error");
+      failOfficePreview("Preview requires the desktop app.");
       return;
     }
     let isActive = true;
     setOfficePreviewId(null);
     setOfficeFallbackPreview(null);
-    setOfficePreviewStatus("idle");
+    resetOfficePreview();
     officePreviewTimeoutRef.current = window.setTimeout(() => {
       if (!isActive) {
         return;
       }
-      setOfficePreviewStatus("loading");
+      startOfficePreview();
       generateOfficePreview(previewFile.id)
         .then((nextPreviewId) => {
           if (!isActive) {
             return;
           }
           setOfficePreviewId(nextPreviewId);
-          setOfficePreviewStatus("idle");
+          succeedOfficePreview();
         })
         .catch((error) => {
           if (!isActive) {
@@ -165,7 +175,7 @@ export const usePreviewController = ({
               }
               setOfficePreviewId(null);
               setOfficeFallbackPreview(fallback);
-              setOfficePreviewStatus("idle");
+              succeedOfficePreview();
             })
             .catch(() => {
               if (!isActive) {
@@ -173,7 +183,7 @@ export const usePreviewController = ({
               }
               setOfficePreviewId(null);
               setOfficeFallbackPreview(null);
-              setOfficePreviewStatus("error");
+              failOfficePreview("Preview unavailable.");
             });
         });
     }, OFFICE_PREVIEW_DEBOUNCE_MS);
@@ -184,7 +194,14 @@ export const usePreviewController = ({
         officePreviewTimeoutRef.current = null;
       }
     };
-  }, [previewFile, isOfficePreview]);
+  }, [
+    failOfficePreview,
+    isOfficePreview,
+    previewFile,
+    resetOfficePreview,
+    startOfficePreview,
+    succeedOfficePreview,
+  ]);
 
   useEffect(() => {
     if (archivePreviewTimeoutRef.current !== null) {
@@ -194,27 +211,24 @@ export const usePreviewController = ({
     if (!previewFile || !isArchivePreview) {
       setArchiveEntries([]);
       setArchiveTruncated(false);
-      setArchiveStatus("idle");
-      setArchiveError(null);
+      resetArchivePreview();
       return;
     }
     if (!isDesktopRuntime()) {
       setArchiveEntries([]);
       setArchiveTruncated(false);
-      setArchiveStatus("error");
-      setArchiveError("Archive preview requires the desktop app.");
+      failArchivePreview("Archive preview requires the desktop app.");
       return;
     }
     let isActive = true;
     setArchiveEntries([]);
     setArchiveTruncated(false);
-    setArchiveStatus("idle");
-    setArchiveError(null);
+    resetArchivePreview();
     archivePreviewTimeoutRef.current = window.setTimeout(() => {
       if (!isActive) {
         return;
       }
-      setArchiveStatus("loading");
+      startArchivePreview();
       listArchiveEntries(previewFile.id)
         .then((result) => {
           if (!isActive) {
@@ -222,7 +236,7 @@ export const usePreviewController = ({
           }
           setArchiveEntries(result.entries);
           setArchiveTruncated(result.truncated);
-          setArchiveStatus("idle");
+          succeedArchivePreview();
         })
         .catch((error) => {
           if (!isActive) {
@@ -231,8 +245,7 @@ export const usePreviewController = ({
           console.warn("Failed to load archive preview.", error);
           setArchiveEntries([]);
           setArchiveTruncated(false);
-          setArchiveStatus("error");
-          setArchiveError("Preview unavailable for this archive.");
+          failArchivePreview("Preview unavailable for this archive.");
         });
     }, ARCHIVE_PREVIEW_DEBOUNCE_MS);
     return () => {
@@ -242,7 +255,14 @@ export const usePreviewController = ({
         archivePreviewTimeoutRef.current = null;
       }
     };
-  }, [previewFile, isArchivePreview]);
+  }, [
+    failArchivePreview,
+    isArchivePreview,
+    previewFile,
+    resetArchivePreview,
+    startArchivePreview,
+    succeedArchivePreview,
+  ]);
 
   useEffect(() => {
     setPreviewZoom(1);

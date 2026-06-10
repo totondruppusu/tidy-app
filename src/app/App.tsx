@@ -77,6 +77,7 @@ import {
   openDialog,
 } from "../lib/desktopBridge";
 import { usePreviewController } from "../hooks/usePreviewController";
+import { useAsyncWorkflow } from "../hooks/useAsyncWorkflow";
 import { useSuggestionsController } from "../hooks/useSuggestionsController";
 import { getInitialTheme, getStoredSettings } from "../lib/settings";
 import { revealInFileManager } from "../services/fileManagerService";
@@ -236,7 +237,14 @@ export default function App() {
   const [currentFolder, setCurrentFolder] = useState<string | null>(
     initialFolder,
   );
-  const [isLoading, setIsLoading] = useState(false);
+  const {
+    isLoading,
+    start: startScanWorkflow,
+    succeed: succeedScanWorkflow,
+    fail: failScanWorkflow,
+    reset: resetScanWorkflow,
+    run: runScanWorkflow,
+  } = useAsyncWorkflow();
   const [scanCachePrompt, setScanCachePrompt] =
     useState<ScanCachePromptState | null>(null);
   const [isMutating, setIsMutating] = useState(false);
@@ -250,7 +258,12 @@ export default function App() {
   const resetSelectionToFirstRef = useRef(false);
   const blockingOverlayShowFrameRef = useRef<number | null>(null);
   const blockingOverlayHideFrameRef = useRef<number | null>(null);
-  const [isCancellingScan, setIsCancellingScan] = useState(false);
+  const {
+    isLoading: isCancellingScan,
+    start: startCancelScanWorkflow,
+    fail: failCancelScanWorkflow,
+    reset: resetCancelScanWorkflow,
+  } = useAsyncWorkflow();
   const [scanProgress, setScanProgress] = useState<ScanProgress | null>(null);
   const [renderCount, setRenderCount] = useState(0);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -1147,8 +1160,8 @@ export default function App() {
           : `${Date.now()}`;
       activeScanId.current = scanId;
       setScanCachePrompt(null);
-      setIsCancellingScan(false);
-      setIsLoading(true);
+      resetCancelScanWorkflow();
+      startScanWorkflow();
       setScanProgress({
         scanId,
         scanned: 0,
@@ -1176,53 +1189,69 @@ export default function App() {
         } catch (cacheError) {
           console.warn("Failed to store cached scan.", cacheError);
         }
+        succeedScanWorkflow();
       } catch (error) {
         if (activeScanId.current !== scanId) {
           return;
         }
         const message = String(error);
         if (message.toLowerCase().includes("scan cancelled")) {
+          resetScanWorkflow();
           updateStatus("Scan cancelled.");
           return;
         }
+        failScanWorkflow(message);
         updateStatus(`Scan failed: ${message}`);
       } finally {
         if (activeScanId.current === scanId) {
-          setIsLoading(false);
           setScanProgress(null);
           activeScanId.current = null;
-          setIsCancellingScan(false);
+          resetCancelScanWorkflow();
         }
       }
     },
-    [applyScanResult, resetScanViewState, updateStatus],
+    [
+      applyScanResult,
+      failScanWorkflow,
+      resetCancelScanWorkflow,
+      resetScanViewState,
+      resetScanWorkflow,
+      startScanWorkflow,
+      succeedScanWorkflow,
+      updateStatus,
+    ],
   );
 
   const loadCachedScan = useCallback(
     async (cachedScan: CachedScan) => {
-      try {
-        await invokeCommand("hydrate_cached_scan", {
-          request: {
-            folderPath: cachedScan.folderPath,
-            files: cachedScan.files,
+      const hydrated = await runScanWorkflow(
+        () =>
+          invokeCommand("hydrate_cached_scan", {
+            request: {
+              folderPath: cachedScan.folderPath,
+              files: cachedScan.files,
+            },
+          }),
+        {
+          onError: (message) => {
+            updateStatus(`Failed to load cached scan: ${message}`);
           },
-        });
-      } catch (error) {
-        updateStatus(`Failed to load cached scan: ${String(error)}`);
+        },
+      );
+      if (hydrated === null) {
         return;
       }
       setScanCachePrompt(null);
-      setIsLoading(false);
       setScanProgress(null);
       activeScanId.current = null;
-      setIsCancellingScan(false);
+      resetCancelScanWorkflow();
       setLastScanFilterMode(cachedScan.filterMode);
       applyScanResult(cachedScan.folderPath, {
         files: cachedScan.files,
         total: cachedScan.total,
       });
     },
-    [applyScanResult, updateStatus],
+    [applyScanResult, resetCancelScanWorkflow, runScanWorkflow, updateStatus],
   );
 
   const handleScan = useCallback(
@@ -1256,15 +1285,21 @@ export default function App() {
     if (!scanId || isCancellingScan) {
       return;
     }
-    setIsCancellingScan(true);
+    startCancelScanWorkflow();
     updateStatus("Stopping scan...");
     try {
       await invokeCommand("cancel_scan", { scanId });
     } catch (error) {
-      setIsCancellingScan(false);
-      updateStatus(`Failed to stop scan: ${String(error)}`);
+      const message = String(error);
+      failCancelScanWorkflow(message);
+      updateStatus(`Failed to stop scan: ${message}`);
     }
-  }, [isCancellingScan, updateStatus]);
+  }, [
+    failCancelScanWorkflow,
+    isCancellingScan,
+    startCancelScanWorkflow,
+    updateStatus,
+  ]);
 
   const pickFolder = useCallback(async () => {
     try {

@@ -6,6 +6,7 @@ import {
   buildCleanupSuggestions,
   runActionBatch,
 } from "../services/suggestionsService";
+import { useAsyncWorkflow } from "./useAsyncWorkflow";
 import type {
   ActionBatchItem,
   ActionBatchResult,
@@ -44,10 +45,12 @@ export const useSuggestionsController = ({
   updateStatus,
 }: UseSuggestionsControllerOptions) => {
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
-  const [suggestionsStatus, setSuggestionsStatus] = useState<
-    "idle" | "loading" | "error"
-  >("idle");
-  const [suggestionsError, setSuggestionsError] = useState<string | null>(null);
+  const {
+    status: suggestionsStatus,
+    error: suggestionsError,
+    reset: resetSuggestionsWorkflow,
+    run: runSuggestionsWorkflow,
+  } = useAsyncWorkflow();
   const [suggestionsMode, setSuggestionsMode] = useState<SuggestionsMode>(
     storedSettings.suggestionsMode ?? "review",
   );
@@ -84,12 +87,12 @@ export const useSuggestionsController = ({
   );
   const [suggestionTotalReclaimableBytes, setSuggestionTotalReclaimableBytes] =
     useState(0);
-  const [suggestionDryRunStatus, setSuggestionDryRunStatus] = useState<
-    "idle" | "loading" | "error"
-  >("idle");
-  const [suggestionDryRunError, setSuggestionDryRunError] = useState<
-    string | null
-  >(null);
+  const {
+    status: suggestionDryRunStatus,
+    error: suggestionDryRunError,
+    reset: resetSuggestionDryRunWorkflow,
+    run: runSuggestionDryRunWorkflow,
+  } = useAsyncWorkflow();
   const [suggestionDryRunResult, setSuggestionDryRunResult] =
     useState<ActionBatchResult | null>(null);
   const [suggestionDryRunSelectionKey, setSuggestionDryRunSelectionKey] =
@@ -100,18 +103,16 @@ export const useSuggestionsController = ({
   const clearSuggestionDryRunPreview = useCallback(() => {
     setSuggestionDryRunResult(null);
     setSuggestionDryRunSelectionKey(null);
-    setSuggestionDryRunStatus("idle");
-    setSuggestionDryRunError(null);
-  }, []);
+    resetSuggestionDryRunWorkflow();
+  }, [resetSuggestionDryRunWorkflow]);
 
   const resetSuggestionsState = useCallback(() => {
     setSuggestions([]);
     setSelectedSuggestionIds([]);
     setSuggestionTotalReclaimableBytes(0);
-    setSuggestionsError(null);
-    setSuggestionsStatus("idle");
+    resetSuggestionsWorkflow();
     clearSuggestionDryRunPreview();
-  }, [clearSuggestionDryRunPreview]);
+  }, [clearSuggestionDryRunPreview, resetSuggestionsWorkflow]);
 
   const applySuggestionPreset = useCallback(
     (preset: SuggestionPreset) => {
@@ -460,55 +461,58 @@ export const useSuggestionsController = ({
       updateStatus("Suggestions are available in the desktop app.");
       return;
     }
-    setSuggestionsStatus("loading");
-    setSuggestionsError(null);
     clearSuggestionDryRunPreview();
-    try {
-      const clampedStaleDays = Math.max(
-        1,
-        Math.min(3650, Math.round(suggestionStaleDays)),
-      );
-      const clampedMaxResults = Math.max(
-        1,
-        Math.min(2000, Math.round(suggestionMaxResults)),
-      );
-      const clampedMinLargeBytes = Math.max(
-        1024 * 1024,
-        Math.min(
-          20 * 1024 * 1024 * 1024,
-          Math.round(suggestionMinLargeFileBytes),
-        ),
-      );
-      const result = await buildCleanupSuggestions({
-        folderPath: currentFolder,
-        includeSubfolders,
-        includeHidden,
-        staleDays: clampedStaleDays,
-        maxResults: clampedMaxResults,
-        minLargeFileBytes: clampedMinLargeBytes,
-      });
-      setSuggestions(result.suggestions);
-      setSuggestionTotalReclaimableBytes(result.totalReclaimableBytes);
-      setSelectedSuggestionIds(
-        result.suggestions
-          .filter((suggestion) => suggestion.safetyLevel === "safe")
-          .map((suggestion) => suggestion.id),
-      );
-      setSuggestionsStatus("idle");
-      updateStatus(
-        `Built ${result.suggestions.length} suggestions (${formatBytes(result.totalReclaimableBytes)} reclaimable).`,
-      );
-    } catch (error) {
-      const message = String(error);
-      setSuggestionsStatus("error");
-      setSuggestionsError(message);
-      updateStatus(`Suggestion build failed: ${message}`);
+    const result = await runSuggestionsWorkflow(
+      async () => {
+        const clampedStaleDays = Math.max(
+          1,
+          Math.min(3650, Math.round(suggestionStaleDays)),
+        );
+        const clampedMaxResults = Math.max(
+          1,
+          Math.min(2000, Math.round(suggestionMaxResults)),
+        );
+        const clampedMinLargeBytes = Math.max(
+          1024 * 1024,
+          Math.min(
+            20 * 1024 * 1024 * 1024,
+            Math.round(suggestionMinLargeFileBytes),
+          ),
+        );
+        return buildCleanupSuggestions({
+          folderPath: currentFolder,
+          includeSubfolders,
+          includeHidden,
+          staleDays: clampedStaleDays,
+          maxResults: clampedMaxResults,
+          minLargeFileBytes: clampedMinLargeBytes,
+        });
+      },
+      {
+        onError: (message) => {
+          updateStatus(`Suggestion build failed: ${message}`);
+        },
+      },
+    );
+    if (!result) {
+      return;
     }
+    setSuggestions(result.suggestions);
+    setSuggestionTotalReclaimableBytes(result.totalReclaimableBytes);
+    setSelectedSuggestionIds(
+      result.suggestions
+        .filter((suggestion) => suggestion.safetyLevel === "safe")
+        .map((suggestion) => suggestion.id),
+    );
+    updateStatus(
+      `Built ${result.suggestions.length} suggestions (${formatBytes(result.totalReclaimableBytes)} reclaimable).`,
+    );
   }, [
     clearSuggestionDryRunPreview,
     currentFolder,
     includeHidden,
     includeSubfolders,
+    runSuggestionsWorkflow,
     suggestionMaxResults,
     suggestionMinLargeFileBytes,
     suggestionStaleDays,
@@ -530,35 +534,36 @@ export const useSuggestionsController = ({
       clearSuggestionDryRunPreview();
       return null;
     }
-    setSuggestionDryRunStatus("loading");
-    setSuggestionDryRunError(null);
-    try {
-      const plan = await runActionBatch({
-        actions,
-        dryRun: true,
-        allowUnsafe: false,
-        allowPermanentDelete: false,
-      });
-      setSuggestionDryRunResult(plan);
-      setSuggestionDryRunSelectionKey(selectedSuggestionPlanKey);
-      setSuggestionDryRunStatus("idle");
-      updateStatus(
-        `Preview ready: ${plan.applied} planned, ${plan.blocked} blocked, ${plan.failed} failed.`,
-      );
-      return plan;
-    } catch (error) {
-      const message = String(error);
-      setSuggestionDryRunStatus("error");
-      setSuggestionDryRunError(message);
-      setSuggestionDryRunResult(null);
-      setSuggestionDryRunSelectionKey(null);
-      updateStatus(`Suggestion preview failed: ${message}`);
+    const plan = await runSuggestionDryRunWorkflow(
+      () =>
+        runActionBatch({
+          actions,
+          dryRun: true,
+          allowUnsafe: false,
+          allowPermanentDelete: false,
+        }),
+      {
+        onError: (message) => {
+          setSuggestionDryRunResult(null);
+          setSuggestionDryRunSelectionKey(null);
+          updateStatus(`Suggestion preview failed: ${message}`);
+        },
+      },
+    );
+    if (!plan) {
       return null;
     }
+    setSuggestionDryRunResult(plan);
+    setSuggestionDryRunSelectionKey(selectedSuggestionPlanKey);
+    updateStatus(
+      `Preview ready: ${plan.applied} planned, ${plan.blocked} blocked, ${plan.failed} failed.`,
+    );
+    return plan;
   }, [
     buildSuggestionActions,
     clearSuggestionDryRunPreview,
     currentFolder,
+    runSuggestionDryRunWorkflow,
     selectedSuggestionPlanKey,
     selectedSuggestions,
     updateStatus,
@@ -595,9 +600,7 @@ export const useSuggestionsController = ({
     suggestions,
     setSuggestions,
     suggestionsStatus,
-    setSuggestionsStatus,
     suggestionsError,
-    setSuggestionsError,
     suggestionsMode,
     setSuggestionsMode,
     suggestionPresets,
@@ -623,9 +626,7 @@ export const useSuggestionsController = ({
     suggestionTotalReclaimableBytes,
     setSuggestionTotalReclaimableBytes,
     suggestionDryRunStatus,
-    setSuggestionDryRunStatus,
     suggestionDryRunError,
-    setSuggestionDryRunError,
     suggestionDryRunResult,
     setSuggestionDryRunResult,
     suggestionDryRunSelectionKey,

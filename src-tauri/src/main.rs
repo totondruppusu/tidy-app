@@ -4137,23 +4137,43 @@ fn parse_range(range: &str, size: u64, max_length: Option<u64>) -> Option<(u64, 
   }
   let range = range.trim_start_matches("bytes=");
   let mut parts = range.split('-');
-  let start = parts.next()?.trim().parse::<u64>().ok()?;
-  let end = match parts.next().map(|value| value.trim()) {
-    Some("") | None => {
-      let mut end = size.saturating_sub(1);
-      if let Some(max_length) = max_length {
-        let capped = start.saturating_add(max_length.saturating_sub(1));
-        end = std::cmp::min(capped, end);
-      }
-      end
+  let start_part = parts.next()?.trim();
+  let end_part = parts.next().map(|value| value.trim());
+  let (start, end) = if start_part.is_empty() {
+    let suffix_length = end_part?.parse::<u64>().ok()?;
+    if suffix_length == 0 || size == 0 {
+      return None;
     }
-    Some(value) => value.parse::<u64>().ok()?,
+    let mut length = suffix_length.min(size);
+    if let Some(max_length) = max_length {
+      length = length.min(max_length);
+    }
+    let start = size.saturating_sub(length);
+    (start, size.saturating_sub(1))
+  } else {
+    let start = start_part.parse::<u64>().ok()?;
+    let end = match end_part {
+      Some("") | None => {
+        let mut end = size.saturating_sub(1);
+        if let Some(max_length) = max_length {
+          let capped = start.saturating_add(max_length.saturating_sub(1));
+          end = std::cmp::min(capped, end);
+        }
+        end
+      }
+      Some(value) => value.parse::<u64>().ok()?,
+    };
+    (start, end)
   };
   if start > end || start >= size {
     return None;
   }
   let end = std::cmp::min(end, size.saturating_sub(1));
   Some((start, end))
+}
+
+fn should_cap_range_requests(content_type: &str) -> bool {
+  !(content_type.starts_with("image/") || content_type == "application/pdf")
 }
 
 fn build_response(
@@ -4213,10 +4233,10 @@ fn protocol_response(
 
   if let Some(range_value) = request.headers().get("range") {
     if let Ok(range_str) = range_value.to_str() {
-      let max_range_length = if content_type.starts_with("image/") {
-        None
-      } else {
+      let max_range_length = if should_cap_range_requests(&content_type) {
         Some(MAX_RANGE_CHUNK_BYTES)
+      } else {
+        None
       };
       if let Some((start, end)) = parse_range(range_str, size, max_range_length) {
         let length = end - start + 1;
@@ -4632,9 +4652,18 @@ mod tests {
   fn parse_range_handles_standard_and_capped_ranges() {
     assert_eq!(parse_range("bytes=0-9", 100, None), Some((0, 9)));
     assert_eq!(parse_range("bytes=10-", 100, Some(5)), Some((10, 14)));
+    assert_eq!(parse_range("bytes=-10", 100, None), Some((90, 99)));
+    assert_eq!(parse_range("bytes=-10", 100, Some(4)), Some((96, 99)));
     assert_eq!(parse_range("bytes=90-200", 100, None), Some((90, 99)));
     assert_eq!(parse_range("bytes=101-200", 100, None), None);
     assert_eq!(parse_range("items=0-9", 100, None), None);
+  }
+
+  #[test]
+  fn range_capping_skips_images_and_pdfs() {
+    assert!(!should_cap_range_requests("image/png"));
+    assert!(!should_cap_range_requests("application/pdf"));
+    assert!(should_cap_range_requests("text/plain"));
   }
 
   #[test]

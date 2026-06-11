@@ -47,7 +47,6 @@ AI can help with many things, but cleanup still depends on your judgment. Tidy-A
 | 🚀 Fast organization | Up to 5 saved destinations, tree/list workflows, local operation history |
 | ⌨️ Keyboard-first speed | Arrow-key navigation, `1-5` quick-move slots, `Enter` reveal, `Space` play/pause, `Ctrl/Cmd + Arrow` video/audio time skip |
 | 🔒 Safe cleanup | System trash, optional permanent delete, protected paths, persisted undo stack |
-| 💡 Smart filter | Screenshots and memes, large stale files, temporary clutter, empty folders |
 
 <details>
 <summary><strong>Feature details</strong></summary>

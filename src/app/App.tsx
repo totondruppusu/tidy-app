@@ -142,6 +142,10 @@ type ScanCachePromptState = {
 };
 
 export default function App() {
+  const isWindowsDesktop =
+    typeof navigator !== "undefined" &&
+    isDesktopRuntime() &&
+    /windows/i.test(navigator.userAgent);
   const [storedSettings] = useState(() => getStoredSettings());
   const [files, setFiles] = useState<FileEntry[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
@@ -306,6 +310,7 @@ export default function App() {
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isDrawerMode, setIsDrawerMode] = useState(false);
   const [isWindowFullscreen, setIsWindowFullscreen] = useState(false);
+  const [isWindowMaximized, setIsWindowMaximized] = useState(false);
   const [isExtensionsCollapsed, setIsExtensionsCollapsed] = useState(true);
   const [theme, setTheme] = useState<ThemeMode>(getInitialTheme);
   const [undoStack, setUndoStack] = useState<UndoAction[]>([]);
@@ -456,7 +461,7 @@ export default function App() {
     let isMounted = true;
     const appWindow = getDesktopWindow();
     let unlistenResize: (() => void) | null = null;
-    const syncFullscreenState = async () => {
+    const syncWindowState = async () => {
       try {
         const fullscreen = await appWindow.isFullscreen();
         if (isMounted) {
@@ -465,11 +470,19 @@ export default function App() {
       } catch {
         // Ignore unsupported window APIs in non-desktop runtimes.
       }
+      try {
+        const maximized = await appWindow.isMaximized();
+        if (isMounted) {
+          setIsWindowMaximized(maximized);
+        }
+      } catch {
+        // Ignore unsupported window APIs in non-desktop runtimes.
+      }
     };
-    void syncFullscreenState();
+    void syncWindowState();
     void appWindow
       .onResized(() => {
-        void syncFullscreenState();
+        void syncWindowState();
       })
       .then((unlisten) => {
         if (!isMounted) {
@@ -485,6 +498,37 @@ export default function App() {
         unlistenResize();
       }
     };
+  }, []);
+
+  const handleMinimizeWindow = useCallback(() => {
+    if (!isDesktopRuntime()) {
+      return;
+    }
+    void getDesktopWindow().minimize().catch(() => {});
+  }, []);
+
+  const handleToggleMaximizeWindow = useCallback(() => {
+    if (!isDesktopRuntime()) {
+      return;
+    }
+    void getDesktopWindow()
+      .toggleMaximize()
+      .then(async () => {
+        try {
+          const maximized = await getDesktopWindow().isMaximized();
+          setIsWindowMaximized(maximized);
+        } catch {
+          // Ignore unsupported window APIs in non-desktop runtimes.
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  const handleCloseWindow = useCallback(() => {
+    if (!isDesktopRuntime()) {
+      return;
+    }
+    void getDesktopWindow().close().catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -2867,14 +2911,20 @@ export default function App() {
         isSidebarCollapsed ? "sidebar-collapsed" : ""
       } ${isWindowFullscreen ? "is-fullscreen" : ""}`}
       aria-busy={isLoading || isInteractionBlocked}
+      data-window-platform={isWindowsDesktop ? "windows" : "default"}
     >
       <div className="titlebar-drag" data-tauri-drag-region />
       <Toolbar
         isSidebarCollapsed={isSidebarCollapsed}
         isDrawerMode={isDrawerMode}
         isSettingsOpen={isSettingsOpen}
+        showWindowControls={isWindowsDesktop}
+        isWindowMaximized={isWindowMaximized}
         onToggleSidebar={toggleSidebar}
         onOpenSettings={() => setIsSettingsOpen(true)}
+        onMinimizeWindow={handleMinimizeWindow}
+        onToggleMaximizeWindow={handleToggleMaximizeWindow}
+        onCloseWindow={handleCloseWindow}
       />
       <div className="app-grid">
         {!isSidebarCollapsed && (

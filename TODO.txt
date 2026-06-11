@@ -67,6 +67,12 @@ sorting size bugged in tree view
 .previews that take time hung the application and crashes
 ?files with wrong extension or corrupted crash the app
 .in duplicates view when i delete a file the order changes and the selected file is not the next one
+.win window title bar not integrated
+win tree view not rendering
+win groups not rendering
+win install opens dead cmd window
+win drop down background color
+
 
 REFACTORING
 .refactor app structure in app, components, constansts, lib, styles, types

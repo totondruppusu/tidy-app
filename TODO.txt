@@ -71,7 +71,7 @@ sorting size bugged in tree view
 win tree view not rendering
 win groups not rendering
 win install opens dead cmd window
-win drop down background color
+.win drop down background color
 
 
 REFACTORING

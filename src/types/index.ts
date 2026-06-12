@@ -305,6 +305,7 @@ export type TreeFolderNode = {
   path: string;
   children: TreeNode[];
   fileCount: number;
+  totalBytes: number;
 };
 
 export type TreeFileNode = {

@@ -1902,10 +1902,22 @@ optgroup {
   fill: var(--color-icon);
 }
 
+.folder-label {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
 .folder-name {
   font-size: 12px;
   font-weight: 600;
   color: var(--color-text-tertiary);
+  white-space: nowrap;
+}
+
+.folder-size {
+  font-size: 10px;
+  color: var(--color-text-faint);
   white-space: nowrap;
 }
 

@@ -77,6 +77,276 @@ describe("App integration", () => {
     expect(fileNames[0]).toBe("big.jpg");
   });
 
+  it("defaults new tree scans to folded folders", async () => {
+    const controller = createMockBridge();
+    installBaseHandlers(controller);
+    window.__TIDY_DESKTOP_BRIDGE__ = controller.bridge;
+
+    const files = [
+      createFile({
+        id: "f1",
+        name: "nested.txt",
+        kind: "text",
+        path: "/mock/archive/nested.txt",
+      }),
+    ];
+
+    controller.bridge.open = async () => "/mock";
+    controller.onInvoke("scan_folder", () => ({ files, total: files.length }));
+
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+
+    const viewModeSelect = Array.from(container.querySelectorAll("select")).find(
+      (element) => element instanceof HTMLSelectElement && ["tree", "list"].includes(element.value),
+    );
+    expect(viewModeSelect).toBeInstanceOf(HTMLSelectElement);
+    await user.selectOptions(viewModeSelect as HTMLSelectElement, "tree");
+
+    await clickFolderPicker(user);
+    await user.click(screen.getByRole("button", { name: "Scan folder" }));
+
+    const archiveToggle = await screen.findByRole("button", {
+      name: "Expand archive",
+    });
+    expect(archiveToggle).toHaveAttribute("aria-expanded", "false");
+    expect(container.querySelector(".file-item .filename")).toBeNull();
+  });
+
+  it("shows aggregated folder size under the folder name in tree view", async () => {
+    const controller = createMockBridge();
+    installBaseHandlers(controller);
+    window.__TIDY_DESKTOP_BRIDGE__ = controller.bridge;
+
+    const files = [
+      createFile({
+        id: "f1",
+        name: "first.txt",
+        kind: "text",
+        path: "/mock/archive/first.txt",
+        sizeBytes: 1024,
+      }),
+      createFile({
+        id: "f2",
+        name: "second.txt",
+        kind: "text",
+        path: "/mock/archive/second.txt",
+        sizeBytes: 2048,
+      }),
+    ];
+
+    controller.bridge.open = async () => "/mock";
+    controller.onInvoke("scan_folder", () => ({ files, total: files.length }));
+
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+
+    const viewModeSelect = Array.from(container.querySelectorAll("select")).find(
+      (element) => element instanceof HTMLSelectElement && ["tree", "list"].includes(element.value),
+    );
+    expect(viewModeSelect).toBeInstanceOf(HTMLSelectElement);
+    await user.selectOptions(viewModeSelect as HTMLSelectElement, "tree");
+
+    await clickFolderPicker(user);
+    await user.click(screen.getByRole("button", { name: "Scan folder" }));
+
+    const archiveToggle = await screen.findByRole("button", {
+      name: "Expand archive",
+    });
+    expect(archiveToggle).toHaveTextContent("archive");
+    expect(archiveToggle).toHaveTextContent("3.0 KB");
+  });
+
+  it("respects size sorting for visible root items in tree view", async () => {
+    const controller = createMockBridge();
+    installBaseHandlers(controller);
+    window.__TIDY_DESKTOP_BRIDGE__ = controller.bridge;
+
+    const files = [
+      createFile({
+        id: "f1",
+        name: "small.txt",
+        kind: "text",
+        path: "/mock/a-small/small.txt",
+        sizeBytes: 10,
+      }),
+      createFile({
+        id: "f2",
+        name: "medium.txt",
+        kind: "text",
+        path: "/mock/medium.txt",
+        sizeBytes: 50,
+      }),
+      createFile({
+        id: "f3",
+        name: "large.txt",
+        kind: "text",
+        path: "/mock/z-large/large.txt",
+        sizeBytes: 100,
+      }),
+    ];
+
+    controller.bridge.open = async () => "/mock";
+    controller.onInvoke("scan_folder", () => ({ files, total: files.length }));
+
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+
+    const viewModeSelect = Array.from(container.querySelectorAll("select")).find(
+      (element) => element instanceof HTMLSelectElement && ["tree", "list"].includes(element.value),
+    );
+    expect(viewModeSelect).toBeInstanceOf(HTMLSelectElement);
+    await user.selectOptions(viewModeSelect as HTMLSelectElement, "tree");
+
+    await clickFolderPicker(user);
+    await user.click(screen.getByRole("button", { name: "Scan folder" }));
+    await user.selectOptions(screen.getByDisplayValue("Name (A-Z)"), "size_desc");
+
+    const visibleRootLabels = Array.from(
+      container.querySelectorAll(".folder-item, .file-item"),
+    ).map((node) => {
+      const labelNode = node.querySelector(".folder-name, .filename");
+      return labelNode?.textContent?.trim() ?? "";
+    });
+
+    expect(visibleRootLabels.slice(0, 3)).toEqual([
+      "z-large",
+      "medium.txt",
+      "a-small",
+    ]);
+  });
+
+  it("keeps folded tree folders folded when sort changes", async () => {
+    const controller = createMockBridge();
+    installBaseHandlers(controller);
+    window.__TIDY_DESKTOP_BRIDGE__ = controller.bridge;
+
+    const files = [
+      createFile({
+        id: "f1",
+        name: "small.txt",
+        kind: "text",
+        path: "/mock/alpha/small.txt",
+        sizeBytes: 10,
+      }),
+      createFile({
+        id: "f2",
+        name: "large.txt",
+        kind: "text",
+        path: "/mock/beta/large.txt",
+        sizeBytes: 100,
+      }),
+    ];
+
+    controller.bridge.open = async () => "/mock";
+    controller.onInvoke("scan_folder", () => ({ files, total: files.length }));
+
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+
+    const viewModeSelect = Array.from(container.querySelectorAll("select")).find(
+      (element) => element instanceof HTMLSelectElement && ["tree", "list"].includes(element.value),
+    );
+    expect(viewModeSelect).toBeInstanceOf(HTMLSelectElement);
+    await user.selectOptions(viewModeSelect as HTMLSelectElement, "tree");
+
+    await clickFolderPicker(user);
+    await user.click(screen.getByRole("button", { name: "Scan folder" }));
+
+    expect(
+      await screen.findByRole("button", { name: "Expand alpha" }),
+    ).toHaveAttribute("aria-expanded", "false");
+    expect(
+      screen.getByRole("button", { name: "Expand beta" }),
+    ).toHaveAttribute("aria-expanded", "false");
+
+    await user.selectOptions(screen.getByDisplayValue("Name (A-Z)"), "size_desc");
+
+    expect(
+      await screen.findByRole("button", { name: "Expand alpha" }),
+    ).toHaveAttribute("aria-expanded", "false");
+    expect(
+      screen.getByRole("button", { name: "Expand beta" }),
+    ).toHaveAttribute("aria-expanded", "false");
+    expect(container.querySelector(".file-item .filename")).toBeNull();
+  });
+
+  it("starts type groups folded when grouping changes", async () => {
+    const controller = createMockBridge();
+    installBaseHandlers(controller);
+    window.__TIDY_DESKTOP_BRIDGE__ = controller.bridge;
+
+    const files = [
+      createFile({
+        id: "f1",
+        name: "photo.jpg",
+        kind: "image",
+        path: "/mock/photo.jpg",
+      }),
+      createFile({
+        id: "f2",
+        name: "note.txt",
+        kind: "text",
+        path: "/mock/note.txt",
+      }),
+    ];
+
+    controller.bridge.open = async () => "/mock";
+    controller.onInvoke("scan_folder", () => ({ files, total: files.length }));
+
+    const user = userEvent.setup();
+    render(<App />);
+
+    await clickFolderPicker(user);
+    await user.click(screen.getByRole("button", { name: "Scan folder" }));
+    await user.selectOptions(screen.getByDisplayValue("None"), "type");
+
+    expect(
+      await screen.findByRole("button", { name: "Expand Images" }),
+    ).toHaveAttribute("aria-expanded", "false");
+    expect(
+      screen.getByRole("button", { name: "Expand Text files" }),
+    ).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("starts extension groups folded after a fresh scan", async () => {
+    const controller = createMockBridge();
+    installBaseHandlers(controller);
+    window.__TIDY_DESKTOP_BRIDGE__ = controller.bridge;
+
+    const files = [
+      createFile({
+        id: "f1",
+        name: "photo.jpg",
+        kind: "image",
+        path: "/mock/photo.jpg",
+      }),
+      createFile({
+        id: "f2",
+        name: "note.txt",
+        kind: "text",
+        path: "/mock/note.txt",
+      }),
+    ];
+
+    controller.bridge.open = async () => "/mock";
+    controller.onInvoke("scan_folder", () => ({ files, total: files.length }));
+
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.selectOptions(screen.getByDisplayValue("None"), "extension");
+    await clickFolderPicker(user);
+    await user.click(screen.getByRole("button", { name: "Scan folder" }));
+
+    expect(
+      await screen.findByRole("button", { name: "Expand .jpg" }),
+    ).toHaveAttribute("aria-expanded", "false");
+    expect(
+      screen.getByRole("button", { name: "Expand .txt" }),
+    ).toHaveAttribute("aria-expanded", "false");
+  });
+
   it("supports trash then undo flow", async () => {
     const controller = createMockBridge();
     installBaseHandlers(controller);

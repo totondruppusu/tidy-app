@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { getExtension } from "../../src/lib/files";
-import { buildFileTree, getFolderCollapseKey, sortTreeNodesByIndex } from "../../src/lib/tree";
+import { buildFileTree, getFolderCollapseKey } from "../../src/lib/tree";
 import { extractFolder, formatRelativeFolder, getRelativeSegments, splitPathSegments } from "../../src/lib/path";
 import { isEditableTarget, shouldOpenOnEnter, updateScrollHint } from "../../src/lib/dom";
 import { buildMediaUrl } from "../../src/lib/media";
@@ -20,21 +20,26 @@ describe("files/path/tree/dom/media", () => {
     expect(extractFolder("/root/a/b.txt")).toBe("/root/a");
   });
 
-  it("builds and sorts file tree", () => {
+  it("builds file tree in incoming order and tracks folder bytes", () => {
     const files = [
       createFile({ id: "2", path: "/root/b/c.txt", name: "c.txt", kind: "text" }),
-      createFile({ id: "1", path: "/root/a/d.txt", name: "d.txt", kind: "text" }),
+      createFile({ id: "1", path: "/root/a/d.txt", name: "d.txt", kind: "text", sizeBytes: 2048 }),
     ];
     const tree = buildFileTree(files, "/root");
     expect(tree.fileCount).toBe(2);
+    expect(tree.totalBytes).toBe(3072);
     expect(getFolderCollapseKey("group:1", "a")).toBe("group:1::a");
 
-    const indexMap = new Map([
-      ["1", 0],
-      ["2", 1],
-    ]);
-    const sorted = sortTreeNodesByIndex(tree.children, indexMap);
-    expect(sorted[0].type).toBe("folder");
+    expect(tree.children[0]).toMatchObject({
+      type: "folder",
+      name: "b",
+      totalBytes: 1024,
+    });
+    expect(tree.children[1]).toMatchObject({
+      type: "folder",
+      name: "a",
+      totalBytes: 2048,
+    });
   });
 
   it("updates scroll hints and keyboard eligibility", () => {

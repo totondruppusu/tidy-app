@@ -180,18 +180,15 @@ test("trash and undo restores file", async ({ page }) => {
   await expect(page.locator(".file-list .filename", { hasText: "alpha.txt" })).toBeVisible();
 });
 
-test("suggestions entrypoint is disabled with work in progress tooltip", async ({
+test("suggestions entrypoint remains hidden for now", async ({
   page,
 }) => {
   await page.getByText("Select folder…").click();
   await page.getByRole("button", { name: "Scan folder" }).click();
 
-  const suggestionsButton = page.getByRole("button", {
-    name: "AI suggestions (work in progress)",
-  });
-  await expect(suggestionsButton).toBeDisabled();
-  await expect(suggestionsButton.locator("..")).toHaveAttribute(
-    "title",
-    "Work in progress",
-  );
+  await expect(
+    page.getByRole("button", {
+      name: "AI suggestions (work in progress)",
+    }),
+  ).toHaveCount(0);
 });

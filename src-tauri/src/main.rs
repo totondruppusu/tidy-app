@@ -1,3 +1,5 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 use image::ImageReader;
 use mime_guess::MimeGuess;
 use rayon::prelude::*;

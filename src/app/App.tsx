@@ -51,6 +51,7 @@ import {
 } from "../lib/dom";
 import {
   buildCrashEmailBody,
+  formatBytes,
   formatCrashReport,
   formatDuplicateGroupMeta,
   formatGroupTitle,
@@ -61,7 +62,6 @@ import { getGroupIdForFile, groupFilesByMode } from "../lib/grouping";
 import {
   buildFileTree,
   getFolderCollapseKey,
-  sortTreeNodesByIndex,
 } from "../lib/tree";
 import {
   formatRelativeFolder,
@@ -326,6 +326,9 @@ export default function App() {
   const hasAutoLoadedFolderRef = useRef(false);
   const listItemRefs = useRef<Map<string, HTMLButtonElement | null>>(new Map());
   const currentFileIdRef = useRef<string | null>(null);
+  const skipAutoExpandCurrentFileRef = useRef(false);
+  const suppressAutoExpandForSortRef = useRef(false);
+  const suppressAutoExpandForGroupModeRef = useRef(false);
   const previousActiveFileIdRef = useRef<string | null>(null);
   const visibleFileOrderRef = useRef<string[]>([]);
   const visibleIndexByIdRef = useRef<Map<string, number>>(new Map());
@@ -1163,6 +1166,67 @@ export default function App() {
     ],
   );
 
+  const buildInitialCollapsedFolders = useCallback(
+    (entries: FileEntry[], folderPath: string): Record<string, boolean> => {
+      if (viewMode !== "tree") {
+        return {};
+      }
+
+      const next: Record<string, boolean> = {};
+
+      const collectFolderKeys = (nodes: TreeNode[], groupId: string | null) => {
+        nodes.forEach((node) => {
+          if (node.type !== "folder") {
+            return;
+          }
+          next[getFolderCollapseKey(groupId, node.path)] = true;
+          collectFolderKeys(node.children, groupId);
+        });
+      };
+
+      const collectTreeForFiles = (
+        treeFiles: FileEntry[],
+        groupId: string | null,
+      ) => {
+        const tree = buildFileTree(treeFiles, folderPath);
+        collectFolderKeys(tree.children, groupId);
+      };
+
+      if (effectiveGroupMode === "none") {
+        collectTreeForFiles(entries, null);
+        return next;
+      }
+
+      const { groups, keys } = groupFilesByMode(effectiveGroupMode, entries);
+      keys.forEach((key) => {
+        const groupFiles = groups.get(key);
+        if (!groupFiles || groupFiles.length === 0) {
+          return;
+        }
+        collectTreeForFiles(groupFiles, `${effectiveGroupMode}:${key}`);
+      });
+
+      return next;
+    },
+    [effectiveGroupMode, viewMode],
+  );
+
+  const buildInitialCollapsedGroups = useCallback(
+    (entries: FileEntry[], mode: GroupMode): Record<string, boolean> => {
+      if (mode !== "type" && mode !== "extension") {
+        return {};
+      }
+
+      const next: Record<string, boolean> = {};
+      const { keys } = groupFilesByMode(mode, entries);
+      keys.forEach((key) => {
+        next[`${mode}:${key}`] = true;
+      });
+      return next;
+    },
+    [],
+  );
+
   const resetScanViewState = useCallback(() => {
     cancelPendingScanBatchFlush();
     setFiles([]);
@@ -1180,18 +1244,36 @@ export default function App() {
       cancelPendingScanBatchFlush();
       resetSelectionToFirstRef.current = true;
       const uniqueFiles = dedupeFileEntries(result.files);
+      const nextCollapsedGroups = buildInitialCollapsedGroups(
+        uniqueFiles,
+        effectiveGroupMode,
+      );
+      const nextCollapsedFolders = buildInitialCollapsedFolders(
+        uniqueFiles,
+        folderPath,
+      );
       setFiles(uniqueFiles);
       setCurrentFolder(folderPath);
       currentFileIdRef.current = null;
+      skipAutoExpandCurrentFileRef.current =
+        viewMode === "tree" && Object.keys(nextCollapsedFolders).length > 0;
       setCurrentIndex(0);
       setRenderCount(0);
       setUndoStack([]);
       resetSuggestionsState();
-      setCollapsedGroups({});
-      setCollapsedFolders({});
+      setCollapsedGroups(nextCollapsedGroups);
+      setCollapsedFolders(nextCollapsedFolders);
       updateStatus(`Loaded ${uniqueFiles.length} items from ${folderPath}.`);
     },
-    [cancelPendingScanBatchFlush, resetSuggestionsState, updateStatus],
+    [
+      buildInitialCollapsedGroups,
+      buildInitialCollapsedFolders,
+      cancelPendingScanBatchFlush,
+      effectiveGroupMode,
+      resetSuggestionsState,
+      updateStatus,
+      viewMode,
+    ],
   );
 
   const runFreshScan = useCallback(
@@ -1402,6 +1484,7 @@ export default function App() {
 
   const handleSortModeChange = useCallback(
     (value: SortMode) => {
+      suppressAutoExpandForSortRef.current = true;
       runBlockingUiTransition(
         "Sorting files",
         () => setSortMode(value),
@@ -1413,13 +1496,22 @@ export default function App() {
 
   const handleSidebarGroupModeChange = useCallback(
     (value: GroupMode) => {
+      suppressAutoExpandForGroupModeRef.current = true;
       runBlockingUiTransition(
         "Grouping files",
-        () => handleGroupModeChange(value),
+        () => {
+          handleGroupModeChange(value);
+          setCollapsedGroups(buildInitialCollapsedGroups(sortedFiles, value));
+        },
         "Rebuilding the file groups...",
       );
     },
-    [handleGroupModeChange, runBlockingUiTransition],
+    [
+      buildInitialCollapsedGroups,
+      handleGroupModeChange,
+      runBlockingUiTransition,
+      sortedFiles,
+    ],
   );
 
   const handleViewModeChange = useCallback(
@@ -2362,7 +2454,9 @@ export default function App() {
     const renderButton = (file: FileEntry, index: number, depth?: number) => (
       <button
         key={file.id}
-        className={`file-item ${depth !== undefined ? "tree-item" : ""}`}
+        className={`file-item ${index === currentIndex ? "active " : ""}${
+          depth !== undefined ? "tree-item" : ""
+        }`}
         onClick={() => {
           currentFileIdRef.current = file.id;
           setCurrentIndex(index);
@@ -2370,6 +2464,7 @@ export default function App() {
         onDoubleClick={() => void openFileInFinder(file)}
         ref={(node) => listItemRefs.current.set(file.id, node)}
         type="button"
+        aria-current={index === currentIndex ? "true" : undefined}
         disabled={isLoading || isMutating}
         style={
           depth !== undefined
@@ -2481,12 +2576,11 @@ export default function App() {
       nodes: TreeNode[],
       depth: number,
       groupId: string | null,
-    ) => {
-      const sortedNodes = sortTreeNodesByIndex(nodes, indexMap);
-      return sortedNodes.map((node) => {
+    ) =>
+      nodes.map((node) => {
         if (node.type === "file") {
           const index = indexMap.get(node.file.id) ?? 0;
-          return renderButton(node.file, index, depth);
+          return renderButton(node.file, index, Math.max(depth - 1, 0));
         }
         const folderKey = getFolderCollapseKey(groupId, node.path);
         const isCollapsed = Boolean(collapsedFolders[folderKey]);
@@ -2520,7 +2614,10 @@ export default function App() {
                     )}
                   </svg>
                 </span>
-                <span className="folder-name">{node.name}</span>
+                <span className="folder-label">
+                  <span className="folder-name">{node.name}</span>
+                  <span className="folder-size">{formatBytes(node.totalBytes)}</span>
+                </span>
                 <span className="folder-count">{node.fileCount}</span>
               </button>
               <button
@@ -2548,7 +2645,6 @@ export default function App() {
           </div>
         );
       });
-    };
 
     const renderTreeForFiles = (
       entries: FileEntry[],
@@ -2666,8 +2762,7 @@ export default function App() {
     });
 
     const collectTreeNodes = (nodes: TreeNode[], groupId: string | null) => {
-      const sortedNodes = sortTreeNodesByIndex(nodes, indexMap);
-      sortedNodes.forEach((node) => {
+      nodes.forEach((node) => {
         if (node.type === "file") {
           order.push(node.file.id);
           return;
@@ -2716,6 +2811,16 @@ export default function App() {
     if (!currentFile) {
       return;
     }
+    if (suppressAutoExpandForSortRef.current) {
+      return;
+    }
+    if (suppressAutoExpandForGroupModeRef.current) {
+      return;
+    }
+    if (skipAutoExpandCurrentFileRef.current) {
+      skipAutoExpandCurrentFileRef.current = false;
+      return;
+    }
     const groupId = getGroupIdForFile(effectiveGroupMode, currentFile);
     if (groupId) {
       setCollapsedGroups((prev) => {
@@ -2752,6 +2857,26 @@ export default function App() {
       return next;
     });
   }, [currentFile, currentFolder, effectiveGroupMode]);
+
+  useEffect(() => {
+    if (!suppressAutoExpandForSortRef.current) {
+      return;
+    }
+    if (currentFile?.id !== currentFileIdRef.current) {
+      return;
+    }
+    suppressAutoExpandForSortRef.current = false;
+  }, [currentFile?.id, sortMode]);
+
+  useEffect(() => {
+    if (!suppressAutoExpandForGroupModeRef.current) {
+      return;
+    }
+    if (currentFile?.id !== currentFileIdRef.current) {
+      return;
+    }
+    suppressAutoExpandForGroupModeRef.current = false;
+  }, [currentFile?.id, effectiveGroupMode]);
 
   useEffect(() => {
     const previousId = previousActiveFileIdRef.current;

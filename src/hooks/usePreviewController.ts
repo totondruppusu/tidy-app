@@ -95,6 +95,7 @@ export const usePreviewController = ({
 
   const previewFile = sortedFiles[previewIndex];
   const previewExtension = previewFile ? getExtension(previewFile.name) : "none";
+  const officePreviewExtension = officePreviewId ? getExtension(officePreviewId) : "none";
   const isLargePreview =
     Boolean(previewFile) && previewFile.sizeBytes >= LARGE_PREVIEW_SIZE_BYTES;
   const isPreviewSuppressed =
@@ -434,6 +435,7 @@ export const usePreviewController = ({
       isPreviewPanning,
       previewCapabilities,
       officePreviewId,
+      officePreviewExtension,
       officeFallbackPreview,
       officePreviewStatus,
       archiveEntries,
@@ -488,6 +490,7 @@ export const usePreviewController = ({
       isTextPreview,
       isZoomablePreview,
       officeFallbackPreview,
+      officePreviewExtension,
       officePreviewId,
       officePreviewStatus,
       previewCapabilities,

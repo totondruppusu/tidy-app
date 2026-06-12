@@ -70,6 +70,8 @@ AI can help with many things, but cleanup still depends on your judgment. Tidy-A
 - Archives
 - Office documents
 
+On Windows, rich preview for Office documents requires LibreOffice to be installed. Without LibreOffice, Office files fall back to text extraction when possible.
+
 Additional preview tools include image zoom, pan controls, media shortcuts, file reveal, and opening files in the default system app.
 
 ### Duplicate Finder
@@ -137,6 +139,7 @@ Tidy-App is useful when you want to:
 
 1. Download the latest `x64` release
 2. Install the app
+3. Install LibreOffice if you want rich previews for Office, RTF, and OpenDocument files
 
 ## Development
 
@@ -160,6 +163,7 @@ xcode-select --install
 - Rust stable toolchain
 - Microsoft C++ Build Tools
 - WebView2 Runtime
+- LibreOffice if you want to test rich Office document previews locally
 
 #### Linux
 

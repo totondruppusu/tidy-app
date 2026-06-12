@@ -51,6 +51,7 @@ auto load to last opened file in view
 .screenshots and memes identification
 .possibility to load old scans and indexing
 ?crop images
+.rich documents preview on windows
 
 
 BUG
@@ -59,8 +60,8 @@ BUG
 .extension collapsed by default
 .ext all selected by default
 .file type and group selection
-no preview of windows doc
-odp files crash
+.no preview of windows doc
+.odp files crash
 sorting size bugged in tree view
 .app trash does not clean up after exiting
 .better responsive settings modal
@@ -72,6 +73,7 @@ win tree view not rendering
 win groups not rendering
 win install opens dead cmd window
 .win drop down background color
+extension panel not scrollable
 
 
 REFACTORING

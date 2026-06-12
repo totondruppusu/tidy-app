@@ -147,10 +147,19 @@ export const PreviewPanel = ({
                     )}
                     {preview.officePreviewStatus === "idle" &&
                       preview.officePreviewId && (
-                        <img
-                          src={buildMediaUrl(preview.officePreviewId)}
-                          alt={`Preview of ${previewFile.name}`}
-                        />
+                        <>
+                          {preview.officePreviewExtension === "pdf" ? (
+                            <iframe
+                              title={`Preview of ${previewFile.name}`}
+                              src={buildMediaUrl(preview.officePreviewId)}
+                            />
+                          ) : (
+                            <img
+                              src={buildMediaUrl(preview.officePreviewId)}
+                              alt={`Preview of ${previewFile.name}`}
+                            />
+                          )}
+                        </>
                       )}
                     {preview.officePreviewStatus === "idle" &&
                       !preview.officePreviewId &&

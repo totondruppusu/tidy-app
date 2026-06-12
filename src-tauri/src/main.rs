@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Child, Command};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -185,6 +185,7 @@ static TRASH_CLEANED: AtomicBool = AtomicBool::new(false);
 const MAX_ARCHIVE_ENTRIES: usize = 200;
 const MAX_RANGE_CHUNK_BYTES: u64 = 1_048_576;
 const QLMANAGE_TIMEOUT_SECS: u64 = 10;
+const WINDOWS_OFFICE_PREVIEW_TIMEOUT_SECS: u64 = 20;
 const QLMANAGE_POLL_MS: u64 = 100;
 const MAX_UNDO_STACK: usize = 20;
 const OPERATION_HISTORY_FILE: &str = "operation-history.jsonl";
@@ -923,6 +924,12 @@ fn hash_cache_key(path: &Path, size_bytes: u64, modified_ms: Option<u64>) -> Str
   )
 }
 
+fn preview_cache_key(path: &Path, size_bytes: u64, modified_ms: Option<u64>) -> String {
+  let mut hasher = Sha256::new();
+  hasher.update(hash_cache_key(path, size_bytes, modified_ms).as_bytes());
+  format!("{:x}", hasher.finalize())
+}
+
 fn cached_full_hash(candidate: &DuplicateCandidate, cache: &HashCache) -> Option<String> {
   let key = hash_cache_key(&candidate.path, candidate.size_bytes, candidate.modified_ms);
   let entry = cache.entries.get(&key)?;
@@ -1156,6 +1163,63 @@ fn extract_text_from_xml(xml: &str) -> String {
     .join(" ")
 }
 
+fn extract_text_from_binary_office(data: &[u8]) -> String {
+  fn push_candidate(parts: &mut Vec<String>, candidate: &mut String) {
+    let normalized = candidate.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.chars().count() >= 4 {
+      parts.push(normalized);
+    }
+    candidate.clear();
+  }
+
+  let mut parts = Vec::new();
+  let mut ascii = String::new();
+  let mut utf16 = String::new();
+
+  for &byte in data {
+    if byte.is_ascii_graphic() || byte == b' ' {
+      ascii.push(byte as char);
+      continue;
+    }
+    if ascii.len() >= 4 {
+      push_candidate(&mut parts, &mut ascii);
+    } else {
+      ascii.clear();
+    }
+  }
+  if ascii.len() >= 4 {
+    push_candidate(&mut parts, &mut ascii);
+  }
+
+  for offset in 0..=1 {
+    utf16.clear();
+    for chunk in data[offset..].chunks_exact(2) {
+      let value = u16::from_le_bytes([chunk[0], chunk[1]]);
+      let ch = char::from_u32(value as u32);
+      if let Some(ch) = ch {
+        if !ch.is_control() && !matches!(ch, '\u{fffd}' | '\u{feff}') {
+          utf16.push(ch);
+          continue;
+        }
+        if ch == '\n' || ch == '\r' || ch == '\t' {
+          utf16.push(' ');
+          continue;
+        }
+      }
+      if utf16.chars().count() >= 4 {
+        push_candidate(&mut parts, &mut utf16);
+      } else {
+        utf16.clear();
+      }
+    }
+    if utf16.chars().count() >= 4 {
+      push_candidate(&mut parts, &mut utf16);
+    }
+  }
+
+  parts.join("\n")
+}
+
 fn read_zip_entry_to_string(archive: &mut ZipArchive<File>, name: &str) -> Result<Option<String>, String> {
   let mut entry = match archive.by_name(name) {
     Ok(entry) => entry,
@@ -1179,29 +1243,41 @@ fn extract_office_fallback(path: &Path) -> Result<OfficeFallbackPreview, String>
     .and_then(|value| value.to_str())
     .unwrap_or("Office file")
     .to_string();
-  let file = File::open(path).map_err(|error| error.to_string())?;
-  let mut archive = ZipArchive::new(file).map_err(|error| error.to_string())?;
-
-  let xml_sources: Vec<&str> = match extension.as_str() {
-    "docx" => vec!["word/document.xml"],
-    "xlsx" => vec!["xl/sharedStrings.xml", "xl/worksheets/sheet1.xml"],
-    "pptx" => vec!["ppt/slides/slide1.xml", "ppt/slides/slide2.xml", "ppt/slides/slide3.xml"],
-    "odp" => vec!["content.xml"],
+  let excerpt = match extension.as_str() {
+    "docx" | "xlsx" | "pptx" | "odp" => {
+      let file = File::open(path).map_err(|error| error.to_string())?;
+      let mut archive = ZipArchive::new(file).map_err(|error| error.to_string())?;
+      let xml_sources: Vec<&str> = match extension.as_str() {
+        "docx" => vec!["word/document.xml"],
+        "xlsx" => vec!["xl/sharedStrings.xml", "xl/worksheets/sheet1.xml"],
+        "pptx" => vec!["ppt/slides/slide1.xml", "ppt/slides/slide2.xml", "ppt/slides/slide3.xml"],
+        "odp" => vec!["content.xml"],
+        _ => Vec::new(),
+      };
+      let mut parts = Vec::new();
+      for source in xml_sources {
+        if let Some(xml) = read_zip_entry_to_string(&mut archive, source)? {
+          let text = extract_text_from_xml(&xml);
+          if !text.is_empty() {
+            parts.push(text);
+          }
+        }
+      }
+      if parts.is_empty() {
+        return Err("Could not extract readable fallback text.".into());
+      }
+      parts.join("\n\n")
+    }
+    "doc" | "xls" | "ppt" => {
+      let data = fs::read(path).map_err(|error| error.to_string())?;
+      let extracted = extract_text_from_binary_office(&data);
+      if extracted.is_empty() {
+        return Err("Could not extract readable fallback text.".into());
+      }
+      extracted
+    }
     _ => return Err("No fallback extractor for this file type.".into()),
   };
-  let mut parts = Vec::new();
-  for source in xml_sources {
-    if let Some(xml) = read_zip_entry_to_string(&mut archive, source)? {
-      let text = extract_text_from_xml(&xml);
-      if !text.is_empty() {
-        parts.push(text);
-      }
-    }
-  }
-  if parts.is_empty() {
-    return Err("Could not extract readable fallback text.".into());
-  }
-  let excerpt = parts.join("\n\n");
   let excerpt = excerpt.chars().take(5000).collect::<String>();
   Ok(OfficeFallbackPreview {
     mode: "text-fallback".to_string(),
@@ -1509,8 +1585,20 @@ fn store_recent_undo_actions(
 #[tauri::command]
 fn get_preview_capabilities() -> PreviewCapabilities {
   let mut notes = Vec::new();
-  let office_rich = cfg!(target_os = "macos");
-  if !office_rich {
+  let office_rich = cfg!(target_os = "macos")
+    || (cfg!(target_os = "windows") && detect_windows_libreoffice().is_some());
+  if cfg!(target_os = "windows") {
+    if office_rich {
+      notes.push(
+        "Windows Office preview uses LibreOffice to generate a cached PDF preview.".to_string(),
+      );
+    } else {
+      notes.push(
+        "Install LibreOffice to enable rich Office previews on Windows; text fallback is used otherwise."
+          .to_string(),
+      );
+    }
+  } else if !office_rich {
     notes.push("Rich Office preview is unavailable on this platform; text fallback is used.".to_string());
   }
   PreviewCapabilities {
@@ -2413,23 +2501,48 @@ async fn generate_preview(
     }
   }
 
-  if !cfg!(target_os = "macos") {
-    return Err("Preview generation is only supported on macOS.".into());
-  }
-
   let cache_dir = app.path().app_cache_dir().map_err(|error| error.to_string())?;
   let preview_root = cache_dir.join("previews");
+  let metadata = fs::metadata(&source_path).map_err(|error| error.to_string())?;
+  let preview_cache_root = preview_root.join("office-cache");
+  let cached_preview_path = preview_cache_root.join(format!(
+    "{}.pdf",
+    preview_cache_key(
+      &source_path,
+      metadata.len(),
+      modified_ms_from_metadata(&metadata),
+    )
+  ));
+  if cached_preview_path.exists() {
+    let preview_id = format!("preview:{}.pdf", Uuid::new_v4());
+    {
+      let mut map = state.map.lock().expect("map lock");
+      map.insert(preview_id.clone(), cached_preview_path);
+    }
+    state
+      .preview_map
+      .lock()
+      .expect("preview map lock")
+      .insert(id, preview_id.clone());
+    return Ok(preview_id);
+  }
   let session_dir = preview_root.join(Uuid::new_v4().to_string());
   let source_path_clone = source_path.clone();
+  let cached_preview_path_clone = cached_preview_path.clone();
   let preview_path = tauri::async_runtime::spawn_blocking(move || {
     fs::create_dir_all(&preview_root).map_err(|error| error.to_string())?;
+    fs::create_dir_all(&preview_cache_root).map_err(|error| error.to_string())?;
     fs::create_dir_all(&session_dir).map_err(|error| error.to_string())?;
-    run_qlmanage_preview(&session_dir, &source_path_clone)
+    run_platform_preview(&session_dir, &source_path_clone, Some(&cached_preview_path_clone))
   })
   .await
   .map_err(|error| error.to_string())??;
 
-  let preview_id = format!("preview:{}", Uuid::new_v4());
+  let preview_extension = preview_path
+    .extension()
+    .and_then(|ext| ext.to_str())
+    .unwrap_or("bin");
+  let preview_id = format!("preview:{}.{}", Uuid::new_v4(), preview_extension);
   {
     let mut map = state.map.lock().expect("map lock");
     map.insert(preview_id.clone(), preview_path);
@@ -4054,6 +4167,25 @@ fn detect_archive_kind(path: &Path) -> Option<ArchiveKind> {
   None
 }
 
+fn wait_for_child(child: &mut Child, timeout_secs: u64) -> Result<(), String> {
+  let timeout = Duration::from_secs(timeout_secs);
+  let start = Instant::now();
+  loop {
+    if let Some(status) = child.try_wait().map_err(|error| error.to_string())? {
+      if !status.success() {
+        return Err("Preview generation failed.".into());
+      }
+      return Ok(());
+    }
+    if start.elapsed() >= timeout {
+      let _ = child.kill();
+      let _ = child.wait();
+      return Err("Preview generation timed out.".into());
+    }
+    std::thread::sleep(Duration::from_millis(QLMANAGE_POLL_MS));
+  }
+}
+
 fn run_qlmanage_preview(session_dir: &Path, source_path: &Path) -> Result<PathBuf, String> {
   let mut child = Command::new("qlmanage")
     .arg("-t")
@@ -4065,22 +4197,7 @@ fn run_qlmanage_preview(session_dir: &Path, source_path: &Path) -> Result<PathBu
     .spawn()
     .map_err(|error| error.to_string())?;
 
-  let timeout = Duration::from_secs(QLMANAGE_TIMEOUT_SECS);
-  let start = Instant::now();
-  loop {
-    if let Some(status) = child.try_wait().map_err(|error| error.to_string())? {
-      if !status.success() {
-        return Err("Preview generation failed.".into());
-      }
-      break;
-    }
-    if start.elapsed() >= timeout {
-      let _ = child.kill();
-      let _ = child.wait();
-      return Err("Preview generation timed out.".into());
-    }
-    std::thread::sleep(Duration::from_millis(QLMANAGE_POLL_MS));
-  }
+  wait_for_child(&mut child, QLMANAGE_TIMEOUT_SECS)?;
 
   fs::read_dir(session_dir)
     .map_err(|error| error.to_string())?
@@ -4094,6 +4211,156 @@ fn run_qlmanage_preview(session_dir: &Path, source_path: &Path) -> Result<PathBu
         .unwrap_or(false)
     })
     .ok_or("Preview file not found".into())
+}
+
+fn file_url_from_path(path: &Path) -> String {
+  let normalized = path.to_string_lossy().replace('\\', "/");
+  format!("file:///{}", normalized)
+}
+
+fn detect_windows_libreoffice() -> Option<PathBuf> {
+  let mut candidates = Vec::new();
+  if let Some(program_files) = std::env::var_os("ProgramFiles") {
+    candidates.push(
+      PathBuf::from(&program_files)
+        .join("LibreOffice")
+        .join("program")
+        .join("soffice.com"),
+    );
+    candidates.push(
+      PathBuf::from(&program_files)
+        .join("LibreOffice")
+        .join("program")
+        .join("soffice.exe"),
+    );
+  }
+  if let Some(program_files_x86) = std::env::var_os("ProgramFiles(x86)") {
+    candidates.push(
+      PathBuf::from(&program_files_x86)
+        .join("LibreOffice")
+        .join("program")
+        .join("soffice.com"),
+    );
+    candidates.push(
+      PathBuf::from(&program_files_x86)
+        .join("LibreOffice")
+        .join("program")
+        .join("soffice.exe"),
+    );
+  }
+  if let Some(candidate) = candidates.into_iter().find(|candidate| candidate.exists()) {
+    return Some(candidate);
+  }
+
+  let discovered = Command::new("where")
+    .arg("soffice.com")
+    .output()
+    .ok()
+    .filter(|output| output.status.success())
+    .and_then(|output| {
+      let stdout = String::from_utf8_lossy(&output.stdout);
+      stdout
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(PathBuf::from)
+    });
+  if discovered.is_some() {
+    return discovered;
+  }
+
+  Command::new("where")
+    .arg("soffice.exe")
+    .output()
+    .ok()
+    .filter(|output| output.status.success())
+    .and_then(|output| {
+      let stdout = String::from_utf8_lossy(&output.stdout);
+      stdout
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(PathBuf::from)
+    })
+}
+
+fn run_windows_libreoffice_preview(
+  session_dir: &Path,
+  source_path: &Path,
+  cached_preview_path: &Path,
+) -> Result<PathBuf, String> {
+  let soffice_path = detect_windows_libreoffice()
+    .ok_or("LibreOffice not found. Install LibreOffice to enable Office previews.".to_string())?;
+  let profile_dir = session_dir
+    .parent()
+    .unwrap_or(session_dir)
+    .join("lo-profile");
+  fs::create_dir_all(&profile_dir).map_err(|error| error.to_string())?;
+  let user_installation = file_url_from_path(&profile_dir);
+
+  let mut child = Command::new(&soffice_path)
+    .arg("--headless")
+    .arg("--nologo")
+    .arg("--nodefault")
+    .arg("--norestore")
+    .arg("--nolockcheck")
+    .arg(format!("-env:UserInstallation={}", user_installation))
+    .arg("--convert-to")
+    .arg("pdf")
+    .arg("--outdir")
+    .arg(session_dir)
+    .arg(source_path)
+    .spawn()
+    .map_err(|error| {
+      if soffice_path.as_os_str().to_string_lossy().contains("soffice.") {
+        format!("Failed to start LibreOffice: {}. Install LibreOffice or add it to PATH.", error)
+      } else {
+        error.to_string()
+      }
+    })?;
+
+  wait_for_child(&mut child, WINDOWS_OFFICE_PREVIEW_TIMEOUT_SECS)?;
+
+  let source_stem = source_path
+    .file_stem()
+    .and_then(|value| value.to_str())
+    .ok_or("Preview file name is invalid".to_string())?;
+  let converted_preview = session_dir.join(format!("{}.pdf", source_stem));
+  let preview_path = if converted_preview.exists() {
+    converted_preview
+  } else {
+    fs::read_dir(session_dir)
+      .map_err(|error| error.to_string())?
+      .filter_map(|entry| entry.ok())
+      .map(|entry| entry.path())
+      .find(|path| {
+        path
+          .extension()
+          .and_then(|ext| ext.to_str())
+          .map(|ext| ext.eq_ignore_ascii_case("pdf"))
+          .unwrap_or(false)
+      })
+      .ok_or("Preview file not found".to_string())?
+  };
+
+  fs::copy(&preview_path, cached_preview_path).map_err(|error| error.to_string())?;
+  Ok(cached_preview_path.to_path_buf())
+}
+
+fn run_platform_preview(
+  session_dir: &Path,
+  source_path: &Path,
+  cached_preview_path: Option<&Path>,
+) -> Result<PathBuf, String> {
+  if cfg!(target_os = "macos") {
+    return run_qlmanage_preview(session_dir, source_path);
+  }
+  if cfg!(target_os = "windows") {
+    let cached_preview_path =
+      cached_preview_path.ok_or("Preview cache path missing".to_string())?;
+    return run_windows_libreoffice_preview(session_dir, source_path, cached_preview_path);
+  }
+  Err("Preview generation is not supported on this platform.".into())
 }
 
 fn list_zip_entries(path: &Path) -> Result<ArchivePreview, String> {
@@ -4433,6 +4700,16 @@ mod tests {
     assert!(text.contains("Hello"));
     assert!(text.contains("world"));
     assert!(text.contains("&"));
+  }
+
+  #[test]
+  fn binary_office_fallback_extracts_ascii_and_utf16_text() {
+    let mut data = b"ABCD plain text section".to_vec();
+    data.extend_from_slice(&[0, 1, 2, 3]);
+    data.extend("Hello from UTF16".encode_utf16().flat_map(u16::to_le_bytes).collect::<Vec<_>>());
+    let text = extract_text_from_binary_office(&data);
+    assert!(text.contains("plain text section"));
+    assert!(text.contains("Hello from UTF16"));
   }
 
   #[test]

@@ -20,6 +20,9 @@ const previewCapabilities: PreviewCapabilities = {
 const installBaseHandlers = (controller: ReturnType<typeof createMockBridge>) => {
   controller.onInvoke("get_crash_report", () => null);
   controller.onInvoke("get_preview_capabilities", () => previewCapabilities);
+  controller.onInvoke("get_cached_scan", () => null);
+  controller.onInvoke("store_cached_scan_result", () => null);
+  controller.onInvoke("hydrate_cached_scan", () => null);
   controller.onInvoke("get_recent_undo_actions", () => []);
   controller.onInvoke("store_recent_undo_actions", () => null);
   controller.onInvoke("update_heartbeat", () => null);
@@ -65,7 +68,7 @@ describe("App integration", () => {
     );
     expect(container.querySelector(".file-list")?.textContent).toContain("big.jpg");
 
-    await user.selectOptions(screen.getByDisplayValue("Tree"), "list");
+    await user.selectOptions(screen.getByDisplayValue("List"), "list");
     await user.selectOptions(screen.getByDisplayValue("Name (A-Z)"), "size_desc");
 
     const fileNames = Array.from(container.querySelectorAll(".file-item .filename")).map((n) =>

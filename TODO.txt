@@ -78,8 +78,8 @@ BUG
 .win window title bar not integrated
 .win tree view not rendering
 .win groups not rendering
-win install opens dead cmd window
-win install as admin
+.win install opens dead cmd window
+.win install as admin
 .win drop down background color
 .extension panel not scrollable
 .mouse click on row does not highligth

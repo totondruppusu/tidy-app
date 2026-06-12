@@ -27,14 +27,14 @@
     "test:all": "npm run test:coverage && npm run test:e2e && npm run test:rust"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2.0.0",
-    "@tauri-apps/plugin-dialog": "^2.7.1",
+    "@tauri-apps/api": "^2.9.0",
+    "@tauri-apps/plugin-dialog": "^2.6.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-window": "^2.2.7"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2.0.0",
+    "@tauri-apps/cli": "^2.9.0",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
     "@testing-library/user-event": "^14.6.1",

@@ -8,7 +8,11 @@ export type BridgeUnlisten = () => void;
 
 export type BridgeWindow = {
   isFullscreen: () => Promise<boolean>;
+  isMaximized: () => Promise<boolean>;
   onResized: (callback: () => void) => Promise<BridgeUnlisten>;
+  minimize: () => Promise<void>;
+  toggleMaximize: () => Promise<void>;
+  close: () => Promise<void>;
   setTheme: (theme: "light" | "dark") => Promise<void>;
 };
 

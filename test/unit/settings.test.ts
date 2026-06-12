@@ -16,9 +16,9 @@ describe("settings", () => {
     expect(getInitialTheme()).toBe("dark");
   });
 
-  it("falls back to light when no preference", () => {
+  it("falls back to dark when no preference", () => {
     window.localStorage.removeItem("tidy-theme");
-    expect(getInitialTheme()).toBe("light");
+    expect(getInitialTheme()).toBe("dark");
   });
 
   it("normalizes destination slots", () => {

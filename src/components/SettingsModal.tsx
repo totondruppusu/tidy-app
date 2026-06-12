@@ -14,39 +14,49 @@ import { formatBytes } from "../lib/format";
 type SettingsModalProps = {
   isOpen: boolean;
   isLoading: boolean;
-  viewMode: ViewMode;
-  setViewMode: Dispatch<SetStateAction<ViewMode>>;
-  sortMode: SortMode;
-  setSortMode: Dispatch<SetStateAction<SortMode>>;
-  displayGroupMode: GroupMode;
-  handleGroupModeChange: (value: GroupMode) => void;
-  shouldGroupDuplicates: boolean;
-  extensionFilterMode: ExtensionFilterMode;
-  setExtensionFilterMode: Dispatch<SetStateAction<ExtensionFilterMode>>;
-  autoScanOnPick: boolean;
-  setAutoScanOnPick: Dispatch<SetStateAction<boolean>>;
-  rememberLastFolder: boolean;
-  setRememberLastFolder: Dispatch<SetStateAction<boolean>>;
-  includeSubfolders: boolean;
-  setIncludeSubfolders: Dispatch<SetStateAction<boolean>>;
-  includeHidden: boolean;
-  setIncludeHidden: Dispatch<SetStateAction<boolean>>;
-  useHashForDuplicates: boolean;
-  setUseHashForDuplicates: Dispatch<SetStateAction<boolean>>;
-  duplicateMinSizeBytes: number;
-  setDuplicateMinSizeBytes: Dispatch<SetStateAction<number>>;
-  autoPlayMedia: boolean;
-  setAutoPlayMedia: Dispatch<SetStateAction<boolean>>;
-  skipLargePreviews: boolean;
-  setSkipLargePreviews: Dispatch<SetStateAction<boolean>>;
-  trashBehavior: TrashBehavior;
-  setTrashBehavior: Dispatch<SetStateAction<TrashBehavior>>;
-  confirmTrash: boolean;
-  setConfirmTrash: Dispatch<SetStateAction<boolean>>;
-  listDensity: DensityMode;
-  setListDensity: Dispatch<SetStateAction<DensityMode>>;
-  theme: ThemeMode;
-  setTheme: Dispatch<SetStateAction<ThemeMode>>;
+  layout: {
+    viewMode: ViewMode;
+    setViewMode: Dispatch<SetStateAction<ViewMode>>;
+    sortMode: SortMode;
+    setSortMode: Dispatch<SetStateAction<SortMode>>;
+    displayGroupMode: GroupMode;
+    handleGroupModeChange: (value: GroupMode) => void;
+    shouldGroupDuplicates: boolean;
+    extensionFilterMode: ExtensionFilterMode;
+    setExtensionFilterMode: Dispatch<SetStateAction<ExtensionFilterMode>>;
+    listDensity: DensityMode;
+    setListDensity: Dispatch<SetStateAction<DensityMode>>;
+  };
+  scanning: {
+    autoScanOnPick: boolean;
+    setAutoScanOnPick: Dispatch<SetStateAction<boolean>>;
+    rememberLastFolder: boolean;
+    setRememberLastFolder: Dispatch<SetStateAction<boolean>>;
+    includeSubfolders: boolean;
+    setIncludeSubfolders: Dispatch<SetStateAction<boolean>>;
+    includeHidden: boolean;
+    setIncludeHidden: Dispatch<SetStateAction<boolean>>;
+  };
+  cleanup: {
+    useHashForDuplicates: boolean;
+    setUseHashForDuplicates: Dispatch<SetStateAction<boolean>>;
+    duplicateMinSizeBytes: number;
+    setDuplicateMinSizeBytes: Dispatch<SetStateAction<number>>;
+    trashBehavior: TrashBehavior;
+    setTrashBehavior: Dispatch<SetStateAction<TrashBehavior>>;
+    confirmTrash: boolean;
+    setConfirmTrash: Dispatch<SetStateAction<boolean>>;
+  };
+  preview: {
+    autoPlayMedia: boolean;
+    setAutoPlayMedia: Dispatch<SetStateAction<boolean>>;
+    skipLargePreviews: boolean;
+    setSkipLargePreviews: Dispatch<SetStateAction<boolean>>;
+  };
+  appearance: {
+    theme: ThemeMode;
+    setTheme: Dispatch<SetStateAction<ThemeMode>>;
+  };
   onClose: () => void;
   onOpenHelp: () => void;
   settingsFrameRef: RefObject<HTMLDivElement>;
@@ -56,39 +66,11 @@ type SettingsModalProps = {
 export const SettingsModal = ({
   isOpen,
   isLoading,
-  viewMode,
-  setViewMode,
-  sortMode,
-  setSortMode,
-  displayGroupMode,
-  handleGroupModeChange,
-  shouldGroupDuplicates,
-  extensionFilterMode,
-  setExtensionFilterMode,
-  autoScanOnPick,
-  setAutoScanOnPick,
-  rememberLastFolder,
-  setRememberLastFolder,
-  includeSubfolders,
-  setIncludeSubfolders,
-  includeHidden,
-  setIncludeHidden,
-  useHashForDuplicates,
-  setUseHashForDuplicates,
-  duplicateMinSizeBytes,
-  setDuplicateMinSizeBytes,
-  autoPlayMedia,
-  setAutoPlayMedia,
-  skipLargePreviews,
-  setSkipLargePreviews,
-  trashBehavior,
-  setTrashBehavior,
-  confirmTrash,
-  setConfirmTrash,
-  listDensity,
-  setListDensity,
-  theme,
-  setTheme,
+  layout,
+  scanning,
+  cleanup,
+  preview,
+  appearance,
   onClose,
   onOpenHelp,
   settingsFrameRef,
@@ -138,8 +120,10 @@ export const SettingsModal = ({
                     <div className="setting-subtitle">Choose the default file list layout.</div>
                   </div>
                   <select
-                    value={viewMode}
-                    onChange={(event) => setViewMode(event.target.value as ViewMode)}
+                    value={layout.viewMode}
+                    onChange={(event) =>
+                      layout.setViewMode(event.target.value as ViewMode)
+                    }
                     disabled={isLoading}
                   >
                     <option value="tree">Tree</option>
@@ -152,8 +136,10 @@ export const SettingsModal = ({
                     <div className="setting-subtitle">Set the initial sort order.</div>
                   </div>
                   <select
-                    value={sortMode}
-                    onChange={(event) => setSortMode(event.target.value as SortMode)}
+                    value={layout.sortMode}
+                    onChange={(event) =>
+                      layout.setSortMode(event.target.value as SortMode)
+                    }
                     disabled={isLoading}
                   >
                     <option value="none">None</option>
@@ -175,14 +161,18 @@ export const SettingsModal = ({
                     <div className="setting-subtitle">Choose how files are grouped on load.</div>
                   </div>
                   <select
-                    value={displayGroupMode}
-                    onChange={(event) => handleGroupModeChange(event.target.value as GroupMode)}
-                    disabled={isLoading || shouldGroupDuplicates}
+                    value={layout.displayGroupMode}
+                    onChange={(event) =>
+                      layout.handleGroupModeChange(event.target.value as GroupMode)
+                    }
+                    disabled={isLoading || layout.shouldGroupDuplicates}
                   >
                     <option value="none">None</option>
                     <option value="type">Type</option>
                     <option value="extension">Extension</option>
-                    {shouldGroupDuplicates && <option value="duplicates">Duplicates</option>}
+                    {layout.shouldGroupDuplicates && (
+                      <option value="duplicates">Duplicates</option>
+                    )}
                   </select>
                 </div>
                 <div className="settings-row">
@@ -191,8 +181,12 @@ export const SettingsModal = ({
                     <div className="setting-subtitle">Set the initial extension filter selection.</div>
                   </div>
                   <select
-                    value={extensionFilterMode}
-                    onChange={(event) => setExtensionFilterMode(event.target.value as ExtensionFilterMode)}
+                    value={layout.extensionFilterMode}
+                    onChange={(event) =>
+                      layout.setExtensionFilterMode(
+                        event.target.value as ExtensionFilterMode,
+                      )
+                    }
                     disabled={isLoading}
                   >
                     <option value="all">All extensions</option>
@@ -206,8 +200,10 @@ export const SettingsModal = ({
                     <div className="setting-subtitle">Control how compact the file list appears.</div>
                   </div>
                   <select
-                    value={listDensity}
-                    onChange={(event) => setListDensity(event.target.value as DensityMode)}
+                    value={layout.listDensity}
+                    onChange={(event) =>
+                      layout.setListDensity(event.target.value as DensityMode)
+                    }
                     disabled={isLoading}
                   >
                     <option value="comfortable">Comfortable</option>
@@ -228,11 +224,13 @@ export const SettingsModal = ({
                   <label className="setting-toggle">
                     <input
                       type="checkbox"
-                      checked={autoScanOnPick}
-                      onChange={(event) => setAutoScanOnPick(event.target.checked)}
+                      checked={scanning.autoScanOnPick}
+                      onChange={(event) =>
+                        scanning.setAutoScanOnPick(event.target.checked)
+                      }
                       disabled={isLoading}
                     />
-                    <span>{autoScanOnPick ? "On" : "Off"}</span>
+                    <span>{scanning.autoScanOnPick ? "On" : "Off"}</span>
                   </label>
                 </div>
                 <div className="settings-row">
@@ -243,11 +241,13 @@ export const SettingsModal = ({
                   <label className="setting-toggle">
                     <input
                       type="checkbox"
-                      checked={rememberLastFolder}
-                      onChange={(event) => setRememberLastFolder(event.target.checked)}
+                      checked={scanning.rememberLastFolder}
+                      onChange={(event) =>
+                        scanning.setRememberLastFolder(event.target.checked)
+                      }
                       disabled={isLoading}
                     />
-                    <span>{rememberLastFolder ? "On" : "Off"}</span>
+                    <span>{scanning.rememberLastFolder ? "On" : "Off"}</span>
                   </label>
                 </div>
                 <div className="settings-row">
@@ -258,11 +258,13 @@ export const SettingsModal = ({
                   <label className="setting-toggle">
                     <input
                       type="checkbox"
-                      checked={includeSubfolders}
-                      onChange={(event) => setIncludeSubfolders(event.target.checked)}
+                      checked={scanning.includeSubfolders}
+                      onChange={(event) =>
+                        scanning.setIncludeSubfolders(event.target.checked)
+                      }
                       disabled={isLoading}
                     />
-                    <span>{includeSubfolders ? "On" : "Off"}</span>
+                    <span>{scanning.includeSubfolders ? "On" : "Off"}</span>
                   </label>
                 </div>
                 <div className="settings-row">
@@ -273,11 +275,13 @@ export const SettingsModal = ({
                   <label className="setting-toggle">
                     <input
                       type="checkbox"
-                      checked={includeHidden}
-                      onChange={(event) => setIncludeHidden(event.target.checked)}
+                      checked={scanning.includeHidden}
+                      onChange={(event) =>
+                        scanning.setIncludeHidden(event.target.checked)
+                      }
                       disabled={isLoading}
                     />
-                    <span>{includeHidden ? "On" : "Off"}</span>
+                    <span>{scanning.includeHidden ? "On" : "Off"}</span>
                   </label>
                 </div>
               </section>
@@ -294,11 +298,13 @@ export const SettingsModal = ({
                   <label className="setting-toggle">
                     <input
                       type="checkbox"
-                      checked={useHashForDuplicates}
-                      onChange={(event) => setUseHashForDuplicates(event.target.checked)}
+                      checked={cleanup.useHashForDuplicates}
+                      onChange={(event) =>
+                        cleanup.setUseHashForDuplicates(event.target.checked)
+                      }
                       disabled={isLoading}
                     />
-                    <span>{useHashForDuplicates ? "On" : "Off"}</span>
+                    <span>{cleanup.useHashForDuplicates ? "On" : "Off"}</span>
                   </label>
                 </div>
                 <div className="settings-row">
@@ -307,8 +313,12 @@ export const SettingsModal = ({
                     <div className="setting-subtitle">Ignore files smaller than this size.</div>
                   </div>
                   <select
-                    value={duplicateMinSizeBytes}
-                    onChange={(event) => setDuplicateMinSizeBytes(Number(event.target.value))}
+                    value={cleanup.duplicateMinSizeBytes}
+                    onChange={(event) =>
+                      cleanup.setDuplicateMinSizeBytes(
+                        Number(event.target.value),
+                      )
+                    }
                     disabled={isLoading}
                   >
                     {DUPLICATE_MIN_SIZE_OPTIONS.map((option) => (
@@ -324,8 +334,12 @@ export const SettingsModal = ({
                     <div className="setting-subtitle">System trash supports up to 20 undo actions.</div>
                   </div>
                   <select
-                    value={trashBehavior}
-                    onChange={(event) => setTrashBehavior(event.target.value as TrashBehavior)}
+                    value={cleanup.trashBehavior}
+                    onChange={(event) =>
+                      cleanup.setTrashBehavior(
+                        event.target.value as TrashBehavior,
+                      )
+                    }
                     disabled={isLoading}
                   >
                     <option value="system">System trash (undoable)</option>
@@ -336,19 +350,25 @@ export const SettingsModal = ({
                   <div className="setting-info">
                     <div className="setting-title">Trash alert</div>
                     <div className="setting-subtitle">
-                      {trashBehavior === "permanent"
+                      {cleanup.trashBehavior === "permanent"
                         ? "Permanent delete always asks for confirmation."
                         : "Show a confirmation dialog before deleting."}
                     </div>
                   </div>
-                  <label className={`setting-toggle${confirmTrash ? "" : " is-warning"}`}>
+                  <label
+                    className={`setting-toggle${
+                      cleanup.confirmTrash ? "" : " is-warning"
+                    }`}
+                  >
                     <input
                       type="checkbox"
-                      checked={confirmTrash}
-                      onChange={(event) => setConfirmTrash(event.target.checked)}
+                      checked={cleanup.confirmTrash}
+                      onChange={(event) =>
+                        cleanup.setConfirmTrash(event.target.checked)
+                      }
                       disabled={isLoading}
                     />
-                    <span>{confirmTrash ? "On" : "Off"}</span>
+                    <span>{cleanup.confirmTrash ? "On" : "Off"}</span>
                   </label>
                 </div>
               </section>
@@ -365,11 +385,13 @@ export const SettingsModal = ({
                   <label className="setting-toggle">
                     <input
                       type="checkbox"
-                      checked={autoPlayMedia}
-                      onChange={(event) => setAutoPlayMedia(event.target.checked)}
+                      checked={preview.autoPlayMedia}
+                      onChange={(event) =>
+                        preview.setAutoPlayMedia(event.target.checked)
+                      }
                       disabled={isLoading}
                     />
-                    <span>{autoPlayMedia ? "On" : "Off"}</span>
+                    <span>{preview.autoPlayMedia ? "On" : "Off"}</span>
                   </label>
                 </div>
                 <div className="settings-row">
@@ -382,11 +404,13 @@ export const SettingsModal = ({
                   <label className="setting-toggle">
                     <input
                       type="checkbox"
-                      checked={skipLargePreviews}
-                      onChange={(event) => setSkipLargePreviews(event.target.checked)}
+                      checked={preview.skipLargePreviews}
+                      onChange={(event) =>
+                        preview.setSkipLargePreviews(event.target.checked)
+                      }
                       disabled={isLoading}
                     />
-                    <span>{skipLargePreviews ? "On" : "Off"}</span>
+                    <span>{preview.skipLargePreviews ? "On" : "Off"}</span>
                   </label>
                 </div>
                 <div className="settings-row">
@@ -397,11 +421,15 @@ export const SettingsModal = ({
                   <label className="setting-toggle">
                     <input
                       type="checkbox"
-                      checked={theme === "dark"}
-                      onChange={(event) => setTheme(event.target.checked ? "dark" : "light")}
+                      checked={appearance.theme === "dark"}
+                      onChange={(event) =>
+                        appearance.setTheme(
+                          event.target.checked ? "dark" : "light",
+                        )
+                      }
                       disabled={isLoading}
                     />
-                    <span>{theme === "dark" ? "On" : "Off"}</span>
+                    <span>{appearance.theme === "dark" ? "On" : "Off"}</span>
                   </label>
                 </div>
               </section>

@@ -7,9 +7,7 @@ import {
   type SetStateAction,
 } from "react";
 import type {
-  ArchivePreview,
   ActivitySnapshot,
-  ActionBatchResult,
   CachedScan,
   CrashReport,
   DensityMode,
@@ -20,15 +18,9 @@ import type {
   FolderTrashItem,
   GroupMode,
   MoveResult,
-  OfficeFallbackPreview,
-  SuggestionPreset,
   SuggestionActionFilter,
   SuggestionSortMode,
-  Suggestion,
-  SuggestionSet,
   SuggestionsMode,
-  SafetyLevel,
-  PreviewCapabilities,
   ScanBatch,
   ScanProgress,
   ScanResult,
@@ -47,14 +39,8 @@ import {
   DESTINATION_SLOT_COUNT,
   EVENT_LOOP_LAG_WARN_MS,
   EVENT_LOOP_POLL_MS,
-  FILTER_OPTIONS,
   HEARTBEAT_INTERVAL_MS,
-  LARGE_PREVIEW_SIZE_BYTES,
   MAX_UNDO_STACK,
-  OFFICE_PREVIEW_EXTENSIONS,
-  OFFICE_PREVIEW_DEBOUNCE_MS,
-  PREVIEW_DELAY_MS,
-  ARCHIVE_PREVIEW_DEBOUNCE_MS,
   SETTINGS_KEY,
   TREE_INDENT_PX,
 } from "../constants/appConstants";
@@ -63,29 +49,21 @@ import {
   isEditableTarget,
   shouldOpenOnEnter,
 } from "../lib/dom";
-import { buildMediaUrl } from "../lib/media";
 import {
   buildCrashEmailBody,
-  formatBytes,
-  formatActivitySummary,
   formatCrashReport,
   formatDuplicateGroupMeta,
-  formatExtensionLabel,
   formatGroupTitle,
-  formatKindLabel,
   formatPathLabel,
-  formatTimestamp,
 } from "../lib/format";
-import { getExtension } from "../lib/files";
+import { dedupeFileEntries, getExtension } from "../lib/files";
 import { getGroupIdForFile, groupFilesByMode } from "../lib/grouping";
 import {
   buildFileTree,
   getFolderCollapseKey,
   sortTreeNodesByIndex,
 } from "../lib/tree";
-import { clampNumber } from "../lib/number";
 import {
-  extractFolder,
   formatRelativeFolder,
   getRelativeSegments,
   splitPathSegments,
@@ -98,23 +76,25 @@ import {
   listenEvent,
   openDialog,
 } from "../lib/desktopBridge";
+import { usePreviewController } from "../hooks/usePreviewController";
+import { useAsyncWorkflow } from "../hooks/useAsyncWorkflow";
+import { useSuggestionsController } from "../hooks/useSuggestionsController";
 import { getInitialTheme, getStoredSettings } from "../lib/settings";
+import { revealInFileManager } from "../services/fileManagerService";
+import { runActionBatch } from "../services/suggestionsService";
 import { HelpModal } from "../components/HelpModal";
+import { CrashReportModal } from "../components/CrashReportModal";
+import { DestinationSlots } from "../components/DestinationSlots";
+import { FileListPanel } from "../components/FileListPanel";
+import { PreviewPanel } from "../components/PreviewPanel";
 import { SettingsModal } from "../components/SettingsModal";
+import { SuggestionsModal } from "../components/SuggestionsModal";
+import { Toolbar } from "../components/Toolbar";
 
-const SUGGESTION_DEFAULT_STALE_DAYS = 30;
-const SUGGESTION_DEFAULT_MIN_LARGE_FILE_BYTES = 250 * 1024 * 1024;
-const SUGGESTION_DEFAULT_MAX_RESULTS = 200;
 const SUGGESTIONS_MODE_OPTIONS: { value: SuggestionsMode; label: string }[] = [
   { value: "review", label: "Review & Apply" },
   { value: "advanced", label: "Advanced" },
 ];
-
-const SUGGESTION_SAFETY_RANK: Record<SafetyLevel, number> = {
-  safe: 0,
-  review: 1,
-  manual: 2,
-};
 
 const SUGGESTION_ACTION_FILTER_OPTIONS: {
   value: SuggestionActionFilter;
@@ -162,10 +142,13 @@ type ScanCachePromptState = {
 };
 
 export default function App() {
+  const isWindowsDesktop =
+    typeof navigator !== "undefined" &&
+    isDesktopRuntime() &&
+    /windows/i.test(navigator.userAgent);
   const [storedSettings] = useState(() => getStoredSettings());
   const [files, setFiles] = useState<FileEntry[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
-  const [previewIndex, setPreviewIndex] = useState(0);
   const [, setStatus] = useState("Select a folder to begin.");
   const [filterMode, setFilterMode] = useState<FilterMode>(
     storedSettings.filterMode ?? "all",
@@ -258,7 +241,14 @@ export default function App() {
   const [currentFolder, setCurrentFolder] = useState<string | null>(
     initialFolder,
   );
-  const [isLoading, setIsLoading] = useState(false);
+  const {
+    isLoading,
+    start: startScanWorkflow,
+    succeed: succeedScanWorkflow,
+    fail: failScanWorkflow,
+    reset: resetScanWorkflow,
+    run: runScanWorkflow,
+  } = useAsyncWorkflow();
   const [scanCachePrompt, setScanCachePrompt] =
     useState<ScanCachePromptState | null>(null);
   const [isMutating, setIsMutating] = useState(false);
@@ -272,7 +262,12 @@ export default function App() {
   const resetSelectionToFirstRef = useRef(false);
   const blockingOverlayShowFrameRef = useRef<number | null>(null);
   const blockingOverlayHideFrameRef = useRef<number | null>(null);
-  const [isCancellingScan, setIsCancellingScan] = useState(false);
+  const {
+    isLoading: isCancellingScan,
+    start: startCancelScanWorkflow,
+    fail: failCancelScanWorkflow,
+    reset: resetCancelScanWorkflow,
+  } = useAsyncWorkflow();
   const [scanProgress, setScanProgress] = useState<ScanProgress | null>(null);
   const [renderCount, setRenderCount] = useState(0);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -315,6 +310,7 @@ export default function App() {
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isDrawerMode, setIsDrawerMode] = useState(false);
   const [isWindowFullscreen, setIsWindowFullscreen] = useState(false);
+  const [isWindowMaximized, setIsWindowMaximized] = useState(false);
   const [isExtensionsCollapsed, setIsExtensionsCollapsed] = useState(true);
   const [theme, setTheme] = useState<ThemeMode>(getInitialTheme);
   const [undoStack, setUndoStack] = useState<UndoAction[]>([]);
@@ -324,84 +320,6 @@ export default function App() {
   const [collapsedFolders, setCollapsedFolders] = useState<
     Record<string, boolean>
   >({});
-  const [previewZoom, setPreviewZoom] = useState(1);
-  const [previewPan, setPreviewPan] = useState({ x: 0, y: 0 });
-  const [isPreviewPanning, setIsPreviewPanning] = useState(false);
-  const [allowLargePreview, setAllowLargePreview] = useState(false);
-  const [officePreviewId, setOfficePreviewId] = useState<string | null>(null);
-  const [officeFallbackPreview, setOfficeFallbackPreview] =
-    useState<OfficeFallbackPreview | null>(null);
-  const [officePreviewStatus, setOfficePreviewStatus] = useState<
-    "idle" | "loading" | "error"
-  >("idle");
-  const [previewCapabilities, setPreviewCapabilities] =
-    useState<PreviewCapabilities | null>(null);
-  const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
-  const [suggestionsStatus, setSuggestionsStatus] = useState<
-    "idle" | "loading" | "error"
-  >("idle");
-  const [suggestionsError, setSuggestionsError] = useState<string | null>(null);
-  const [suggestionsMode, setSuggestionsMode] = useState<SuggestionsMode>(
-    storedSettings.suggestionsMode ?? "review",
-  );
-  const [suggestionPresets, setSuggestionPresets] = useState<
-    SuggestionPreset[]
-  >(storedSettings.suggestionPresets ?? []);
-  const [suggestionPresetId, setSuggestionPresetId] = useState<string | null>(
-    storedSettings.suggestionPresetId ?? null,
-  );
-  const [suggestionSafetyFilter, setSuggestionSafetyFilter] =
-    useState<SafetyLevel>("safe");
-  const [suggestionActionFilter, setSuggestionActionFilter] =
-    useState<SuggestionActionFilter>(
-      storedSettings.suggestionActionFilter ?? "all",
-    );
-  const [suggestionSortMode, setSuggestionSortMode] =
-    useState<SuggestionSortMode>(
-      storedSettings.suggestionSortMode ?? "largest_first",
-    );
-  const [suggestionSearchQuery, setSuggestionSearchQuery] = useState("");
-  const [suggestionStaleDays, setSuggestionStaleDays] = useState(
-    storedSettings.suggestionStaleDays ?? SUGGESTION_DEFAULT_STALE_DAYS,
-  );
-  const [suggestionMinLargeFileBytes, setSuggestionMinLargeFileBytes] =
-    useState(
-      storedSettings.suggestionMinLargeFileBytes ??
-        SUGGESTION_DEFAULT_MIN_LARGE_FILE_BYTES,
-    );
-  const [suggestionMaxResults, setSuggestionMaxResults] = useState(
-    storedSettings.suggestionMaxResults ?? SUGGESTION_DEFAULT_MAX_RESULTS,
-  );
-  const [selectedSuggestionIds, setSelectedSuggestionIds] = useState<string[]>(
-    [],
-  );
-  const [suggestionTotalReclaimableBytes, setSuggestionTotalReclaimableBytes] =
-    useState(0);
-  const [suggestionDryRunStatus, setSuggestionDryRunStatus] = useState<
-    "idle" | "loading" | "error"
-  >("idle");
-  const [suggestionDryRunError, setSuggestionDryRunError] = useState<
-    string | null
-  >(null);
-  const [suggestionDryRunResult, setSuggestionDryRunResult] =
-    useState<ActionBatchResult | null>(null);
-  const [suggestionDryRunSelectionKey, setSuggestionDryRunSelectionKey] =
-    useState<string | null>(null);
-  const [suggestionExplainabilityEnabled] = useState(false);
-  const [suggestionBatchToolbarEnabled] = useState(false);
-  const [archiveEntries, setArchiveEntries] = useState<string[]>([]);
-  const [archiveTruncated, setArchiveTruncated] = useState(false);
-  const [archiveStatus, setArchiveStatus] = useState<
-    "idle" | "loading" | "error"
-  >("idle");
-  const [archiveError, setArchiveError] = useState<string | null>(null);
-  const previewZoomTargetRef = useRef(1);
-  const previewZoomRafRef = useRef<number | null>(null);
-  const previewPanStartRef = useRef<{ x: number; y: number } | null>(null);
-  const previewPanPointerRef = useRef<{ x: number; y: number } | null>(null);
-  const previewDelayTimeoutRef = useRef<number | null>(null);
-  const officePreviewTimeoutRef = useRef<number | null>(null);
-  const archivePreviewTimeoutRef = useRef<number | null>(null);
   const activeScanId = useRef<string | null>(null);
   const scanBatchBufferRef = useRef<FileEntry[]>([]);
   const scanBatchRafRef = useRef<number | null>(null);
@@ -436,7 +354,7 @@ export default function App() {
       return;
     }
     scanBatchBufferRef.current = [];
-    setFiles((prev) => [...prev, ...pending]);
+    setFiles((prev) => dedupeFileEntries([...prev, ...pending]));
   }, []);
   const queueScanBatchFiles = useCallback(
     (batchFiles: FileEntry[]) => {
@@ -452,26 +370,6 @@ export default function App() {
       );
     },
     [flushQueuedScanBatches],
-  );
-  const clearSuggestionDryRunPreview = useCallback(() => {
-    setSuggestionDryRunResult(null);
-    setSuggestionDryRunSelectionKey(null);
-    setSuggestionDryRunStatus("idle");
-    setSuggestionDryRunError(null);
-  }, []);
-  const applySuggestionPreset = useCallback(
-    (preset: SuggestionPreset) => {
-      setSuggestionStaleDays(preset.staleDays);
-      setSuggestionMinLargeFileBytes(preset.minLargeFileBytes);
-      setSuggestionMaxResults(preset.maxResults);
-      setSuggestionSafetyFilter(preset.safetyFilter);
-      setSuggestionActionFilter(preset.actionFilter);
-      setSuggestionSortMode(preset.sortMode);
-      setSuggestionSearchQuery(preset.searchQuery ?? "");
-      setSuggestionPresetId(preset.id);
-      clearSuggestionDryRunPreview();
-    },
-    [clearSuggestionDryRunPreview],
   );
   const crashReportText = useMemo(
     () => (crashReport ? formatCrashReport(crashReport) : ""),
@@ -563,7 +461,7 @@ export default function App() {
     let isMounted = true;
     const appWindow = getDesktopWindow();
     let unlistenResize: (() => void) | null = null;
-    const syncFullscreenState = async () => {
+    const syncWindowState = async () => {
       try {
         const fullscreen = await appWindow.isFullscreen();
         if (isMounted) {
@@ -572,11 +470,19 @@ export default function App() {
       } catch {
         // Ignore unsupported window APIs in non-desktop runtimes.
       }
+      try {
+        const maximized = await appWindow.isMaximized();
+        if (isMounted) {
+          setIsWindowMaximized(maximized);
+        }
+      } catch {
+        // Ignore unsupported window APIs in non-desktop runtimes.
+      }
     };
-    void syncFullscreenState();
+    void syncWindowState();
     void appWindow
       .onResized(() => {
-        void syncFullscreenState();
+        void syncWindowState();
       })
       .then((unlisten) => {
         if (!isMounted) {
@@ -592,6 +498,37 @@ export default function App() {
         unlistenResize();
       }
     };
+  }, []);
+
+  const handleMinimizeWindow = useCallback(() => {
+    if (!isDesktopRuntime()) {
+      return;
+    }
+    void getDesktopWindow().minimize().catch(() => {});
+  }, []);
+
+  const handleToggleMaximizeWindow = useCallback(() => {
+    if (!isDesktopRuntime()) {
+      return;
+    }
+    void getDesktopWindow()
+      .toggleMaximize()
+      .then(async () => {
+        try {
+          const maximized = await getDesktopWindow().isMaximized();
+          setIsWindowMaximized(maximized);
+        } catch {
+          // Ignore unsupported window APIs in non-desktop runtimes.
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  const handleCloseWindow = useCallback(() => {
+    if (!isDesktopRuntime()) {
+      return;
+    }
+    void getDesktopWindow().close().catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -618,14 +555,6 @@ export default function App() {
       return;
     }
     let isMounted = true;
-    invokeCommand<PreviewCapabilities>("get_preview_capabilities")
-      .then((capabilities) => {
-        if (!isMounted) {
-          return;
-        }
-        setPreviewCapabilities(capabilities);
-      })
-      .catch(() => {});
     invokeCommand<UndoAction[]>("get_recent_undo_actions")
       .then((actions) => {
         if (!isMounted) {
@@ -809,6 +738,65 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    const applyWindowTheme = async () => {
+      if (!isDesktopRuntime()) {
+        return;
+      }
+      try {
+        await getDesktopWindow().setTheme(theme === "dark" ? "dark" : "light");
+      } catch (error) {
+        console.warn("Failed to sync window theme.", error);
+      }
+    };
+    void applyWindowTheme();
+  }, [theme]);
+
+  useEffect(() => {
+    if (!isDesktopRuntime()) {
+      return;
+    }
+    void invokeCommand("store_recent_undo_actions", {
+      actions: undoStack,
+    }).catch(() => {});
+  }, [undoStack]);
+
+  const updateStatus = useCallback((message: string) => {
+    lastStatusRef.current = message;
+    setStatus(message);
+  }, []);
+
+  const suggestionsController = useSuggestionsController({
+    storedSettings,
+    currentFolder,
+    includeSubfolders,
+    includeHidden,
+    updateStatus,
+  });
+
+  const {
+    suggestionsMode,
+    suggestionPresets,
+    suggestionPresetId,
+    suggestionActionFilter,
+    suggestionSortMode,
+    suggestionStaleDays,
+    suggestionMinLargeFileBytes,
+    suggestionMaxResults,
+    suggestionDryRunStatus,
+    suggestionDryRunResult,
+    suggestionDryRunSelectionKey,
+    selectedSuggestions,
+    selectedSuggestionPlanKey,
+    clearSuggestionDryRunPreview,
+    resetSuggestionsState,
+    getDeleteSuggestionPreset,
+    confirmDeleteSuggestionPreset,
+    buildSuggestionActions,
+    previewSelectedSuggestions,
+    removeAppliedSuggestions,
+  } = suggestionsController;
+
+  useEffect(() => {
     if (typeof window === "undefined") {
       return;
     }
@@ -875,34 +863,6 @@ export default function App() {
     suggestionPresetId,
     suggestionPresets,
   ]);
-
-  useEffect(() => {
-    const applyWindowTheme = async () => {
-      if (!isDesktopRuntime()) {
-        return;
-      }
-      try {
-        await getDesktopWindow().setTheme(theme === "dark" ? "dark" : "light");
-      } catch (error) {
-        console.warn("Failed to sync window theme.", error);
-      }
-    };
-    void applyWindowTheme();
-  }, [theme]);
-
-  useEffect(() => {
-    if (!isDesktopRuntime()) {
-      return;
-    }
-    void invokeCommand("store_recent_undo_actions", {
-      actions: undoStack,
-    }).catch(() => {});
-  }, [undoStack]);
-
-  const updateStatus = useCallback((message: string) => {
-    lastStatusRef.current = message;
-    setStatus(message);
-  }, []);
 
   const clearBlockingOverlayFrames = useCallback(() => {
     if (blockingOverlayShowFrameRef.current !== null) {
@@ -1136,235 +1096,6 @@ export default function App() {
     () => sortFiles(filteredFiles),
     [filteredFiles, sortFiles],
   );
-  const selectedSuggestionSet = useMemo(
-    () => new Set(selectedSuggestionIds),
-    [selectedSuggestionIds],
-  );
-  const activeSuggestionPreset = useMemo(
-    () =>
-      suggestionPresets.find((preset) => preset.id === suggestionPresetId) ??
-      null,
-    [suggestionPresetId, suggestionPresets],
-  );
-  const visibleSuggestions = useMemo(() => {
-    const maxRank = SUGGESTION_SAFETY_RANK[suggestionSafetyFilter];
-    const searchValue = suggestionSearchQuery.trim().toLowerCase();
-    const next = suggestions.filter((suggestion) => {
-      if (SUGGESTION_SAFETY_RANK[suggestion.safetyLevel] > maxRank) {
-        return false;
-      }
-      if (
-        suggestionActionFilter !== "all" &&
-        suggestion.actionType !== suggestionActionFilter
-      ) {
-        return false;
-      }
-      if (!searchValue) {
-        return true;
-      }
-      const haystack = [
-        suggestion.reason.message,
-        suggestion.sourcePath,
-        suggestion.destinationPath ?? "",
-        suggestion.actionType,
-      ]
-        .join(" ")
-        .toLowerCase();
-      return haystack.includes(searchValue);
-    });
-    const comparePath = (a: Suggestion, b: Suggestion) =>
-      a.sourcePath.localeCompare(b.sourcePath, undefined, {
-        sensitivity: "base",
-      });
-    next.sort((a, b) => {
-      if (suggestionSortMode === "safest_first") {
-        const bySafety =
-          SUGGESTION_SAFETY_RANK[a.safetyLevel] -
-          SUGGESTION_SAFETY_RANK[b.safetyLevel];
-        if (bySafety !== 0) {
-          return bySafety;
-        }
-        const bySize = b.reclaimableBytes - a.reclaimableBytes;
-        return bySize !== 0 ? bySize : comparePath(a, b);
-      }
-      if (suggestionSortMode === "path_asc") {
-        const byPath = comparePath(a, b);
-        return byPath !== 0 ? byPath : b.reclaimableBytes - a.reclaimableBytes;
-      }
-      const bySize = b.reclaimableBytes - a.reclaimableBytes;
-      return bySize !== 0 ? bySize : comparePath(a, b);
-    });
-    return next;
-  }, [
-    suggestions,
-    suggestionSafetyFilter,
-    suggestionActionFilter,
-    suggestionSearchQuery,
-    suggestionSortMode,
-  ]);
-  const selectedSuggestions = useMemo(
-    () =>
-      suggestions.filter((suggestion) =>
-        selectedSuggestionSet.has(suggestion.id),
-      ),
-    [suggestions, selectedSuggestionSet],
-  );
-  const selectedVisibleSuggestions = useMemo(
-    () =>
-      visibleSuggestions.filter((suggestion) =>
-        selectedSuggestionSet.has(suggestion.id),
-      ),
-    [visibleSuggestions, selectedSuggestionSet],
-  );
-  const selectedSuggestionReclaimableBytes = useMemo(
-    () =>
-      selectedSuggestions.reduce(
-        (total, suggestion) => total + suggestion.reclaimableBytes,
-        0,
-      ),
-    [selectedSuggestions],
-  );
-  const selectedSuggestionPlanKey = useMemo(
-    () =>
-      selectedSuggestions
-        .map((suggestion) => suggestion.id)
-        .sort((a, b) => a.localeCompare(b))
-        .join("|"),
-    [selectedSuggestions],
-  );
-  const selectedSuggestionActionCounts = useMemo(() => {
-    const counts: Record<string, number> = {};
-    selectedSuggestions.forEach((suggestion) => {
-      counts[suggestion.actionType] = (counts[suggestion.actionType] ?? 0) + 1;
-    });
-    return counts;
-  }, [selectedSuggestions]);
-  const suggestionDryRunResultsById = useMemo(
-    () =>
-      new Map(
-        (suggestionDryRunResult?.results ?? []).map(
-          (result) => [result.id, result] as const,
-        ),
-      ),
-    [suggestionDryRunResult],
-  );
-  const suggestionDryRunStatusCounts = useMemo(() => {
-    const counts: Record<"planned" | "blocked" | "error", number> = {
-      planned: 0,
-      blocked: 0,
-      error: 0,
-    };
-    for (const result of suggestionDryRunResult?.results ?? []) {
-      if (result.status === "planned") {
-        counts.planned += 1;
-      } else if (result.status === "blocked") {
-        counts.blocked += 1;
-      } else if (result.status === "error") {
-        counts.error += 1;
-      }
-    }
-    return counts;
-  }, [suggestionDryRunResult]);
-  const formatSuggestionPath = useCallback(
-    (path: string) => {
-      const segments = getRelativeSegments(path, currentFolder);
-      return segments.length > 0 ? segments.join("/") : path;
-    },
-    [currentFolder],
-  );
-  const getSuggestionActionLabel = useCallback((actionType: string) => {
-    switch (actionType) {
-      case "trash":
-        return "Move to Trash";
-      case "remove-empty-folder":
-        return "Remove Empty Folder";
-      case "move":
-        return "Move";
-      case "delete":
-        return "Delete Permanently";
-      default:
-        return actionType;
-    }
-  }, []);
-  const getSuggestionTargetLabel = useCallback(
-    (suggestion: Suggestion) => {
-      if (suggestion.actionType === "trash") {
-        return "System Trash";
-      }
-      if (
-        suggestion.actionType === "remove-empty-folder" ||
-        suggestion.actionType === "delete"
-      ) {
-        return "Removed";
-      }
-      if (suggestion.destinationPath) {
-        return formatSuggestionPath(suggestion.destinationPath);
-      }
-      return "No destination";
-    },
-    [formatSuggestionPath],
-  );
-  const getSuggestionChangeSentence = useCallback(
-    (suggestion: Suggestion) => {
-      const sourceSegments = splitPathSegments(suggestion.sourcePath);
-      const fileName =
-        sourceSegments[sourceSegments.length - 1] ?? suggestion.sourcePath;
-      if (suggestion.actionType === "trash") {
-        return `Move "${fileName}" to System Trash.`;
-      }
-      if (suggestion.actionType === "remove-empty-folder") {
-        return `Remove the empty folder "${fileName}".`;
-      }
-      if (suggestion.actionType === "move") {
-        return `Move "${fileName}" to ${getSuggestionTargetLabel(suggestion)}.`;
-      }
-      if (suggestion.actionType === "delete") {
-        return `Permanently delete "${fileName}".`;
-      }
-      return `${getSuggestionActionLabel(suggestion.actionType)} "${fileName}".`;
-    },
-    [getSuggestionActionLabel, getSuggestionTargetLabel],
-  );
-  const updateSuggestionSelection = useCallback(
-    (updater: (previous: string[]) => string[]) => {
-      clearSuggestionDryRunPreview();
-      setSelectedSuggestionIds(updater);
-    },
-    [clearSuggestionDryRunPreview],
-  );
-  const hasDryRunPreviewForSelection = Boolean(
-    suggestionDryRunResult &&
-    suggestionDryRunResult.dryRun &&
-    suggestionDryRunSelectionKey === selectedSuggestionPlanKey,
-  );
-  useEffect(() => {
-    if (
-      suggestionPresetId &&
-      !suggestionPresets.some((preset) => preset.id === suggestionPresetId)
-    ) {
-      setSuggestionPresetId(suggestionPresets[0]?.id ?? null);
-    }
-  }, [suggestionPresetId, suggestionPresets]);
-
-  useEffect(() => {
-    if (
-      !suggestionDryRunResult &&
-      suggestionDryRunStatus === "idle" &&
-      !suggestionDryRunError
-    ) {
-      return;
-    }
-    clearSuggestionDryRunPreview();
-  }, [
-    clearSuggestionDryRunPreview,
-    suggestionStaleDays,
-    suggestionMinLargeFileBytes,
-    suggestionMaxResults,
-    suggestionSafetyFilter,
-    suggestionActionFilter,
-    suggestionSortMode,
-    suggestionSearchQuery,
-  ]);
   const sortedIndexById = useMemo(() => {
     const map = new Map<string, number>();
     sortedFiles.forEach((file, index) => {
@@ -1372,45 +1103,13 @@ export default function App() {
     });
     return map;
   }, [sortedFiles]);
+  const preview = usePreviewController({
+    sortedFiles,
+    currentIndex,
+    skipLargePreviews,
+  });
   const currentFile = sortedFiles[currentIndex];
-  const previewFile = sortedFiles[previewIndex];
-  const previewExtension = previewFile
-    ? getExtension(previewFile.name)
-    : "none";
-  const isLargePreview =
-    Boolean(previewFile) && previewFile.sizeBytes >= LARGE_PREVIEW_SIZE_BYTES;
-  const isPreviewSuppressed =
-    Boolean(previewFile) &&
-    skipLargePreviews &&
-    isLargePreview &&
-    !allowLargePreview;
-  const canRenderPreview = !isPreviewSuppressed;
-  const isMediaPreview =
-    canRenderPreview &&
-    (previewFile?.kind === "image" || previewFile?.kind === "video");
-  const isAudioPreview = canRenderPreview && previewFile?.kind === "audio";
-  const isTextPreview = canRenderPreview && previewFile?.kind === "text";
-  const isPdfPreview =
-    canRenderPreview &&
-    previewFile?.kind === "docs" &&
-    previewExtension === "pdf";
-  const isOfficePreview =
-    canRenderPreview &&
-    previewFile?.kind === "docs" &&
-    OFFICE_PREVIEW_EXTENSIONS.includes(previewExtension);
-  const isDocumentPreview = isTextPreview || isPdfPreview;
-  const isArchivePreview =
-    canRenderPreview && previewFile?.kind === "compressed";
-  const isFallbackPreview =
-    Boolean(previewFile) &&
-    canRenderPreview &&
-    !isMediaPreview &&
-    !isAudioPreview &&
-    !isDocumentPreview &&
-    !isOfficePreview &&
-    !isArchivePreview;
   const hasFiles = sortedFiles.length > 0;
-  const isZoomablePreview = isMediaPreview;
 
   useEffect(() => {
     if (sortedFiles.length === 0) {
@@ -1446,300 +1145,6 @@ export default function App() {
     currentFileIdRef.current = sortedFiles[boundedIndex]?.id ?? null;
   }, [sortedFiles, sortedIndexById, currentIndex]);
 
-  useEffect(() => {
-    if (officePreviewTimeoutRef.current) {
-      window.clearTimeout(officePreviewTimeoutRef.current);
-      officePreviewTimeoutRef.current = null;
-    }
-    if (!previewFile || !isOfficePreview) {
-      setOfficePreviewId(null);
-      setOfficeFallbackPreview(null);
-      setOfficePreviewStatus("idle");
-      return;
-    }
-    if (!isDesktopRuntime()) {
-      setOfficePreviewId(null);
-      setOfficeFallbackPreview(null);
-      setOfficePreviewStatus("error");
-      return;
-    }
-    let isActive = true;
-    setOfficePreviewId(null);
-    setOfficeFallbackPreview(null);
-    setOfficePreviewStatus("idle");
-    officePreviewTimeoutRef.current = window.setTimeout(() => {
-      if (!isActive) {
-        return;
-      }
-      setOfficePreviewStatus("loading");
-      invokeCommand<string>("generate_preview", { id: previewFile.id })
-        .then((previewId) => {
-          if (!isActive) {
-            return;
-          }
-          setOfficePreviewId(previewId);
-          setOfficePreviewStatus("idle");
-        })
-        .catch((error) => {
-          if (!isActive) {
-            return;
-          }
-          console.warn("Failed to generate office preview.", error);
-          invokeCommand<OfficeFallbackPreview>(
-            "extract_office_fallback_preview",
-            { id: previewFile.id },
-          )
-            .then((fallback) => {
-              if (!isActive) {
-                return;
-              }
-              setOfficePreviewId(null);
-              setOfficeFallbackPreview(fallback);
-              setOfficePreviewStatus("idle");
-            })
-            .catch(() => {
-              if (!isActive) {
-                return;
-              }
-              setOfficePreviewId(null);
-              setOfficeFallbackPreview(null);
-              setOfficePreviewStatus("error");
-            });
-        });
-    }, OFFICE_PREVIEW_DEBOUNCE_MS);
-    return () => {
-      isActive = false;
-      if (officePreviewTimeoutRef.current) {
-        window.clearTimeout(officePreviewTimeoutRef.current);
-        officePreviewTimeoutRef.current = null;
-      }
-    };
-  }, [previewFile?.id, isOfficePreview]);
-
-  useEffect(() => {
-    if (archivePreviewTimeoutRef.current) {
-      window.clearTimeout(archivePreviewTimeoutRef.current);
-      archivePreviewTimeoutRef.current = null;
-    }
-    if (!previewFile || !isArchivePreview) {
-      setArchiveEntries([]);
-      setArchiveTruncated(false);
-      setArchiveStatus("idle");
-      setArchiveError(null);
-      return;
-    }
-    if (!isDesktopRuntime()) {
-      setArchiveEntries([]);
-      setArchiveTruncated(false);
-      setArchiveStatus("error");
-      setArchiveError("Archive preview requires the desktop app.");
-      return;
-    }
-    let isActive = true;
-    setArchiveEntries([]);
-    setArchiveTruncated(false);
-    setArchiveStatus("idle");
-    setArchiveError(null);
-    archivePreviewTimeoutRef.current = window.setTimeout(() => {
-      if (!isActive) {
-        return;
-      }
-      setArchiveStatus("loading");
-      invokeCommand<ArchivePreview>("list_archive_entries", {
-        id: previewFile.id,
-      })
-        .then((result) => {
-          if (!isActive) {
-            return;
-          }
-          setArchiveEntries(result.entries);
-          setArchiveTruncated(result.truncated);
-          setArchiveStatus("idle");
-        })
-        .catch((error) => {
-          if (!isActive) {
-            return;
-          }
-          console.warn("Failed to load archive preview.", error);
-          setArchiveEntries([]);
-          setArchiveTruncated(false);
-          setArchiveStatus("error");
-          setArchiveError("Preview unavailable for this archive.");
-        });
-    }, ARCHIVE_PREVIEW_DEBOUNCE_MS);
-    return () => {
-      isActive = false;
-      if (archivePreviewTimeoutRef.current) {
-        window.clearTimeout(archivePreviewTimeoutRef.current);
-        archivePreviewTimeoutRef.current = null;
-      }
-    };
-  }, [previewFile?.id, isArchivePreview]);
-
-  useEffect(() => {
-    setPreviewZoom(1);
-    previewZoomTargetRef.current = 1;
-    setPreviewPan({ x: 0, y: 0 });
-    if (previewZoomRafRef.current !== null) {
-      cancelAnimationFrame(previewZoomRafRef.current);
-      previewZoomRafRef.current = null;
-    }
-  }, [previewFile?.id]);
-
-  useEffect(() => {
-    setAllowLargePreview(false);
-  }, [previewFile?.id, skipLargePreviews]);
-
-  const handlePreviewWheel = useCallback(
-    (event: React.WheelEvent<HTMLDivElement>) => {
-      if (!event.ctrlKey) {
-        return;
-      }
-      if (!isMediaPreview) {
-        return;
-      }
-      event.preventDefault();
-      if (Math.abs(event.deltaY) < 0.6) {
-        return;
-      }
-      const zoomFactor = Math.exp(-event.deltaY * 0.0045);
-      previewZoomTargetRef.current = clampNumber(
-        previewZoomTargetRef.current * zoomFactor,
-        0.5,
-        4,
-      );
-      if (previewZoomRafRef.current !== null) {
-        return;
-      }
-      const tick = () => {
-        setPreviewZoom((value) => {
-          const target = previewZoomTargetRef.current;
-          const diff = target - value;
-          if (Math.abs(diff) < 0.001) {
-            previewZoomRafRef.current = null;
-            return target;
-          }
-          previewZoomRafRef.current = requestAnimationFrame(tick);
-          return value + diff * 0.18;
-        });
-      };
-      previewZoomRafRef.current = requestAnimationFrame(tick);
-    },
-    [isMediaPreview],
-  );
-
-  const setPreviewZoomValue = useCallback((value: number) => {
-    const clamped = clampNumber(value, 0.5, 4);
-    previewZoomTargetRef.current = clamped;
-    if (previewZoomRafRef.current !== null) {
-      cancelAnimationFrame(previewZoomRafRef.current);
-      previewZoomRafRef.current = null;
-    }
-    setPreviewZoom(clamped);
-  }, []);
-
-  const handleZoomOut = useCallback(() => {
-    if (!isZoomablePreview) {
-      return;
-    }
-    setPreviewZoomValue(previewZoomTargetRef.current / 1.15);
-  }, [isZoomablePreview, setPreviewZoomValue]);
-
-  const handleZoomIn = useCallback(() => {
-    if (!isZoomablePreview) {
-      return;
-    }
-    setPreviewZoomValue(previewZoomTargetRef.current * 1.15);
-  }, [isZoomablePreview, setPreviewZoomValue]);
-
-  const handleZoomReset = useCallback(() => {
-    if (!isZoomablePreview) {
-      return;
-    }
-    setPreviewZoomValue(1);
-    setPreviewPan({ x: 0, y: 0 });
-  }, [isZoomablePreview, setPreviewZoomValue]);
-
-  const handlePreviewPanStart = useCallback(
-    (event: React.PointerEvent<HTMLDivElement>) => {
-      if (previewFile?.kind !== "image") {
-        return;
-      }
-      if (event.button !== 0) {
-        return;
-      }
-      event.preventDefault();
-      event.stopPropagation();
-      event.currentTarget.setPointerCapture(event.pointerId);
-      previewPanStartRef.current = { x: previewPan.x, y: previewPan.y };
-      previewPanPointerRef.current = { x: event.clientX, y: event.clientY };
-      setIsPreviewPanning(true);
-    },
-    [previewFile?.kind, previewPan.x, previewPan.y],
-  );
-
-  const handlePreviewPanMove = useCallback(
-    (event: React.PointerEvent<HTMLDivElement>) => {
-      if (!previewPanStartRef.current || !previewPanPointerRef.current) {
-        return;
-      }
-      const startPan = previewPanStartRef.current;
-      const startPointer = previewPanPointerRef.current;
-      setPreviewPan({
-        x: startPan.x + (event.clientX - startPointer.x),
-        y: startPan.y + (event.clientY - startPointer.y),
-      });
-    },
-    [],
-  );
-
-  const handlePreviewPanEnd = useCallback(
-    (event: React.PointerEvent<HTMLDivElement>) => {
-      if (!previewPanStartRef.current) {
-        return;
-      }
-      previewPanStartRef.current = null;
-      previewPanPointerRef.current = null;
-      event.currentTarget.releasePointerCapture(event.pointerId);
-      setIsPreviewPanning(false);
-    },
-    [],
-  );
-
-  useEffect(() => {
-    return () => {
-      if (previewZoomRafRef.current !== null) {
-        cancelAnimationFrame(previewZoomRafRef.current);
-      }
-    };
-  }, []);
-
-  useEffect(() => {
-    if (sortedFiles.length === 0) {
-      setPreviewIndex(0);
-      return;
-    }
-    if (previewIndex >= sortedFiles.length) {
-      setPreviewIndex(sortedFiles.length - 1);
-    }
-  }, [previewIndex, sortedFiles.length]);
-
-  useEffect(() => {
-    if (previewDelayTimeoutRef.current !== null) {
-      window.clearTimeout(previewDelayTimeoutRef.current);
-    }
-    previewDelayTimeoutRef.current = window.setTimeout(() => {
-      setPreviewIndex(currentIndex);
-      previewDelayTimeoutRef.current = null;
-    }, PREVIEW_DELAY_MS);
-    return () => {
-      if (previewDelayTimeoutRef.current !== null) {
-        window.clearTimeout(previewDelayTimeoutRef.current);
-        previewDelayTimeoutRef.current = null;
-      }
-    };
-  }, [currentIndex]);
-
   const buildScanCacheRequest = useCallback(
     (folderPath: string): ScanCacheRequest => ({
       folderPath,
@@ -1765,43 +1170,28 @@ export default function App() {
     setCurrentIndex(0);
     setRenderCount(0);
     setUndoStack([]);
-    setSuggestions([]);
-    setSelectedSuggestionIds([]);
-    setSuggestionTotalReclaimableBytes(0);
-    setSuggestionsError(null);
-    setSuggestionsStatus("idle");
-    setSuggestionDryRunResult(null);
-    setSuggestionDryRunSelectionKey(null);
-    setSuggestionDryRunStatus("idle");
-    setSuggestionDryRunError(null);
+    resetSuggestionsState();
     setCollapsedGroups({});
     setCollapsedFolders({});
-  }, [cancelPendingScanBatchFlush]);
+  }, [cancelPendingScanBatchFlush, resetSuggestionsState]);
 
   const applyScanResult = useCallback(
     (folderPath: string, result: ScanResult) => {
       cancelPendingScanBatchFlush();
       resetSelectionToFirstRef.current = true;
-      setFiles(result.files);
+      const uniqueFiles = dedupeFileEntries(result.files);
+      setFiles(uniqueFiles);
       setCurrentFolder(folderPath);
       currentFileIdRef.current = null;
       setCurrentIndex(0);
       setRenderCount(0);
       setUndoStack([]);
-      setSuggestions([]);
-      setSelectedSuggestionIds([]);
-      setSuggestionTotalReclaimableBytes(0);
-      setSuggestionsError(null);
-      setSuggestionsStatus("idle");
-      setSuggestionDryRunResult(null);
-      setSuggestionDryRunSelectionKey(null);
-      setSuggestionDryRunStatus("idle");
-      setSuggestionDryRunError(null);
+      resetSuggestionsState();
       setCollapsedGroups({});
       setCollapsedFolders({});
-      updateStatus(`Loaded ${result.files.length} items from ${folderPath}.`);
+      updateStatus(`Loaded ${uniqueFiles.length} items from ${folderPath}.`);
     },
-    [cancelPendingScanBatchFlush, updateStatus],
+    [cancelPendingScanBatchFlush, resetSuggestionsState, updateStatus],
   );
 
   const runFreshScan = useCallback(
@@ -1814,8 +1204,8 @@ export default function App() {
           : `${Date.now()}`;
       activeScanId.current = scanId;
       setScanCachePrompt(null);
-      setIsCancellingScan(false);
-      setIsLoading(true);
+      resetCancelScanWorkflow();
+      startScanWorkflow();
       setScanProgress({
         scanId,
         scanned: 0,
@@ -1843,53 +1233,71 @@ export default function App() {
         } catch (cacheError) {
           console.warn("Failed to store cached scan.", cacheError);
         }
+        succeedScanWorkflow();
       } catch (error) {
         if (activeScanId.current !== scanId) {
           return;
         }
         const message = String(error);
         if (message.toLowerCase().includes("scan cancelled")) {
+          resetScanWorkflow();
           updateStatus("Scan cancelled.");
           return;
         }
+        failScanWorkflow(message);
         updateStatus(`Scan failed: ${message}`);
       } finally {
         if (activeScanId.current === scanId) {
-          setIsLoading(false);
           setScanProgress(null);
           activeScanId.current = null;
-          setIsCancellingScan(false);
+          resetCancelScanWorkflow();
         }
       }
     },
-    [applyScanResult, resetScanViewState, updateStatus],
+    [
+      applyScanResult,
+      failScanWorkflow,
+      resetCancelScanWorkflow,
+      resetScanViewState,
+      resetScanWorkflow,
+      startScanWorkflow,
+      succeedScanWorkflow,
+      updateStatus,
+    ],
   );
 
   const loadCachedScan = useCallback(
     async (cachedScan: CachedScan) => {
-      try {
-        await invokeCommand("hydrate_cached_scan", {
-          request: {
-            folderPath: cachedScan.folderPath,
-            files: cachedScan.files,
+      const hydrated = await runScanWorkflow(
+        async () => {
+          await invokeCommand("hydrate_cached_scan", {
+            request: {
+              folderPath: cachedScan.folderPath,
+              files: cachedScan.files,
+            },
+          });
+          return true;
+        },
+        {
+          onError: (message) => {
+            updateStatus(`Failed to load cached scan: ${message}`);
           },
-        });
-      } catch (error) {
-        updateStatus(`Failed to load cached scan: ${String(error)}`);
+        },
+      );
+      if (hydrated === null) {
         return;
       }
       setScanCachePrompt(null);
-      setIsLoading(false);
       setScanProgress(null);
       activeScanId.current = null;
-      setIsCancellingScan(false);
+      resetCancelScanWorkflow();
       setLastScanFilterMode(cachedScan.filterMode);
       applyScanResult(cachedScan.folderPath, {
         files: cachedScan.files,
         total: cachedScan.total,
       });
     },
-    [applyScanResult, updateStatus],
+    [applyScanResult, resetCancelScanWorkflow, runScanWorkflow, updateStatus],
   );
 
   const handleScan = useCallback(
@@ -1923,15 +1331,21 @@ export default function App() {
     if (!scanId || isCancellingScan) {
       return;
     }
-    setIsCancellingScan(true);
+    startCancelScanWorkflow();
     updateStatus("Stopping scan...");
     try {
       await invokeCommand("cancel_scan", { scanId });
     } catch (error) {
-      setIsCancellingScan(false);
-      updateStatus(`Failed to stop scan: ${String(error)}`);
+      const message = String(error);
+      failCancelScanWorkflow(message);
+      updateStatus(`Failed to stop scan: ${message}`);
     }
-  }, [isCancellingScan, updateStatus]);
+  }, [
+    failCancelScanWorkflow,
+    isCancellingScan,
+    startCancelScanWorkflow,
+    updateStatus,
+  ]);
 
   const pickFolder = useCallback(async () => {
     try {
@@ -1951,208 +1365,102 @@ export default function App() {
     }
   }, [autoScanOnPick, handleScan, updateStatus]);
 
-  const applyLastSuggestionPreset = useCallback(() => {
-    if (!activeSuggestionPreset) {
-      updateStatus("No saved preset selected.");
-      return;
-    }
-    applySuggestionPreset(activeSuggestionPreset);
-    updateStatus(`Applied preset "${activeSuggestionPreset.name}".`);
-  }, [activeSuggestionPreset, applySuggestionPreset, updateStatus]);
-
-  const applySuggestionPresetById = useCallback(
-    (presetId: string) => {
-      const preset = suggestionPresets.find((entry) => entry.id === presetId);
-      if (!preset) {
-        updateStatus("Preset not found.");
-        return;
-      }
-      applySuggestionPreset(preset);
-      updateStatus(`Applied preset "${preset.name}".`);
-    },
-    [suggestionPresets, applySuggestionPreset, updateStatus],
-  );
-
-  const renameSuggestionPreset = useCallback(() => {
-    if (!activeSuggestionPreset) {
-      updateStatus("Select a preset to rename.");
-      return;
-    }
-    const name = window.prompt("Rename preset", activeSuggestionPreset.name);
-    if (!name) {
-      return;
-    }
-    const trimmed = name.trim();
-    if (!trimmed) {
-      updateStatus("Preset name cannot be empty.");
-      return;
-    }
-    setSuggestionPresets((previous) =>
-      previous.map((preset) =>
-        preset.id === activeSuggestionPreset.id
-          ? { ...preset, name: trimmed }
-          : preset,
-      ),
-    );
-    updateStatus(`Preset renamed to "${trimmed}".`);
-  }, [activeSuggestionPreset, updateStatus]);
-
-  const deleteSuggestionPreset = useCallback(async () => {
-    if (!activeSuggestionPreset) {
-      updateStatus("Select a preset to delete.");
+  const handleDeleteSuggestionPreset = useCallback(async () => {
+    const preset = await getDeleteSuggestionPreset();
+    if (!preset) {
       return;
     }
     const shouldDelete = await confirmDialog(
-      `Delete preset "${activeSuggestionPreset.name}"?`,
+      `Delete preset "${preset.activePresetName}"?`,
       { title: "Delete suggestion preset" },
     );
     if (!shouldDelete) {
       return;
     }
-    setSuggestionPresets((previous) =>
-      previous.filter((preset) => preset.id !== activeSuggestionPreset.id),
-    );
-    setSuggestionPresetId((current) =>
-      current === activeSuggestionPreset.id ? null : current,
-    );
-    updateStatus(`Preset "${activeSuggestionPreset.name}" deleted.`);
-  }, [activeSuggestionPreset, updateStatus]);
+    confirmDeleteSuggestionPreset(preset.activePresetId);
+    updateStatus(`Preset "${preset.activePresetName}" deleted.`);
+  }, [confirmDeleteSuggestionPreset, getDeleteSuggestionPreset, updateStatus]);
 
-  const buildSuggestionActions = useCallback(
-    (items: Suggestion[]) =>
-      items.map((suggestion) => ({
-        id: suggestion.id,
-        actionType: suggestion.actionType,
-        sourcePath: suggestion.sourcePath,
-        destinationPath: suggestion.destinationPath ?? null,
-        safetyLevel: suggestion.safetyLevel,
-        reason: suggestion.reason.message,
-      })),
-    [],
+  const toggleSidebar = useCallback(() => {
+    setIsSidebarCollapsed((prev) => !prev);
+  }, []);
+
+  const handleCurrentFolderScan = useCallback(() => {
+    void handleScan(currentFolder ?? undefined);
+  }, [currentFolder, handleScan]);
+
+  const handleFilterModeChange = useCallback(
+    (value: FilterMode) => {
+      runBlockingUiTransition(
+        "Updating filter",
+        () => setFilterMode(value),
+        "Refreshing the file selection...",
+      );
+    },
+    [runBlockingUiTransition],
   );
 
-  const buildSuggestions = useCallback(async () => {
-    if (!currentFolder) {
-      updateStatus("Select a folder before building suggestions.");
-      return;
-    }
-    if (!isDesktopRuntime()) {
-      updateStatus("Suggestions are available in the desktop app.");
-      return;
-    }
-    setSuggestionsStatus("loading");
-    setSuggestionsError(null);
-    clearSuggestionDryRunPreview();
-    try {
-      const clampedStaleDays = Math.max(
-        1,
-        Math.min(3650, Math.round(suggestionStaleDays)),
+  const handleSortModeChange = useCallback(
+    (value: SortMode) => {
+      runBlockingUiTransition(
+        "Sorting files",
+        () => setSortMode(value),
+        "Reordering the list...",
       );
-      const clampedMaxResults = Math.max(
-        1,
-        Math.min(2000, Math.round(suggestionMaxResults)),
-      );
-      const clampedMinLargeBytes = Math.max(
-        1024 * 1024,
-        Math.min(
-          20 * 1024 * 1024 * 1024,
-          Math.round(suggestionMinLargeFileBytes),
-        ),
-      );
-      const result = await invokeCommand<SuggestionSet>(
-        "build_cleanup_suggestions",
-        {
-          request: {
-            folderPath: currentFolder,
-            includeSubfolders,
-            includeHidden,
-            staleDays: clampedStaleDays,
-            maxResults: clampedMaxResults,
-            minLargeFileBytes: clampedMinLargeBytes,
-          },
-        },
-      );
-      setSuggestions(result.suggestions);
-      setSuggestionTotalReclaimableBytes(result.totalReclaimableBytes);
-      setSelectedSuggestionIds(
-        result.suggestions
-          .filter((suggestion) => suggestion.safetyLevel === "safe")
-          .map((suggestion) => suggestion.id),
-      );
-      setSuggestionsStatus("idle");
-      updateStatus(
-        `Built ${result.suggestions.length} suggestions (${formatBytes(result.totalReclaimableBytes)} reclaimable).`,
-      );
-    } catch (error) {
-      const message = String(error);
-      setSuggestionsStatus("error");
-      setSuggestionsError(message);
-      updateStatus(`Suggestion build failed: ${message}`);
-    }
-  }, [
-    currentFolder,
-    includeSubfolders,
-    includeHidden,
-    updateStatus,
-    clearSuggestionDryRunPreview,
-    suggestionStaleDays,
-    suggestionMaxResults,
-    suggestionMinLargeFileBytes,
-  ]);
+    },
+    [runBlockingUiTransition],
+  );
 
-  const previewSelectedSuggestions = useCallback(async () => {
-    if (!currentFolder) {
-      updateStatus("No folder selected.");
-      return null;
-    }
-    if (!isDesktopRuntime()) {
-      updateStatus("Suggestions apply is available in the desktop app.");
-      return null;
-    }
-    const actions = buildSuggestionActions(selectedSuggestions);
-    if (actions.length === 0) {
-      updateStatus("Select at least one suggestion to preview.");
-      clearSuggestionDryRunPreview();
-      return null;
-    }
-    setSuggestionDryRunStatus("loading");
-    setSuggestionDryRunError(null);
-    try {
-      const plan = await invokeCommand<ActionBatchResult>(
-        "apply_action_batch",
-        {
-          request: {
-            actions,
-            dryRun: true,
-            allowUnsafe: false,
-            allowPermanentDelete: false,
-          },
-        },
+  const handleSidebarGroupModeChange = useCallback(
+    (value: GroupMode) => {
+      runBlockingUiTransition(
+        "Grouping files",
+        () => handleGroupModeChange(value),
+        "Rebuilding the file groups...",
       );
-      setSuggestionDryRunResult(plan);
-      setSuggestionDryRunSelectionKey(selectedSuggestionPlanKey);
-      setSuggestionDryRunStatus("idle");
-      updateStatus(
-        `Preview ready: ${plan.applied} planned, ${plan.blocked} blocked, ${plan.failed} failed.`,
+    },
+    [handleGroupModeChange, runBlockingUiTransition],
+  );
+
+  const handleViewModeChange = useCallback(
+    (value: ViewMode) => {
+      runBlockingUiTransition(
+        "Changing view",
+        () => setViewMode(value),
+        "Switching the file layout...",
       );
-      return plan;
-    } catch (error) {
-      const message = String(error);
-      setSuggestionDryRunStatus("error");
-      setSuggestionDryRunError(message);
-      setSuggestionDryRunResult(null);
-      setSuggestionDryRunSelectionKey(null);
-      updateStatus(`Suggestion preview failed: ${message}`);
-      return null;
-    }
-  }, [
-    currentFolder,
-    updateStatus,
-    selectedSuggestions,
-    buildSuggestionActions,
-    selectedSuggestionPlanKey,
-    clearSuggestionDryRunPreview,
-  ]);
+    },
+    [runBlockingUiTransition],
+  );
+
+  const handleToggleAllExtensions = useCallback(
+    (checked: boolean) => {
+      hasUserAdjustedExtensionsRef.current = true;
+      runBlockingUiTransition(
+        "Updating extensions",
+        () => setSelectedExtensions(checked ? allExtensions : []),
+        "Refreshing the visible files...",
+      );
+    },
+    [allExtensions, runBlockingUiTransition],
+  );
+
+  const handleToggleExtension = useCallback(
+    (extension: string) => {
+      hasUserAdjustedExtensionsRef.current = true;
+      runBlockingUiTransition(
+        "Updating extensions",
+        () =>
+          setSelectedExtensions((current) =>
+            current.includes(extension)
+              ? current.filter((value) => value !== extension)
+              : [...current, extension],
+          ),
+        "Refreshing the visible files...",
+      );
+    },
+    [runBlockingUiTransition],
+  );
 
   const applySelectedSuggestions = useCallback(async () => {
     if (!currentFolder) {
@@ -2194,42 +1502,18 @@ export default function App() {
     }
     await runMutationWithSpinner("Applying cleanup…", async () => {
       try {
-        const applied = await invokeCommand<ActionBatchResult>(
-          "apply_action_batch",
-          {
-            request: {
-              actions,
-              dryRun: false,
-              allowUnsafe: false,
-              allowPermanentDelete: false,
-            },
-          },
-        );
+        const applied = await runActionBatch({
+          actions,
+          dryRun: false,
+          allowUnsafe: false,
+          allowPermanentDelete: false,
+        });
         const appliedIds = new Set(
           applied.results
             .filter((result) => result.status === "applied")
             .map((result) => result.id),
         );
-        if (appliedIds.size > 0) {
-          setSuggestions((prev) =>
-            prev.filter((suggestion) => !appliedIds.has(suggestion.id)),
-          );
-          setSelectedSuggestionIds((prev) =>
-            prev.filter((id) => !appliedIds.has(id)),
-          );
-          setSuggestionTotalReclaimableBytes((prev) =>
-            Math.max(
-              0,
-              prev -
-                selectedSuggestions
-                  .filter((suggestion) => appliedIds.has(suggestion.id))
-                  .reduce(
-                    (total, suggestion) => total + suggestion.reclaimableBytes,
-                    0,
-                  ),
-            ),
-          );
-        }
+        removeAppliedSuggestions(appliedIds, selectedSuggestions);
         clearSuggestionDryRunPreview();
         updateStatus(
           `Applied ${applied.applied} suggestion(s), ${applied.blocked} blocked, ${applied.failed} failed.`,
@@ -2254,6 +1538,7 @@ export default function App() {
     suggestionDryRunStatus,
     previewSelectedSuggestions,
     clearSuggestionDryRunPreview,
+    removeAppliedSuggestions,
   ]);
 
   useEffect(() => {
@@ -2722,7 +2007,7 @@ export default function App() {
   const openFileInFinder = useCallback(
     async (file: FileEntry) => {
       try {
-        await invokeCommand("reveal_in_file_manager", {
+        await revealInFileManager({
           path: file.path,
           reveal: true,
         });
@@ -2736,7 +2021,7 @@ export default function App() {
   const openFileInSystem = useCallback(
     async (file: FileEntry) => {
       try {
-        await invokeCommand("reveal_in_file_manager", {
+        await revealInFileManager({
           path: file.path,
           reveal: false,
         });
@@ -3014,91 +2299,10 @@ export default function App() {
     setRenderCount(sortedFiles.length);
   }, [sortedFiles.length]);
 
-  const [visibleRange, setVisibleRange] = useState({ start: 0, end: 100 });
-  const ITEM_HEIGHT = listDensity === "compact" ? 34 : 40;
-  const BUFFER_SIZE = 20; // items to render above/below viewport
-
-  useEffect(() => {
-    if (viewMode !== "list" || effectiveGroupMode !== "none") {
-      setVisibleRange({ start: 0, end: 100 });
-      return;
-    }
-
-    const scrollNode = fileListScrollRef.current;
-    if (!scrollNode) {
-      return;
-    }
-
-    const updateVisibleRange = () => {
-      const scrollTop = scrollNode.scrollTop;
-      const containerHeight = scrollNode.clientHeight;
-
-      const startIndex = Math.max(
-        0,
-        Math.floor(scrollTop / ITEM_HEIGHT) - BUFFER_SIZE,
-      );
-      const endIndex = Math.min(
-        sortedFiles.length,
-        Math.ceil((scrollTop + containerHeight) / ITEM_HEIGHT) + BUFFER_SIZE,
-      );
-
-      setVisibleRange({ start: startIndex, end: endIndex });
-    };
-
-    updateVisibleRange();
-    scrollNode.addEventListener("scroll", updateVisibleRange, {
-      passive: true,
-    });
-    const resizeObserver = new ResizeObserver(updateVisibleRange);
-    resizeObserver.observe(scrollNode);
-    return () => {
-      scrollNode.removeEventListener("scroll", updateVisibleRange);
-      resizeObserver.disconnect();
-    };
-  }, [sortedFiles.length, ITEM_HEIGHT, viewMode, effectiveGroupMode]);
-
-  // When current file changes, scroll it into view (for virtual scrolling)
-  useEffect(() => {
-    if (!currentFile || viewMode !== "list" || effectiveGroupMode !== "none") {
-      return;
-    }
-    const scrollNode = fileListScrollRef.current;
-    if (!scrollNode) return;
-
-    const itemTop = currentIndex * ITEM_HEIGHT;
-    const itemBottom = itemTop + ITEM_HEIGHT;
-    const viewportTop = scrollNode.scrollTop;
-    const viewportBottom = viewportTop + scrollNode.clientHeight;
-    const topPadding = ITEM_HEIGHT * 2;
-    const bottomPadding = ITEM_HEIGHT * 2;
-
-    if (itemTop < viewportTop + topPadding) {
-      scrollNode.scrollTop = Math.max(0, itemTop - topPadding);
-      return;
-    }
-
-    if (itemBottom > viewportBottom - bottomPadding) {
-      scrollNode.scrollTop = Math.max(
-        0,
-        itemBottom - scrollNode.clientHeight + bottomPadding,
-      );
-    }
-  }, [
-    currentFile?.id,
-    currentIndex,
-    viewMode,
-    effectiveGroupMode,
-    ITEM_HEIGHT,
-  ]);
-
   const visibleFiles = useMemo(() => {
-    // For simple list view without grouping, only render visible items + buffer
-    if (viewMode === "list" && effectiveGroupMode === "none") {
-      return sortedFiles.slice(visibleRange.start, visibleRange.end);
-    }
-    // For grouped/tree views, render all (with content-visibility for performance)
+    // Render all current rows and rely on native browser scrolling.
     return sortedFiles.slice(0, renderCount);
-  }, [sortedFiles, renderCount, viewMode, effectiveGroupMode, visibleRange]);
+  }, [sortedFiles, renderCount]);
 
   const folderKeys = useMemo(() => {
     const keys = new Set<string>();
@@ -3196,42 +2400,9 @@ export default function App() {
 
     if (viewMode === "list") {
       if (effectiveGroupMode === "none") {
-        // Virtual scrolling: add spacers above and below
-        const items: JSX.Element[] = [];
-
-        // Spacer above
-        if (visibleRange.start > 0) {
-          items.push(
-            <div
-              key="spacer-top"
-              style={{
-                height: visibleRange.start * ITEM_HEIGHT,
-                flex: "0 0 auto",
-              }}
-              aria-hidden="true"
-            />,
-          );
-        }
-
-        // Visible items with correct indices
-        visibleFiles.forEach((file, i) => {
-          items.push(renderButton(file, visibleRange.start + i));
-        });
-
-        // Spacer below
-        const spacerBottom =
-          (sortedFiles.length - visibleRange.end) * ITEM_HEIGHT;
-        if (spacerBottom > 0) {
-          items.push(
-            <div
-              key="spacer-bottom"
-              style={{ height: spacerBottom, flex: "0 0 auto" }}
-              aria-hidden="true"
-            />,
-          );
-        }
-
-        return { items };
+        return {
+          items: visibleFiles.map((file, index) => renderButton(file, index)),
+        };
       }
 
       const { groups, keys } = groupFilesByMode(
@@ -3612,19 +2783,16 @@ export default function App() {
     if (!currentFile) {
       return;
     }
-    // For grouped/tree views, use native scrollIntoView
-    if (viewMode !== "list" || effectiveGroupMode !== "none") {
-      const node = listItemRefs.current.get(currentFile.id);
-      if (!node) {
-        return;
-      }
-      requestAnimationFrame(() => {
-        node.scrollIntoView({
-          block: "nearest",
-          behavior: "auto",
-        });
-      });
+    const node = listItemRefs.current.get(currentFile.id);
+    if (!node) {
+      return;
     }
+    requestAnimationFrame(() => {
+      node.scrollIntoView({
+        block: "nearest",
+        behavior: "auto",
+      });
+    });
   }, [
     currentFile,
     renderCount,
@@ -3721,11 +2889,11 @@ export default function App() {
     syncScrollHints(previewScrollRef.current, previewFrameRef.current);
   }, [
     syncScrollHints,
-    previewFile?.id,
+    preview.previewFile?.id,
     isLoading,
-    archiveStatus,
-    officePreviewStatus,
-    archiveEntries.length,
+    preview.archiveStatus,
+    preview.officePreviewStatus,
+    preview.archiveEntries.length,
   ]);
   const folderLabel = currentFolder
     ? formatPathLabel(currentFolder)
@@ -3743,724 +2911,91 @@ export default function App() {
         isSidebarCollapsed ? "sidebar-collapsed" : ""
       } ${isWindowFullscreen ? "is-fullscreen" : ""}`}
       aria-busy={isLoading || isInteractionBlocked}
+      data-window-platform={isWindowsDesktop ? "windows" : "default"}
     >
       <div className="titlebar-drag" data-tauri-drag-region />
-      {isSidebarCollapsed && (
-        <button
-          type="button"
-          className="icon-button sidebar-toggle floating-toggle"
-          onClick={() => setIsSidebarCollapsed((prev) => !prev)}
-          aria-label="Show sidebar"
-          aria-controls="sidebar-panel"
-          aria-pressed={isSidebarCollapsed}
-          title="Show sidebar"
-        >
-          <svg
-            viewBox="0 0 24 24"
-            aria-hidden="true"
-            focusable="false"
-            width="24"
-            height="24"
-          >
-            <path d="M9 5.5 16 12 9 18.5V5.5Z" />
-          </svg>
-        </button>
-      )}
-      <span className="icon-button-tooltip-anchor" title="Work in progress">
-        <button
-          type="button"
-          className="icon-button settings-button app-suggestions-button"
-          disabled
-          aria-label="AI suggestions (work in progress)"
-          aria-haspopup="dialog"
-          aria-expanded={false}
-        >
-          <svg
-            viewBox="0 0 24 24"
-            aria-hidden="true"
-            focusable="false"
-            width="24"
-            height="24"
-          >
-            <path d="M12 2.8 14.9 8.5 21.2 9.4l-4.6 4.4 1.1 6.3L12 17.1 6.3 20.1l1.1-6.3-4.6-4.4 6.3-.9L12 2.8Z" />
-          </svg>
-        </button>
-      </span>
-      <button
-        type="button"
-        className="icon-button settings-button app-settings-button"
-        onClick={() => setIsSettingsOpen(true)}
-        aria-label="Open settings"
-        aria-haspopup="dialog"
-        aria-expanded={isSettingsOpen}
-      >
-        <svg
-          viewBox="0 0 24 24"
-          aria-hidden="true"
-          focusable="false"
-          width="24"
-          height="24"
-        >
-          <path d="M19.14 12.94c.04-.31.06-.63.06-.94s-.02-.63-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.02 7.02 0 0 0-1.62-.94l-.36-2.54a.5.5 0 0 0-.5-.42h-3.84a.5.5 0 0 0-.5.42l-.36 2.54c-.57.23-1.12.54-1.62.94l-2.39-.96a.5.5 0 0 0-.6.22L2.61 7.86a.5.5 0 0 0 .12.64l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58a.5.5 0 0 0-.12.64l1.92 3.32c.13.22.39.3.6.22l2.39-.96c.5.4 1.05.71 1.62.94l.36 2.54c.05.24.26.42.5.42h3.84c.25 0 .46-.18.5-.42l.36-2.54c.57-.23 1.12-.54 1.62-.94l2.39.96c.22.08.47 0 .6-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58ZM12 15.5A3.5 3.5 0 1 1 12 8a3.5 3.5 0 0 1 0 7.5Z" />
-        </svg>
-      </button>
-      {isDrawerMode && !isSidebarCollapsed && (
-        <div
-          className="drawer-backdrop"
-          aria-hidden="true"
-          onClick={() => setIsSidebarCollapsed(true)}
-        />
-      )}
+      <Toolbar
+        isSidebarCollapsed={isSidebarCollapsed}
+        isDrawerMode={isDrawerMode}
+        isSettingsOpen={isSettingsOpen}
+        showWindowControls={isWindowsDesktop}
+        isWindowMaximized={isWindowMaximized}
+        onToggleSidebar={toggleSidebar}
+        onOpenSettings={() => setIsSettingsOpen(true)}
+        onMinimizeWindow={handleMinimizeWindow}
+        onToggleMaximizeWindow={handleToggleMaximizeWindow}
+        onCloseWindow={handleCloseWindow}
+      />
       <div className="app-grid">
         {!isSidebarCollapsed && (
-          <aside className="list-panel" id="sidebar-panel">
-            <div className="list-top-controls">
-              <button
-                type="button"
-                className="icon-button sidebar-toggle"
-                onClick={() => setIsSidebarCollapsed((prev) => !prev)}
-                aria-label={
-                  isSidebarCollapsed ? "Show sidebar" : "Hide sidebar"
-                }
-                aria-controls="sidebar-panel"
-                aria-pressed={isSidebarCollapsed}
-                title={isSidebarCollapsed ? "Show sidebar" : "Hide sidebar"}
-              >
-                <svg
-                  viewBox="0 0 24 24"
-                  aria-hidden="true"
-                  focusable="false"
-                  width="24"
-                  height="24"
-                >
-                  {isSidebarCollapsed ? (
-                    <path d="M9 5.5 16 12 9 18.5V5.5Z" />
-                  ) : (
-                    <path d="M15 5.5 8 12l7 6.5V5.5Z" />
-                  )}
-                </svg>
-              </button>
-              <div
-                className="searchbar-controls"
-                role="group"
-                aria-label="Folder search controls"
-              >
-                <button
-                  type="button"
-                  className="pill-button"
-                  onClick={pickFolder}
-                  disabled={areControlsDisabled}
-                  title={currentFolder ?? "No folder selected"}
-                >
-                  <span className="pill-label">Folder</span>
-                  <span className="pill-value">
-                    {currentFolder ? folderLabel : "Select folder…"}
-                  </span>
-                </button>
-                <div className="toolbar-control">
-                  <select
-                    value={filterMode}
-                    onChange={(event) => {
-                      const nextFilterMode = event.target.value as FilterMode;
-                      runBlockingUiTransition(
-                        "Updating filter",
-                        () => setFilterMode(nextFilterMode),
-                        "Refreshing the file selection...",
-                      );
-                    }}
-                    disabled={areControlsDisabled}
-                  >
-                    {FILTER_OPTIONS.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <button
-                  type="button"
-                  className="icon-button search-button"
-                  onClick={() => handleScan(currentFolder ?? undefined)}
-                  disabled={areControlsDisabled || !currentFolder}
-                  aria-label="Scan folder"
-                  title="Scan folder"
-                >
-                  <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                    <path d="M15.5 14h-.79l-.28-.27a6 6 0 1 0-.71.71l.27.28v.79L20 20.5 21.5 19l-6-5zM10 15a5 5 0 1 1 0-10 5 5 0 0 1 0 10z" />
-                  </svg>
-                </button>
-              </div>
-            </div>
-            <div className="list-header">
-              <div className="list-header-top">
-                <div className="list-title">
-                  <span>Files</span>
-                  <span className="badge badge-text">{totalFiles}</span>
-                </div>
-                <div className="list-header-actions">
-                  {viewMode === "tree" && (
-                    <button
-                      type="button"
-                      className="list-expand-button"
-                      onClick={toggleAllFolders}
-                      disabled={!hasFolders || areControlsDisabled}
-                      data-prevent-open-on-enter
-                      title={
-                        hasCollapsedFolders
-                          ? "Unfold all folders"
-                          : "Fold all folders"
-                      }
-                    >
-                      {hasCollapsedFolders ? "Unfold all" : "Fold all"}
-                    </button>
-                  )}
-                  {isRenderingList && (
-                    <span className="rendering">Rendering list...</span>
-                  )}
-                </div>
-              </div>
-              <div className="list-header-controls">
-                <div className="toolbar-control">
-                  <span className="control-label">Sort</span>
-                  <select
-                    value={sortMode}
-                    onChange={(event) => {
-                      const nextSortMode = event.target.value as SortMode;
-                      runBlockingUiTransition(
-                        "Sorting files",
-                        () => setSortMode(nextSortMode),
-                        "Reordering the list...",
-                      );
-                    }}
-                    disabled={areControlsDisabled}
-                  >
-                    <option value="none">None</option>
-                    <option value="name_asc">Name (A-Z)</option>
-                    <option value="name_desc">Name (Z-A)</option>
-                    <option value="size_desc">Size (Largest)</option>
-                    <option value="size_asc">Size (Smallest)</option>
-                    <option value="date_desc">Date (Newest)</option>
-                    <option value="date_asc">Date (Oldest)</option>
-                    <option value="type_asc">Type (A-Z)</option>
-                    <option value="type_desc">Type (Z-A)</option>
-                    <option value="extension_asc">Extension (A-Z)</option>
-                    <option value="extension_desc">Extension (Z-A)</option>
-                  </select>
-                </div>
-                <div className="toolbar-control">
-                  <span className="control-label">Group</span>
-                  <select
-                    value={displayGroupMode}
-                    onChange={(event) => {
-                      const nextGroupMode = event.target.value as GroupMode;
-                      runBlockingUiTransition(
-                        "Grouping files",
-                        () => handleGroupModeChange(nextGroupMode),
-                        "Rebuilding the file groups...",
-                      );
-                    }}
-                    disabled={areControlsDisabled || shouldGroupDuplicates}
-                  >
-                    <option value="none">None</option>
-                    <option value="type">Type</option>
-                    <option value="extension">Extension</option>
-                    {shouldGroupDuplicates && (
-                      <option value="duplicates">Duplicates</option>
-                    )}
-                  </select>
-                </div>
-                <div className="toolbar-control view-control">
-                  <span className="control-label">View</span>
-                  <select
-                    value={viewMode}
-                    onChange={(event) => {
-                      const nextViewMode = event.target.value as ViewMode;
-                      runBlockingUiTransition(
-                        "Changing view",
-                        () => setViewMode(nextViewMode),
-                        "Switching the file layout...",
-                      );
-                    }}
-                    disabled={areControlsDisabled}
-                  >
-                    <option value="tree">Tree</option>
-                    <option value="list">List</option>
-                  </select>
-                </div>
-              </div>
-            </div>
-            <div
-              className="file-list-frame scroll-hints"
-              ref={fileListFrameRef}
-            >
-              <div
-                ref={fileListScrollRef}
-                className={`file-list ${isLoading ? "loading" : ""} ${
-                  listDensity === "compact"
-                    ? "density-compact"
-                    : "density-comfortable"
-                }`}
-              >
-                {hasFiles ? (
-                  listItems
-                ) : isLoading ? (
-                  <div className="skeleton-list" aria-hidden="true">
-                    {Array.from({ length: 8 }).map((_, index) => (
-                      <div
-                        key={`skeleton-${index}`}
-                        className="skeleton-item"
-                      />
-                    ))}
-                  </div>
-                ) : (
-                  <div className="empty">
-                    {totalFiles === 0
-                      ? "No files loaded."
-                      : "No files match the selected extensions."}
-                  </div>
-                )}
-                {isRenderingList && (
-                  <div className="list-progress">
-                    Showing {renderCount} of {filteredCount}
-                  </div>
-                )}
-              </div>
-            </div>
-            <div className="list-footer">
-              <div className="list-footer-header">
-                <div className="footer-title">Extensions</div>
-                <button
-                  type="button"
-                  className="icon-button extensions-toggle"
-                  onClick={() => setIsExtensionsCollapsed((prev) => !prev)}
-                  aria-label={
-                    isExtensionsCollapsed
-                      ? "Expand extensions"
-                      : "Collapse extensions"
-                  }
-                  aria-pressed={isExtensionsCollapsed}
-                  title={
-                    isExtensionsCollapsed
-                      ? "Expand extensions"
-                      : "Collapse extensions"
-                  }
-                >
-                  <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                    {isExtensionsCollapsed ? (
-                      <path d="M6 15l6-6 6 6H6Z" />
-                    ) : (
-                      <path d="M6 9l6 6 6-6H6Z" />
-                    )}
-                  </svg>
-                </button>
-              </div>
-              {!isExtensionsCollapsed && (
-                <>
-                  {allExtensions.length === 0 ? (
-                    <div className="extensions-empty">No extensions found.</div>
-                  ) : (
-                    <>
-                      <div className="extensions-controls">
-                        <label className="extension-filter extension-toggle">
-                          <input
-                            ref={selectAllRef}
-                            type="checkbox"
-                            checked={allExtensionsSelected}
-                            onChange={(event) => {
-                              const nextChecked = event.target.checked;
-                              hasUserAdjustedExtensionsRef.current = true;
-                              runBlockingUiTransition(
-                                "Updating extensions",
-                                () =>
-                                  setSelectedExtensions(
-                                    nextChecked ? allExtensions : [],
-                                  ),
-                                "Refreshing the visible files...",
-                              );
-                            }}
-                            disabled={areControlsDisabled}
-                          />
-                          <span>All</span>
-                        </label>
-                      </div>
-                      <div className="extension-filters">
-                        {allExtensions.map((extension) => (
-                          <label key={extension} className="extension-filter">
-                            <input
-                              type="checkbox"
-                              checked={selectedExtensions.includes(extension)}
-                              onChange={() => {
-                                hasUserAdjustedExtensionsRef.current = true;
-                                runBlockingUiTransition(
-                                  "Updating extensions",
-                                  () =>
-                                    setSelectedExtensions((current) =>
-                                      current.includes(extension)
-                                        ? current.filter(
-                                            (value) => value !== extension,
-                                          )
-                                        : [...current, extension],
-                                    ),
-                                  "Refreshing the visible files...",
-                                );
-                              }}
-                              disabled={areControlsDisabled}
-                            />
-                            <span>{formatExtensionLabel(extension)}</span>
-                          </label>
-                        ))}
-                      </div>
-                    </>
-                  )}
-                </>
-              )}
-            </div>
-          </aside>
+          <FileListPanel
+            frameRef={fileListFrameRef}
+            scrollRef={fileListScrollRef}
+            search={{
+              currentFolder,
+              folderLabel,
+              filterMode,
+              onPickFolder: pickFolder,
+              onFilterModeChange: handleFilterModeChange,
+              onScan: handleCurrentFolderScan,
+              onToggleSidebar: toggleSidebar,
+            }}
+            list={{
+              areControlsDisabled,
+              totalFiles,
+              viewMode,
+              hasFolders,
+              hasCollapsedFolders,
+              onToggleAllFolders: toggleAllFolders,
+              isRenderingList,
+              sortMode,
+              onSortModeChange: handleSortModeChange,
+              displayGroupMode,
+              shouldGroupDuplicates,
+              onGroupModeChange: handleSidebarGroupModeChange,
+              onViewModeChange: handleViewModeChange,
+              isLoading,
+              listDensity,
+              hasFiles,
+              listItems,
+              renderCount,
+              filteredCount,
+            }}
+            extensions={{
+              isCollapsed: isExtensionsCollapsed,
+              allExtensions,
+              selectedExtensions,
+              allExtensionsSelected,
+              selectAllRef,
+              onToggleCollapsed: () =>
+                setIsExtensionsCollapsed((prev) => !prev),
+              onToggleAll: handleToggleAllExtensions,
+              onToggleExtension: handleToggleExtension,
+            }}
+          />
         )}
 
         <main className="content">
-          <div className="preview-frame scroll-hints" ref={previewFrameRef}>
-            <section className="preview-panel" ref={previewScrollRef}>
-              {previewFile ? (
-                <div className="preview-content">
-                  <div className="preview-layout">
-                    <div className="preview-media" onWheel={handlePreviewWheel}>
-                      {isPreviewSuppressed && (
-                        <div className="preview-suppressed">
-                          <div className="preview-suppressed-title">
-                            Preview paused
-                          </div>
-                          <div className="preview-suppressed-subtitle">
-                            This file is {formatBytes(previewFile.sizeBytes)}.
-                            Previews over{" "}
-                            {formatBytes(LARGE_PREVIEW_SIZE_BYTES)} are
-                            disabled.
-                          </div>
-                          <button
-                            type="button"
-                            className="preview-action-button"
-                            onClick={() => setAllowLargePreview(true)}
-                          >
-                            Load preview
-                          </button>
-                        </div>
-                      )}
-                      {isMediaPreview && (
-                        <div
-                          className={`preview-zoom${previewFile.kind === "image" ? " is-draggable" : ""}${
-                            isPreviewPanning ? " is-panning" : ""
-                          }`}
-                          style={{
-                            transform:
-                              previewFile.kind === "image"
-                                ? `translate(${previewPan.x}px, ${previewPan.y}px) scale(${previewZoom})`
-                                : `scale(${previewZoom})`,
-                          }}
-                          onPointerDown={handlePreviewPanStart}
-                          onPointerMove={handlePreviewPanMove}
-                          onPointerUp={handlePreviewPanEnd}
-                          onPointerCancel={handlePreviewPanEnd}
-                        >
-                          {previewFile.kind === "image" && (
-                            <img
-                              src={buildMediaUrl(previewFile.id)}
-                              alt={previewFile.name}
-                              draggable={false}
-                              onDragStart={(event) => event.preventDefault()}
-                            />
-                          )}
-                          {previewFile.kind === "video" && (
-                            <video
-                              ref={videoRef}
-                              controls
-                              autoPlay={autoPlayMedia}
-                              src={buildMediaUrl(previewFile.id)}
-                            />
-                          )}
-                        </div>
-                      )}
-                      {isAudioPreview && (
-                        <audio
-                          ref={audioRef}
-                          controls
-                          autoPlay={autoPlayMedia}
-                          src={buildMediaUrl(previewFile.id)}
-                        />
-                      )}
-                      {isDocumentPreview && (
-                        <div className="preview-document">
-                          <iframe
-                            title={`Preview of ${previewFile.name}`}
-                            src={buildMediaUrl(previewFile.id)}
-                          />
-                        </div>
-                      )}
-                      {isOfficePreview && (
-                        <div className="preview-office">
-                          <div className="preview-office-preview">
-                            {officePreviewStatus === "loading" && (
-                              <div className="preview-office-status">
-                                Generating preview...
-                              </div>
-                            )}
-                            {officePreviewStatus === "error" && (
-                              <div className="preview-office-status">
-                                Preview unavailable.
-                                {previewCapabilities &&
-                                  !previewCapabilities.officeRichPreview && (
-                                    <>
-                                      {" "}
-                                      Rich Office rendering is not available on
-                                      this platform.
-                                    </>
-                                  )}
-                              </div>
-                            )}
-                            {officePreviewStatus === "idle" &&
-                              officePreviewId && (
-                                <img
-                                  src={buildMediaUrl(officePreviewId)}
-                                  alt={`Preview of ${previewFile.name}`}
-                                />
-                              )}
-                            {officePreviewStatus === "idle" &&
-                              !officePreviewId &&
-                              officeFallbackPreview && (
-                                <div className="preview-office-fallback">
-                                  <div className="preview-office-fallback-title">
-                                    {officeFallbackPreview.title}
-                                  </div>
-                                  <pre className="preview-office-fallback-text">
-                                    {officeFallbackPreview.excerpt}
-                                  </pre>
-                                </div>
-                              )}
-                          </div>
-                        </div>
-                      )}
-                      {isArchivePreview && (
-                        <div className="preview-archive">
-                          <div className="preview-archive-header">
-                            <div className="preview-archive-title">
-                              Archive contents
-                            </div>
-                            {archiveStatus === "loading" && (
-                              <div className="preview-archive-status">
-                                Loading...
-                              </div>
-                            )}
-                          </div>
-                          {archiveStatus === "error" && (
-                            <div className="preview-archive-status">
-                              {archiveError ??
-                                "Preview unavailable for this archive."}
-                            </div>
-                          )}
-                          {archiveStatus === "idle" && (
-                            <>
-                              {archiveEntries.length > 0 ? (
-                                <ul className="preview-archive-list">
-                                  {archiveEntries.map((entry, index) => (
-                                    <li
-                                      key={`${entry}-${index}`}
-                                      className="preview-archive-item"
-                                    >
-                                      {entry}
-                                    </li>
-                                  ))}
-                                </ul>
-                              ) : (
-                                <div className="preview-archive-empty">
-                                  No entries found.
-                                </div>
-                              )}
-                              {archiveTruncated && (
-                                <div className="preview-archive-note">
-                                  Showing first {archiveEntries.length} items.
-                                </div>
-                              )}
-                            </>
-                          )}
-                        </div>
-                      )}
-                      {isFallbackPreview && (
-                        <div className="preview-fallback">
-                          <div className="preview-fallback-icon">
-                            {previewExtension === "none"
-                              ? "FILE"
-                              : previewExtension.toUpperCase()}
-                          </div>
-                          <div className="preview-fallback-label">
-                            {formatKindLabel(previewFile.kind)}
-                          </div>
-                          <div className="preview-fallback-hint">
-                            No rich preview available.
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                    <div className="preview-actions">
-                      <button
-                        type="button"
-                        className="preview-action-button"
-                        onClick={() => void openFileInSystem(previewFile)}
-                      >
-                        Open file
-                      </button>
-                      <div className="preview-zoom-controls">
-                        <button
-                          type="button"
-                          className="icon-button"
-                          onClick={handleZoomOut}
-                          disabled={!isZoomablePreview}
-                          aria-label="Zoom out"
-                          title="Zoom out"
-                        >
-                          <svg
-                            viewBox="0 0 24 24"
-                            aria-hidden="true"
-                            focusable="false"
-                          >
-                            <path d="M5 11h14v2H5z" />
-                          </svg>
-                        </button>
-                        <button
-                          type="button"
-                          className="icon-button preview-zoom-reset"
-                          onClick={handleZoomReset}
-                          disabled={!isZoomablePreview}
-                          aria-label="Reset zoom"
-                          title="Reset zoom"
-                        >
-                          <span className="preview-zoom-value">
-                            {Math.round(previewZoom * 100)}%
-                          </span>
-                        </button>
-                        <button
-                          type="button"
-                          className="icon-button"
-                          onClick={handleZoomIn}
-                          disabled={!isZoomablePreview}
-                          aria-label="Zoom in"
-                          title="Zoom in"
-                        >
-                          <svg
-                            viewBox="0 0 24 24"
-                            aria-hidden="true"
-                            focusable="false"
-                          >
-                            <path d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6z" />
-                          </svg>
-                        </button>
-                      </div>
-                    </div>
-                    <div className="caption" aria-hidden="true" />
-                    <aside
-                      className="preview-details"
-                      aria-label="File details"
-                    >
-                      <div className="file-meta">
-                        <div>
-                          <span className="meta-label">Name</span>
-                          <span className="meta-value">{previewFile.name}</span>
-                        </div>
-                        <div>
-                          <span className="meta-label">Type</span>
-                          <span className="meta-value">
-                            {formatKindLabel(previewFile.kind)}
-                          </span>
-                        </div>
-                        <div>
-                          <span className="meta-label">Extension</span>
-                          <span className="meta-value">
-                            {previewExtension === "none"
-                              ? "None"
-                              : `.${previewExtension}`}
-                          </span>
-                        </div>
-                        <div>
-                          <span className="meta-label">MIME</span>
-                          <span className="meta-value">{previewFile.mime}</span>
-                        </div>
-                        <div>
-                          <span className="meta-label">Size</span>
-                          <span className="meta-value">
-                            {formatBytes(previewFile.sizeBytes)}
-                          </span>
-                        </div>
-                        <div>
-                          <span className="meta-label">Modified</span>
-                          <span className="meta-value">
-                            {formatTimestamp(previewFile.modifiedMs)}
-                          </span>
-                        </div>
-                        <div>
-                          <span className="meta-label">Folder</span>
-                          <span className="meta-value">
-                            {extractFolder(previewFile.path)}
-                          </span>
-                        </div>
-                        <div>
-                          <span className="meta-label">Folder size</span>
-                          <span className="meta-value">
-                            {formatBytes(folderSizeBytes)}
-                          </span>
-                        </div>
-                        <div>
-                          <span className="meta-label">Full path</span>
-                          <span className="meta-value mono">
-                            {previewFile.path}
-                          </span>
-                        </div>
-                        <div>
-                          <span className="meta-label">Position</span>
-                          <span className="meta-value">
-                            {previewIndex + 1} of {filteredCount}
-                          </span>
-                        </div>
-                        <div>
-                          <span className="meta-label">ID</span>
-                          <span className="meta-value mono">
-                            {previewFile.id}
-                          </span>
-                        </div>
-                      </div>
-                    </aside>
-                  </div>
-                </div>
-              ) : (
-                <div className="preview-message">
-                  <div className="placeholder">
-                    Select a folder to preview files.
-                  </div>
-                </div>
-              )}
-            </section>
-          </div>
+          <PreviewPanel
+            frameRef={previewFrameRef}
+            scrollRef={previewScrollRef}
+            preview={preview}
+            folderSizeBytes={folderSizeBytes}
+            filteredCount={filteredCount}
+            autoPlayMedia={autoPlayMedia}
+            videoRef={videoRef}
+            audioRef={audioRef}
+            onOpenFile={openFileInSystem}
+          />
         </main>
 
         <footer className="actions">
           <div className="actions-row">
-            <div className="destination-row" aria-label="Move destinations">
-              {destinationSlots.map((destinationPath, index) => (
-              <button
-                  key={`destination-${index}`}
-                  type="button"
-                  className={`destination-button ${destinationPath ? "is-set" : "is-empty"}`}
-                  onClick={() => void pickDestinationForSlot(index)}
-                  disabled={areControlsDisabled || isMutating}
-                  title={destinationPath ?? `Set destination ${index + 1}`}
-                  aria-label={`Set destination ${index + 1}`}
-                >
-                  <span className="destination-index">{index + 1}</span>
-                  <span className="destination-label">
-                    {destinationPath
-                      ? formatPathLabel(destinationPath)
-                      : "Set folder…"}
-                  </span>
-                </button>
-              ))}
-            </div>
+            <DestinationSlots
+              destinationSlots={destinationSlots}
+              disabled={areControlsDisabled || isMutating}
+              onPickDestination={pickDestinationForSlot}
+            />
             <div className="action-row">
               {mutationSpinnerLabel && (
                 <div
@@ -4562,743 +3097,99 @@ export default function App() {
         </div>
       )}
 
-      {isCrashReportOpen && crashReport && (
-        <div
-          className="modal-backdrop"
-          role="presentation"
-          onClick={(event) => {
-            if (event.target === event.currentTarget) {
-              handleDismissCrashReport();
-            }
-          }}
-        >
-          <div
-            className="modal-panel crash-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="crash-title"
-          >
-            <div className="modal-header">
-              <h2 id="crash-title" className="modal-title">
-                We recovered from a crash
-              </h2>
-              <button
-                type="button"
-                className="icon-button"
-                onClick={handleDismissCrashReport}
-                aria-label="Dismiss crash report"
-              >
-                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                  <path d="M18.3 5.7a1 1 0 0 0-1.4 0L12 10.6 7.1 5.7a1 1 0 1 0-1.4 1.4L10.6 12l-4.9 4.9a1 1 0 1 0 1.4 1.4L12 13.4l4.9 4.9a1 1 0 0 0 1.4-1.4L13.4 12l4.9-4.9a1 1 0 0 0 0-1.4Z" />
-                </svg>
-              </button>
-            </div>
-            <div className="modal-body crash-body">
-              <p className="crash-intro">
-                A crash report was saved. You can send it to{" "}
-                {CRASH_REPORT_EMAIL} to help us improve stability.
-              </p>
-              <div className="crash-meta">
-                <div>
-                  <span className="meta-label">Time</span>
-                  <span className="meta-value">
-                    {formatTimestamp(crashReport.createdMs)}
-                  </span>
-                </div>
-                <div>
-                  <span className="meta-label">Last heartbeat</span>
-                  <span className="meta-value">
-                    {formatTimestamp(crashReport.lastHeartbeatMs ?? null)}
-                  </span>
-                </div>
-                <div>
-                  <span className="meta-label">Message</span>
-                  <span className="meta-value">{crashReport.message}</span>
-                </div>
-                <div>
-                  <span className="meta-label">Last activity</span>
-                  <span className="meta-value">
-                    {formatActivitySummary(crashReport.lastActivity)}
-                  </span>
-                </div>
-                <div>
-                  <span className="meta-label">Report file</span>
-                  <span className="meta-value mono">
-                    {crashReport.reportPath}
-                  </span>
-                </div>
-              </div>
-              <pre className="crash-report">{crashReportText}</pre>
-            </div>
-            <div className="modal-footer crash-footer">
-              <button
-                type="button"
-                className="help-button"
-                onClick={handleRevealCrashReport}
-              >
-                Show file
-              </button>
-              <button
-                type="button"
-                className="help-button"
-                onClick={handleCopyCrashReport}
-              >
-                Copy report
-              </button>
-              <button type="button" onClick={handleSendCrashReport}>
-                Send report
-              </button>
-              <button type="button" onClick={handleDismissCrashReport}>
-                Dismiss
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <CrashReportModal
+        isOpen={isCrashReportOpen}
+        crashReport={crashReport}
+        crashReportText={crashReportText}
+        onDismiss={handleDismissCrashReport}
+        onReveal={handleRevealCrashReport}
+        onCopy={handleCopyCrashReport}
+        onSend={handleSendCrashReport}
+      />
 
-      {isSuggestionsOpen && (
-        <div
-          className="modal-backdrop suggestions-backdrop"
-          role="presentation"
-          onClick={(event) => {
-            if (event.target === event.currentTarget) {
-              setIsSuggestionsOpen(false);
-            }
-          }}
-        >
-          <div
-            className="modal-panel suggestions-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="suggestions-title"
-          >
-            <div className="modal-header">
-              <h2 id="suggestions-title" className="modal-title">
-                AI Suggestions
-              </h2>
-              <button
-                type="button"
-                className="icon-button"
-                onClick={() => setIsSuggestionsOpen(false)}
-                aria-label="Close suggestions"
-              >
-                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                  <path d="M18.3 5.7a1 1 0 0 0-1.4 0L12 10.6 7.1 5.7a1 1 0 1 0-1.4 1.4L10.6 12l-4.9 4.9a1 1 0 1 0 1.4 1.4L12 13.4l4.9 4.9a1 1 0 0 0 1.4-1.4L13.4 12l4.9-4.9a1 1 0 0 0 0-1.4Z" />
-                </svg>
-              </button>
-            </div>
-            <div className="suggestions-scroll-frame scroll-hints">
-              <div className="modal-body suggestions-body">
-                <div className="suggestions-shell">
-                  <div className="suggestions-main">
-                    <div className="suggestions-main-header">
-                      <div>
-                        <div className="footer-title">Suggestions</div>
-                        <div className="suggestions-kicker">
-                          {visibleSuggestions.length} visible actions
-                        </div>
-                      </div>
-                      <div className="suggestions-header-actions">
-                        <div
-                          className="suggestions-mode-toggle"
-                          role="group"
-                          aria-label="Suggestions mode"
-                        >
-                          {SUGGESTIONS_MODE_OPTIONS.map((option) => (
-                            <button
-                              key={option.value}
-                              type="button"
-                              className={`suggestions-mode-button${suggestionsMode === option.value ? " is-active" : ""}`}
-                              onClick={() => setSuggestionsMode(option.value)}
-                              aria-pressed={suggestionsMode === option.value}
-                            >
-                              {option.label}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                    </div>
-                    <div className="suggestions-preset-row">
-                      <label
-                        className="suggestions-field suggestions-field-inline"
-                        htmlFor="suggestion-preset-select"
-                      >
-                        <span className="control-label">Preset</span>
-                        <select
-                          id="suggestion-preset-select"
-                          value={suggestionPresetId ?? ""}
-                          onChange={(event) => {
-                            const nextId = event.target.value;
-                            setSuggestionPresetId(nextId || null);
-                            if (nextId) {
-                              applySuggestionPresetById(nextId);
-                            }
-                          }}
-                        >
-                          <option value="">No preset</option>
-                          {suggestionPresets.map((preset) => (
-                            <option key={preset.id} value={preset.id}>
-                              {preset.name}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      {activeSuggestionPreset && (
-                        <button
-                          type="button"
-                          className="suggestions-quick-button suggestions-last-preset-button"
-                          onClick={applyLastSuggestionPreset}
-                        >
-                          Apply last: {activeSuggestionPreset.name}
-                        </button>
-                      )}
-                      <span
-                        className="suggestions-tooltip-anchor"
-                        title="Work in progress"
-                      >
-                        <button
-                          type="button"
-                          className="suggestions-quick-button is-work-in-progress"
-                          disabled
-                          aria-label="Save current rules (work in progress)"
-                        >
-                          Save current rules
-                        </button>
-                      </span>
-                      <button
-                        type="button"
-                        className="suggestions-quick-button"
-                        onClick={renameSuggestionPreset}
-                        disabled={!activeSuggestionPreset}
-                      >
-                        Rename
-                      </button>
-                      <button
-                        type="button"
-                        className="suggestions-quick-button"
-                        onClick={() => void deleteSuggestionPreset()}
-                        disabled={!activeSuggestionPreset}
-                      >
-                        Delete
-                      </button>
-                    </div>
-                    <div className="suggestions-controls suggestions-controls-actions">
-                      <button
-                        type="button"
-                        className="preview-action-button"
-                        onClick={() => void buildSuggestions()}
-                        disabled={
-                          !currentFolder ||
-                          isLoading ||
-                          isMutating ||
-                          suggestionsStatus === "loading"
-                        }
-                      >
-                        {suggestionsStatus === "loading"
-                          ? "Building..."
-                          : "Build suggestions"}
-                      </button>
-                      <button
-                        type="button"
-                        className="preview-action-button"
-                        onClick={() => void previewSelectedSuggestions()}
-                        disabled={
-                          !currentFolder ||
-                          isLoading ||
-                          isMutating ||
-                          selectedSuggestions.length === 0 ||
-                          suggestionDryRunStatus === "loading"
-                        }
-                      >
-                        {suggestionDryRunStatus === "loading"
-                          ? "Previewing..."
-                          : "Preview selected"}
-                      </button>
-                      <button
-                        type="button"
-                        className="preview-action-button"
-                        onClick={() => void applySelectedSuggestions()}
-                        disabled={
-                          !currentFolder ||
-                          isLoading ||
-                          isMutating ||
-                          selectedSuggestions.length === 0
-                        }
-                      >
-                        Apply selected
-                      </button>
-                    </div>
-                    <div className="suggestions-filter-row">
-                      <label
-                        className="suggestions-field"
-                        htmlFor="suggestion-safety-filter-modal"
-                      >
-                        <span className="control-label">Safety</span>
-                        <select
-                          id="suggestion-safety-filter-modal"
-                          value={suggestionSafetyFilter}
-                          onChange={(event) =>
-                            setSuggestionSafetyFilter(
-                              event.target.value as SafetyLevel,
-                            )
-                          }
-                        >
-                          <option value="safe">Safe</option>
-                          <option value="review">Review</option>
-                          <option value="manual">Manual</option>
-                        </select>
-                      </label>
-                      <label
-                        className="suggestions-field suggestions-search-field"
-                        htmlFor="suggestion-search-modal"
-                      >
-                        <span className="control-label">Search</span>
-                        <input
-                          id="suggestion-search-modal"
-                          type="text"
-                          value={suggestionSearchQuery}
-                          onChange={(event) =>
-                            setSuggestionSearchQuery(event.target.value)
-                          }
-                          placeholder="Search reason or path"
-                        />
-                      </label>
-                    </div>
-                    {suggestionsMode === "advanced" && (
-                      <div className="suggestions-advanced-panel">
-                        <div className="suggestions-build-grid">
-                          <label
-                            className="suggestions-field"
-                            htmlFor="suggestion-stale-days"
-                          >
-                            <span className="control-label">Stale days</span>
-                            <input
-                              id="suggestion-stale-days"
-                              type="number"
-                              min={1}
-                              max={3650}
-                              value={suggestionStaleDays}
-                              onChange={(event) => {
-                                const next = Number(event.target.value);
-                                if (Number.isFinite(next)) {
-                                  setSuggestionStaleDays(next);
-                                }
-                              }}
-                            />
-                          </label>
-                          <label
-                            className="suggestions-field"
-                            htmlFor="suggestion-min-large-bytes"
-                          >
-                            <span className="control-label">
-                              Large file threshold
-                            </span>
-                            <select
-                              id="suggestion-min-large-bytes"
-                              value={suggestionMinLargeFileBytes}
-                              onChange={(event) =>
-                                setSuggestionMinLargeFileBytes(
-                                  Number(event.target.value),
-                                )
-                              }
-                            >
-                              {SUGGESTION_MIN_LARGE_FILE_OPTIONS.map(
-                                (option) => (
-                                  <option
-                                    key={option.value}
-                                    value={option.value}
-                                  >
-                                    {option.label}
-                                  </option>
-                                ),
-                              )}
-                            </select>
-                          </label>
-                          <label
-                            className="suggestions-field"
-                            htmlFor="suggestion-max-results"
-                          >
-                            <span className="control-label">Max results</span>
-                            <input
-                              id="suggestion-max-results"
-                              type="number"
-                              min={1}
-                              max={2000}
-                              value={suggestionMaxResults}
-                              onChange={(event) => {
-                                const next = Number(event.target.value);
-                                if (Number.isFinite(next)) {
-                                  setSuggestionMaxResults(next);
-                                }
-                              }}
-                            />
-                          </label>
-                        </div>
-                        <div className="suggestions-filter-grid">
-                          <label
-                            className="suggestions-field"
-                            htmlFor="suggestion-action-filter-modal"
-                          >
-                            <span className="control-label">Action</span>
-                            <select
-                              id="suggestion-action-filter-modal"
-                              value={suggestionActionFilter}
-                              onChange={(event) =>
-                                setSuggestionActionFilter(
-                                  event.target.value as SuggestionActionFilter,
-                                )
-                              }
-                            >
-                              {SUGGESTION_ACTION_FILTER_OPTIONS.map(
-                                (option) => (
-                                  <option
-                                    key={option.value}
-                                    value={option.value}
-                                  >
-                                    {option.label}
-                                  </option>
-                                ),
-                              )}
-                            </select>
-                          </label>
-                          <label
-                            className="suggestions-field"
-                            htmlFor="suggestion-sort-mode-modal"
-                          >
-                            <span className="control-label">Sort</span>
-                            <select
-                              id="suggestion-sort-mode-modal"
-                              value={suggestionSortMode}
-                              onChange={(event) =>
-                                setSuggestionSortMode(
-                                  event.target.value as SuggestionSortMode,
-                                )
-                              }
-                            >
-                              {SUGGESTION_SORT_OPTIONS.map((option) => (
-                                <option key={option.value} value={option.value}>
-                                  {option.label}
-                                </option>
-                              ))}
-                            </select>
-                          </label>
-                        </div>
-                        <div
-                          className="suggestions-v2-placeholder"
-                          aria-live="polite"
-                        >
-                          <span className="footer-title">V2 slots</span>
-                          <div className="suggestions-v2-actions">
-                            <button
-                              type="button"
-                              disabled={!suggestionExplainabilityEnabled}
-                            >
-                              Explainability panel (v2)
-                            </button>
-                            <button
-                              type="button"
-                              disabled={!suggestionBatchToolbarEnabled}
-                            >
-                              Batch actions toolbar (v2)
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-                    )}
-                    <div className="suggestions-controls suggestions-controls-selection">
-                      <button
-                        type="button"
-                        className="suggestions-quick-button"
-                        onClick={() =>
-                          updateSuggestionSelection(() =>
-                            suggestions
-                              .filter(
-                                (suggestion) =>
-                                  suggestion.safetyLevel === "safe",
-                              )
-                              .map((suggestion) => suggestion.id),
-                          )
-                        }
-                        disabled={suggestions.length === 0}
-                      >
-                        Select safe
-                      </button>
-                      <button
-                        type="button"
-                        className="suggestions-quick-button"
-                        onClick={() =>
-                          updateSuggestionSelection(() =>
-                            visibleSuggestions.map(
-                              (suggestion) => suggestion.id,
-                            ),
-                          )
-                        }
-                        disabled={visibleSuggestions.length === 0}
-                      >
-                        Select visible
-                      </button>
-                      <button
-                        type="button"
-                        className="suggestions-quick-button"
-                        onClick={() => updateSuggestionSelection(() => [])}
-                        disabled={selectedSuggestionIds.length === 0}
-                      >
-                        Clear selection
-                      </button>
-                    </div>
-                    <div className="suggestions-meta">
-                      <span>
-                        Total reclaimable:{" "}
-                        {formatBytes(suggestionTotalReclaimableBytes)}
-                      </span>
-                      <span>
-                        Selected:{" "}
-                        {formatBytes(selectedSuggestionReclaimableBytes)}
-                      </span>
-                      <span>{selectedSuggestions.length} selected actions</span>
-                    </div>
-                    {suggestionsError && (
-                      <div className="suggestions-error">
-                        {suggestionsError}
-                      </div>
-                    )}
-                    {visibleSuggestions.length === 0 ? (
-                      <div className="suggestions-empty">
-                        No suggestions match current filters.
-                      </div>
-                    ) : (
-                      <div className="suggestions-list">
-                        {visibleSuggestions.slice(0, 120).map((suggestion) => (
-                          <label
-                            key={suggestion.id}
-                            className="suggestion-item"
-                          >
-                            <input
-                              type="checkbox"
-                              checked={selectedSuggestionSet.has(suggestion.id)}
-                              onChange={(event) => {
-                                updateSuggestionSelection((previous) =>
-                                  event.target.checked
-                                    ? previous.includes(suggestion.id)
-                                      ? previous
-                                      : [...previous, suggestion.id]
-                                    : previous.filter(
-                                        (id) => id !== suggestion.id,
-                                      ),
-                                );
-                              }}
-                            />
-                            <span className="suggestion-main">
-                              <span className="suggestion-title">
-                                {suggestion.reason.message}
-                              </span>
-                              <span className="suggestion-subtitle">
-                                {getSuggestionActionLabel(
-                                  suggestion.actionType,
-                                )}{" "}
-                                · {formatBytes(suggestion.reclaimableBytes)} ·{" "}
-                                {suggestion.safetyLevel}
-                              </span>
-                              <span className="suggestion-subtitle mono">
-                                {formatSuggestionPath(suggestion.sourcePath)}{" "}
-                                -&gt; {getSuggestionTargetLabel(suggestion)}
-                              </span>
-                              <span className="suggestion-change">
-                                {getSuggestionChangeSentence(suggestion)}
-                              </span>
-                            </span>
-                          </label>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                  <aside className="suggestions-preview-panel">
-                    <div className="suggestions-preview-header">
-                      <div className="footer-title">Change Preview</div>
-                      <span
-                        className={`suggestion-status ${
-                          hasDryRunPreviewForSelection
-                            ? "suggestion-status-planned"
-                            : "suggestion-status-pending"
-                        }`}
-                      >
-                        {hasDryRunPreviewForSelection
-                          ? "Preview ready"
-                          : "Needs preview"}
-                      </span>
-                    </div>
-                    <div className="suggestions-preview-summary">
-                      <span>{selectedSuggestions.length} selected actions</span>
-                      <span>
-                        {formatBytes(selectedSuggestionReclaimableBytes)}{" "}
-                        reclaimable
-                      </span>
-                      <span>
-                        Visible selected: {selectedVisibleSuggestions.length}/
-                        {selectedSuggestions.length}
-                      </span>
-                    </div>
-                    <div className="suggestions-preview-list">
-                      {selectedSuggestions.length === 0 ? (
-                        <div className="suggestions-empty">
-                          No selected actions yet.
-                        </div>
-                      ) : (
-                        selectedSuggestions.slice(0, 120).map((suggestion) => {
-                          const dryRunResult = suggestionDryRunResultsById.get(
-                            suggestion.id,
-                          );
-                          const previewStatus = hasDryRunPreviewForSelection
-                            ? (dryRunResult?.status ?? "planned")
-                            : "pending";
-                          return (
-                            <div
-                              key={`preview-${suggestion.id}`}
-                              className="suggestions-preview-item"
-                            >
-                              <div className="suggestions-preview-path mono">
-                                {formatSuggestionPath(suggestion.sourcePath)}{" "}
-                                -&gt; {getSuggestionTargetLabel(suggestion)}
-                              </div>
-                              <div className="suggestions-preview-meta">
-                                <span
-                                  className={`suggestion-status suggestion-status-${
-                                    previewStatus === "pending"
-                                      ? "pending"
-                                      : previewStatus
-                                  }`}
-                                >
-                                  {previewStatus}
-                                </span>
-                                <span>
-                                  {formatBytes(suggestion.reclaimableBytes)}
-                                </span>
-                              </div>
-                              {dryRunResult?.message && (
-                                <div className="suggestions-preview-message">
-                                  {dryRunResult.message}
-                                </div>
-                              )}
-                            </div>
-                          );
-                        })
-                      )}
-                    </div>
-                    <details className="suggestions-diagnostics">
-                      <summary>Diagnostics</summary>
-                      <div className="suggestions-preview-actions">
-                        {Object.entries(selectedSuggestionActionCounts)
-                          .length === 0 ? (
-                          <span className="suggestions-empty">
-                            Select suggestions to preview changes.
-                          </span>
-                        ) : (
-                          Object.entries(selectedSuggestionActionCounts)
-                            .sort(([a], [b]) => a.localeCompare(b))
-                            .map(([actionType, count]) => (
-                              <span
-                                key={actionType}
-                                className="suggestion-chip"
-                              >
-                                {getSuggestionActionLabel(actionType)}: {count}
-                              </span>
-                            ))
-                        )}
-                      </div>
-                      {suggestionDryRunError && (
-                        <div className="suggestions-error">
-                          {suggestionDryRunError}
-                        </div>
-                      )}
-                      {hasDryRunPreviewForSelection && (
-                        <div className="suggestions-preview-dryrun">
-                          <span className="suggestion-status suggestion-status-planned">
-                            planned {suggestionDryRunStatusCounts.planned}
-                          </span>
-                          <span className="suggestion-status suggestion-status-blocked">
-                            blocked {suggestionDryRunStatusCounts.blocked}
-                          </span>
-                          <span className="suggestion-status suggestion-status-error">
-                            error {suggestionDryRunStatusCounts.error}
-                          </span>
-                        </div>
-                      )}
-                    </details>
-                  </aside>
-                </div>
-              </div>
-            </div>
-            <div className="modal-footer">
-              <button type="button" onClick={() => setIsSuggestionsOpen(false)}>
-                Close
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <SuggestionsModal
+        isOpen={isSuggestionsOpen}
+        onClose={() => setIsSuggestionsOpen(false)}
+        onDeletePreset={() => void handleDeleteSuggestionPreset()}
+        onApplySelectedSuggestions={() => void applySelectedSuggestions()}
+        controller={suggestionsController}
+        modeOptions={SUGGESTIONS_MODE_OPTIONS}
+        actionFilterOptions={SUGGESTION_ACTION_FILTER_OPTIONS}
+        sortOptions={SUGGESTION_SORT_OPTIONS}
+        minLargeFileOptions={SUGGESTION_MIN_LARGE_FILE_OPTIONS}
+      />
 
       <SettingsModal
         isOpen={isSettingsOpen}
         isLoading={areControlsDisabled}
-        viewMode={viewMode}
-        setViewMode={makeBlockingSetter(
-          "Changing default view",
-          setViewMode,
-          "Switching the default layout...",
-        )}
-        sortMode={sortMode}
-        setSortMode={makeBlockingSetter(
-          "Changing default sort",
-          setSortMode,
-          "Updating how files are ordered...",
-        )}
-        displayGroupMode={displayGroupMode}
-        handleGroupModeChange={(value) =>
-          runBlockingUiTransition(
-            "Changing default grouping",
-            () => handleGroupModeChange(value),
-            "Updating how files are grouped...",
-          )
-        }
-        shouldGroupDuplicates={shouldGroupDuplicates}
-        extensionFilterMode={extensionFilterMode}
-        setExtensionFilterMode={makeBlockingSetter(
-          "Changing extension defaults",
-          setExtensionFilterMode,
-          "Refreshing extension preferences...",
-        )}
-        autoScanOnPick={autoScanOnPick}
-        setAutoScanOnPick={setAutoScanOnPick}
-        rememberLastFolder={rememberLastFolder}
-        setRememberLastFolder={setRememberLastFolder}
-        includeSubfolders={includeSubfolders}
-        setIncludeSubfolders={setIncludeSubfolders}
-        includeHidden={includeHidden}
-        setIncludeHidden={setIncludeHidden}
-        useHashForDuplicates={useHashForDuplicates}
-        setUseHashForDuplicates={setUseHashForDuplicates}
-        duplicateMinSizeBytes={duplicateMinSizeBytes}
-        setDuplicateMinSizeBytes={setDuplicateMinSizeBytes}
-        autoPlayMedia={autoPlayMedia}
-        setAutoPlayMedia={setAutoPlayMedia}
-        skipLargePreviews={skipLargePreviews}
-        setSkipLargePreviews={setSkipLargePreviews}
-        trashBehavior={trashBehavior}
-        setTrashBehavior={setTrashBehavior}
-        confirmTrash={confirmTrash}
-        setConfirmTrash={setConfirmTrash}
-        listDensity={listDensity}
-        setListDensity={makeBlockingSetter(
-          "Changing list density",
-          setListDensity,
-          "Refreshing the list spacing...",
-        )}
-        theme={theme}
-        setTheme={makeBlockingSetter(
-          "Changing theme",
-          setTheme,
-          "Applying the updated appearance...",
-        )}
+        layout={{
+          viewMode,
+          setViewMode: makeBlockingSetter(
+            "Changing default view",
+            setViewMode,
+            "Switching the default layout...",
+          ),
+          sortMode,
+          setSortMode: makeBlockingSetter(
+            "Changing default sort",
+            setSortMode,
+            "Updating how files are ordered...",
+          ),
+          displayGroupMode,
+          handleGroupModeChange: (value) =>
+            runBlockingUiTransition(
+              "Changing default grouping",
+              () => handleGroupModeChange(value),
+              "Updating how files are grouped...",
+            ),
+          shouldGroupDuplicates,
+          extensionFilterMode,
+          setExtensionFilterMode: makeBlockingSetter(
+            "Changing extension defaults",
+            setExtensionFilterMode,
+            "Refreshing extension preferences...",
+          ),
+          listDensity,
+          setListDensity: makeBlockingSetter(
+            "Changing list density",
+            setListDensity,
+            "Refreshing the list spacing...",
+          ),
+        }}
+        scanning={{
+          autoScanOnPick,
+          setAutoScanOnPick,
+          rememberLastFolder,
+          setRememberLastFolder,
+          includeSubfolders,
+          setIncludeSubfolders,
+          includeHidden,
+          setIncludeHidden,
+        }}
+        cleanup={{
+          useHashForDuplicates,
+          setUseHashForDuplicates,
+          duplicateMinSizeBytes,
+          setDuplicateMinSizeBytes,
+          trashBehavior,
+          setTrashBehavior,
+          confirmTrash,
+          setConfirmTrash,
+        }}
+        preview={{
+          autoPlayMedia,
+          setAutoPlayMedia,
+          skipLargePreviews,
+          setSkipLargePreviews,
+        }}
+        appearance={{
+          theme,
+          setTheme: makeBlockingSetter(
+            "Changing theme",
+            setTheme,
+            "Applying the updated appearance...",
+          ),
+        }}
         onClose={() => setIsSettingsOpen(false)}
         onOpenHelp={() => setIsHelpOpen(true)}
         settingsFrameRef={settingsFrameRef}

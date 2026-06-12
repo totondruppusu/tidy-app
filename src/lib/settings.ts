@@ -25,18 +25,33 @@ import type {
   ViewMode,
 } from "../types";
 
+export const DEFAULT_SETTINGS: StoredSettings = {
+  autoScanOnPick: false,
+  rememberLastFolder: true,
+  includeSubfolders: true,
+  includeHidden: false,
+  autoPlayMedia: true,
+  skipLargePreviews: false,
+  useHashForDuplicates: true,
+  duplicateMinSizeBytes: 0,
+  confirmTrash: false,
+  trashBehavior: "system",
+  sortMode: "name_asc",
+  groupMode: "none",
+  listDensity: "compact",
+  viewMode: "list",
+  extensionFilterMode: "all",
+};
+
 export const getInitialTheme = (): ThemeMode => {
   if (typeof window === "undefined") {
-    return "light";
+    return "dark";
   }
   const stored = window.localStorage.getItem("tidy-theme");
   if (stored === "light" || stored === "dark") {
     return stored;
   }
-  if (window.matchMedia?.("(prefers-color-scheme: dark)").matches) {
-    return "dark";
-  }
-  return "light";
+  return "dark";
 };
 
 export const isFilterMode = (value: unknown): value is FilterMode =>
@@ -138,15 +153,15 @@ export const normalizeDestinationSlots = (value: unknown): (string | null)[] | n
 
 export const getStoredSettings = (): StoredSettings => {
   if (typeof window === "undefined") {
-    return {};
+    return { ...DEFAULT_SETTINGS };
   }
   try {
     const raw = window.localStorage.getItem(SETTINGS_KEY);
     if (!raw) {
-      return {};
+      return { ...DEFAULT_SETTINGS };
     }
     const parsed = JSON.parse(raw) as Record<string, unknown>;
-    const settings: StoredSettings = {};
+    const settings: StoredSettings = { ...DEFAULT_SETTINGS };
     if (isFilterMode(parsed.filterMode)) {
       settings.filterMode = parsed.filterMode;
     }

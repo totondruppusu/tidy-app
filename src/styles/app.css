@@ -10,6 +10,8 @@
   --color-surface-muted: rgba(255, 255, 255, 0.6);
   --color-surface-soft: rgba(255, 255, 255, 0.5);
   --color-surface-glass: rgba(255, 255, 255, 0.58);
+  --color-menu-surface: #f8fafc;
+  --color-menu-text: #0f172a;
   --color-border: rgba(255, 255, 255, 0.62);
   --color-border-strong: rgba(255, 255, 255, 0.9);
   --color-border-soft: rgba(255, 255, 255, 0.5);
@@ -83,6 +85,7 @@
   --space-4: 16px;
   --space-5: 20px;
   --space-6: 24px;
+  --window-controls-width: 0px;
   --titlebar-offset: max(
     env(titlebar-area-height, 0px),
     env(safe-area-inset-top, 0px),
@@ -108,6 +111,8 @@
   --color-surface-muted: rgba(17, 22, 30, 0.52);
   --color-surface-soft: rgba(17, 22, 30, 0.42);
   --color-surface-glass: rgba(17, 22, 30, 0.56);
+  --color-menu-surface: #151b24;
+  --color-menu-text: #f1f5f9;
   --color-border: rgba(148, 163, 184, 0.24);
   --color-border-strong: rgba(148, 163, 184, 0.4);
   --color-border-soft: rgba(148, 163, 184, 0.2);
@@ -224,12 +229,27 @@ input {
   color: inherit;
 }
 
+select,
+option,
+optgroup {
+  color: var(--color-menu-text);
+}
+
+option,
+optgroup {
+  background-color: var(--color-menu-surface);
+}
+
 .app-shell {
   display: flex;
   flex-direction: column;
   height: 100%;
   overflow: hidden;
   position: relative;
+}
+
+.app-shell[data-window-platform="windows"] {
+  --window-controls-width: 138px;
 }
 
 .app-shell::before {
@@ -269,15 +289,61 @@ input {
 .app-settings-button {
   position: fixed;
   top: max(0px, calc((var(--titlebar-offset)) / 2));
-  right: var(--layout-pad);
+  right: calc(var(--layout-pad) + var(--window-controls-width));
   z-index: 3;
 }
 
 .app-suggestions-button {
   position: fixed;
   top: max(0px, calc((var(--titlebar-offset)) / 2));
-  right: calc(var(--layout-pad) + 46px);
+  right: calc(var(--layout-pad) + var(--window-controls-width) + 46px);
   z-index: 3;
+}
+
+.window-controls {
+  position: fixed;
+  top: 6px;
+  right: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  z-index: 4;
+}
+
+.window-control-button {
+  width: 38px;
+  height: 28px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition:
+    background-color 140ms ease,
+    color 140ms ease;
+}
+
+.window-control-button:hover {
+  background: var(--color-surface-soft);
+  color: var(--color-text-primary);
+}
+
+.window-control-button:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+}
+
+.window-control-button svg {
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
+}
+
+.window-control-button-close:hover {
+  background: #e5484d;
+  color: #fff;
 }
 
 .app-suggestions-button svg {
@@ -502,6 +568,7 @@ input {
   border-radius: 8px;
   border: 1px solid var(--color-border-strong);
   background: var(--glass-fill);
+  background-color: var(--color-menu-surface);
   box-shadow: inset 0 1px 0 var(--glass-highlight);
   transition:
     transform 0.2s ease,
@@ -824,6 +891,7 @@ input {
   border-radius: 6px;
   border: 1px solid var(--color-border-soft);
   background: var(--glass-fill-soft);
+  background-color: var(--color-menu-surface);
   color: var(--color-text-primary);
   box-shadow: inset 0 1px 0 var(--glass-highlight);
   font-size: 11px;
@@ -948,7 +1016,7 @@ input {
 }
 
 .file-list.density-compact .file-item {
-  padding: 4px 6px;
+  padding: 4px calc(var(--space-2) + 6px);
   gap: 6px;
 }
 
@@ -1660,11 +1728,12 @@ input {
   display: flex;
   align-items: center;
   gap: 8px;
-  width: max-content;
-  min-width: 100%;
+  width: auto;
+  min-width: 0;
   border: 0;
-  border-radius: 4px;
-  padding: 6px 8px;
+  border-radius: 0;
+  margin-inline: calc(-1 * var(--space-2));
+  padding: 6px calc(var(--space-2) + 8px);
   background: transparent;
   text-align: left;
   cursor: pointer;
@@ -1680,7 +1749,9 @@ input {
 }
 
 .tree-item {
-  padding-left: calc(var(--tree-base-pad) + var(--tree-indent, 0px));
+  padding-left: calc(
+    var(--space-2) + var(--tree-base-pad) + var(--tree-indent, 0px)
+  );
 }
 
 .folder-item {
@@ -1802,7 +1873,7 @@ input {
 
 .file-item.active {
   background: var(--color-accent-soft);
-  box-shadow: inset 2px 0 0 var(--color-accent);
+  box-shadow: none;
 }
 
 .file-content {
@@ -2253,6 +2324,14 @@ input {
   max-height: 70vh;
   object-fit: contain;
   display: block;
+}
+
+.preview-office-preview iframe {
+  width: 100%;
+  min-height: clamp(220px, 45vh, 520px);
+  border: 0;
+  display: block;
+  background: #fff;
 }
 
 .preview-office-status {
@@ -2839,6 +2918,7 @@ input {
   border-radius: 8px;
   border: 1px solid var(--color-border-strong);
   background: var(--glass-fill);
+  background-color: var(--color-menu-surface);
   box-shadow: inset 0 1px 0 var(--glass-highlight);
   font: inherit;
 }

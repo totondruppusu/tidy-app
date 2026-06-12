@@ -20,6 +20,9 @@ const previewCapabilities: PreviewCapabilities = {
 const installBaseHandlers = (controller: ReturnType<typeof createMockBridge>) => {
   controller.onInvoke("get_crash_report", () => null);
   controller.onInvoke("get_preview_capabilities", () => previewCapabilities);
+  controller.onInvoke("get_cached_scan", () => null);
+  controller.onInvoke("store_cached_scan_result", () => null);
+  controller.onInvoke("hydrate_cached_scan", () => null);
   controller.onInvoke("get_recent_undo_actions", () => []);
   controller.onInvoke("store_recent_undo_actions", () => null);
   controller.onInvoke("update_heartbeat", () => null);
@@ -65,7 +68,7 @@ describe("App integration", () => {
     );
     expect(container.querySelector(".file-list")?.textContent).toContain("big.jpg");
 
-    await user.selectOptions(screen.getByDisplayValue("Tree"), "list");
+    await user.selectOptions(screen.getByDisplayValue("List"), "list");
     await user.selectOptions(screen.getByDisplayValue("Name (A-Z)"), "size_desc");
 
     const fileNames = Array.from(container.querySelectorAll(".file-item .filename")).map((n) =>
@@ -158,6 +161,122 @@ describe("App integration", () => {
       node.textContent?.trim()
     );
     expect(fileNames).toEqual(["final.jpg", "streamed.txt"]);
+  });
+
+  it("dedupes repeated files from scan batches and final scan results", async () => {
+    const controller = createMockBridge();
+    installBaseHandlers(controller);
+    window.__TIDY_DESKTOP_BRIDGE__ = controller.bridge;
+
+    const duplicated = createFile({
+      id: "f1",
+      name: "same.txt",
+      kind: "text",
+      path: "/mock/same.txt",
+    });
+    const later = createFile({
+      id: "f2",
+      name: "later.jpg",
+      kind: "image",
+      path: "/mock/later.jpg",
+    });
+    let scanId = "";
+    let resolveScan: ((result: ScanResult) => void) | null = null;
+
+    controller.bridge.open = async () => "/mock";
+    controller.onInvoke("scan_folder", (args) => {
+      scanId = String(args?.scanId ?? "");
+      return new Promise<ScanResult>((resolve) => {
+        resolveScan = resolve;
+      });
+    });
+
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+
+    await clickFolderPicker(user);
+    await user.click(screen.getByRole("button", { name: "Scan folder" }));
+    await waitFor(() => expect(resolveScan).not.toBeNull());
+
+    await act(async () => {
+      controller.emit("scan_batch", {
+        scanId,
+        files: [duplicated, duplicated],
+      });
+    });
+    await waitFor(() =>
+      expect(container.querySelectorAll(".file-item .filename")).toHaveLength(1),
+    );
+
+    await act(async () => {
+      resolveScan?.({
+        files: [duplicated, duplicated, later],
+        total: 3,
+      });
+    });
+    await waitFor(() =>
+      expect(container.querySelector(".file-list")?.textContent).toContain("later.jpg"),
+    );
+
+    const fileNames = Array.from(
+      container.querySelectorAll(".file-item .filename"),
+    ).map((node) => node.textContent?.trim());
+    expect(fileNames).toEqual(["later.jpg", "same.txt"]);
+  });
+
+  it("loads a previous cached scan without running a fresh scan", async () => {
+    const controller = createMockBridge();
+    installBaseHandlers(controller);
+    window.__TIDY_DESKTOP_BRIDGE__ = controller.bridge;
+
+    const cachedFile = createFile({
+      id: "f1",
+      name: "cached.txt",
+      kind: "text",
+      path: "/mock/cached.txt",
+    });
+    let scanFolderCalls = 0;
+    let hydrateArgs: Record<string, unknown> | undefined;
+
+    controller.bridge.open = async () => "/mock";
+    controller.onInvoke("get_cached_scan", () => ({
+      folderPath: "/mock",
+      filterMode: "all",
+      includeSubfolders: false,
+      includeHidden: false,
+      useHashForDuplicates: true,
+      duplicateMinSizeBytes: 0,
+      cachedAtMs: Date.now(),
+      files: [cachedFile],
+      total: 1,
+    }));
+    controller.onInvoke("hydrate_cached_scan", (args) => {
+      hydrateArgs = args;
+      return null;
+    });
+    controller.onInvoke("scan_folder", () => {
+      scanFolderCalls += 1;
+      return { files: [], total: 0 };
+    });
+
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+
+    await clickFolderPicker(user);
+    await user.click(screen.getByRole("button", { name: "Scan folder" }));
+    await user.click(screen.getByRole("button", { name: "Load previous scan" }));
+
+    await waitFor(() =>
+      expect(container.querySelector(".file-list")?.textContent).toContain("cached.txt"),
+    );
+
+    expect(scanFolderCalls).toBe(0);
+    expect(hydrateArgs).toEqual({
+      request: {
+        folderPath: "/mock",
+        files: [cachedFile],
+      },
+    });
   });
 
   it("selects the next visible file after repeated trash operations", async () => {

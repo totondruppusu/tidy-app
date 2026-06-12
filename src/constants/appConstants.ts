@@ -10,7 +10,18 @@ import type {
 
 export const MAX_UNDO_STACK = 20;
 export const PREVIEW_DELAY_MS = 120;
-export const OFFICE_PREVIEW_EXTENSIONS = ["doc", "docx", "xlsx", "ppt", "pptx", "key", "odp"];
+export const OFFICE_PREVIEW_EXTENSIONS = [
+  "doc",
+  "docx",
+  "odt",
+  "rtf",
+  "xls",
+  "xlsx",
+  "ods",
+  "ppt",
+  "pptx",
+  "odp",
+];
 export const LARGE_PREVIEW_SIZE_BYTES = 50 * 1024 * 1024;
 export const COMMON_EXTENSIONS = new Set([
   "jpg",

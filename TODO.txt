@@ -50,6 +50,8 @@ auto load to last opened file in view
 .selected file always visible in list
 .screenshots and memes identification
 .possibility to load old scans and indexing
+?crop images
+.rich documents preview on windows
 
 
 BUG
@@ -58,14 +60,21 @@ BUG
 .extension collapsed by default
 .ext all selected by default
 .file type and group selection
-no preview of windows doc
-odp files crash
+.no preview of windows doc
+.odp files crash
 sorting size bugged in tree view
 .app trash does not clean up after exiting
 .better responsive settings modal
 .previews that take time hung the application and crashes
 ?files with wrong extension or corrupted crash the app
 .in duplicates view when i delete a file the order changes and the selected file is not the next one
+.win window title bar not integrated
+win tree view not rendering
+win groups not rendering
+win install opens dead cmd window
+.win drop down background color
+extension panel not scrollable
+
 
 REFACTORING
 .refactor app structure in app, components, constansts, lib, styles, types

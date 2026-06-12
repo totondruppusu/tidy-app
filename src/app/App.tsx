@@ -2362,7 +2362,9 @@ export default function App() {
     const renderButton = (file: FileEntry, index: number, depth?: number) => (
       <button
         key={file.id}
-        className={`file-item ${depth !== undefined ? "tree-item" : ""}`}
+        className={`file-item ${index === currentIndex ? "active " : ""}${
+          depth !== undefined ? "tree-item" : ""
+        }`}
         onClick={() => {
           currentFileIdRef.current = file.id;
           setCurrentIndex(index);
@@ -2370,6 +2372,7 @@ export default function App() {
         onDoubleClick={() => void openFileInFinder(file)}
         ref={(node) => listItemRefs.current.set(file.id, node)}
         type="button"
+        aria-current={index === currentIndex ? "true" : undefined}
         disabled={isLoading || isMutating}
         style={
           depth !== undefined
@@ -2486,7 +2489,7 @@ export default function App() {
       return sortedNodes.map((node) => {
         if (node.type === "file") {
           const index = indexMap.get(node.file.id) ?? 0;
-          return renderButton(node.file, index, depth);
+          return renderButton(node.file, index, Math.max(depth - 1, 0));
         }
         const folderKey = getFolderCollapseKey(groupId, node.path);
         const isCollapsed = Boolean(collapsedFolders[folderKey]);

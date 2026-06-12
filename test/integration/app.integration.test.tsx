@@ -322,7 +322,7 @@ describe("App integration", () => {
     expect(container.querySelector(".file-list")?.textContent).toContain("gamma.txt");
   });
 
-  it("shows the suggestions entrypoint as work in progress", async () => {
+  it("keeps the suggestions entrypoint hidden for now", async () => {
     const controller = createMockBridge();
     installBaseHandlers(controller);
     window.__TIDY_DESKTOP_BRIDGE__ = controller.bridge;
@@ -382,12 +382,10 @@ describe("App integration", () => {
       expect(container.querySelector(".file-list")?.textContent).toContain("old.zip")
     );
 
-    const suggestionsButton = screen.getByRole("button", {
-      name: "AI suggestions (work in progress)",
-    });
-    expect(suggestionsButton).toBeDisabled();
     expect(
-      suggestionsButton.closest(".icon-button-tooltip-anchor"),
-    ).toHaveAttribute("title", "Work in progress");
+      screen.queryByRole("button", {
+        name: "AI suggestions (work in progress)",
+      }),
+    ).not.toBeInTheDocument();
   });
 });

@@ -3291,6 +3291,7 @@ fn upsert_index_path_or_tree(index: &mut IndexStore, path: &Path) -> Vec<(String
 }
 
 fn classify_file(path: &Path) -> FileKind {
+  let file_name = path.file_name().and_then(|name| name.to_str()).unwrap_or("");
   let extension = path
     .extension()
     .and_then(|ext| ext.to_str())
@@ -3308,7 +3309,7 @@ fn classify_file(path: &Path) -> FileKind {
   if is_docs_extension(&extension) {
     return FileKind::Docs;
   }
-  if is_text_extension(&extension) {
+  if is_text_extension(&extension) || is_text_file_name(file_name) {
     return FileKind::Text;
   }
   if is_compressed_extension(&extension) {
@@ -4115,19 +4116,103 @@ fn is_text_extension(extension: &str) -> bool {
       | "yaml"
       | "yml"
       | "xml"
+      | "htm"
       | "html"
       | "css"
+      | "scss"
+      | "sass"
+      | "less"
       | "js"
+      | "mjs"
+      | "cjs"
       | "ts"
+      | "mts"
+      | "cts"
       | "jsx"
       | "tsx"
+      | "vue"
+      | "svelte"
+      | "astro"
       | "log"
       | "ini"
       | "conf"
+      | "cfg"
       | "toml"
+      | "properties"
       | "env"
       | "sql"
+      | "graphql"
+      | "gql"
+      | "py"
+      | "rb"
+      | "php"
+      | "java"
+      | "kt"
+      | "kts"
+      | "groovy"
+      | "scala"
+      | "clj"
+      | "cljs"
+      | "edn"
+      | "go"
+      | "rs"
+      | "c"
+      | "h"
+      | "cpp"
+      | "cc"
+      | "cxx"
+      | "hpp"
+      | "hh"
+      | "hxx"
+      | "cs"
+      | "swift"
+      | "dart"
+      | "lua"
+      | "pl"
+      | "pm"
+      | "r"
+      | "bash"
+      | "zsh"
+      | "fish"
+      | "psm1"
+      | "psd1"
+      | "cmake"
+      | "m"
+      | "mm"
   )
+}
+
+fn is_text_file_name(file_name: &str) -> bool {
+  let normalized = file_name.to_lowercase();
+  normalized.starts_with(".env")
+    || normalized.starts_with(".babelrc")
+    || normalized.starts_with(".eslintrc.")
+    || normalized.starts_with(".prettierrc.")
+    || normalized.starts_with(".stylelintrc.")
+    || matches!(
+      normalized.as_str(),
+      ".bash_profile"
+        | ".bashrc"
+        | ".editorconfig"
+        | ".eslintrc"
+        | ".gitattributes"
+        | ".gitignore"
+        | ".gitmodules"
+        | ".npmrc"
+        | ".prettierrc"
+        | ".profile"
+        | ".stylelintrc"
+        | ".yarnrc"
+        | ".zshrc"
+        | "cmakelists.txt"
+        | "dockerfile"
+        | "gemfile"
+        | "gnumakefile"
+        | "justfile"
+        | "makefile"
+        | "procfile"
+        | "rakefile"
+    )
 }
 
 fn is_compressed_extension(extension: &str) -> bool {
@@ -4823,6 +4908,15 @@ mod tests {
       "/tmp/Photos/holiday.png",
       &image_kind,
     ));
+  }
+
+  #[test]
+  fn classify_file_recognizes_code_and_config_text_files() {
+    assert!(matches!(classify_file(Path::new("/tmp/main.rs")), FileKind::Text));
+    assert!(matches!(classify_file(Path::new("/tmp/script.py")), FileKind::Text));
+    assert!(matches!(classify_file(Path::new("/tmp/.env.local")), FileKind::Text));
+    assert!(matches!(classify_file(Path::new("/tmp/Dockerfile")), FileKind::Text));
+    assert!(matches!(classify_file(Path::new("/tmp/.gitignore")), FileKind::Text));
   }
 
   #[test]

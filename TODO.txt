@@ -53,11 +53,12 @@ auto load to last opened file in view
 ?crop images
 .rich documents preview on windows
 .markdown rich preview
-better code preview and support
+.better code preview and support
 scalable ui
 collapsable categories of settings
 .themed scrollbar
 .tree view folder size under name
+html toggle preview
 
 
 

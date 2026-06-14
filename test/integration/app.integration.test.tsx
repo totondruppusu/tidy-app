@@ -301,6 +301,40 @@ describe("App integration", () => {
     expect(screen.getByText("First item")).toHaveProperty("tagName", "LI");
   });
 
+  it("renders code files with a syntax-aware preview", async () => {
+    const controller = createMockBridge();
+    installBaseHandlers(controller);
+    window.__TIDY_DESKTOP_BRIDGE__ = controller.bridge;
+
+    const files = [
+      createFile({
+        id: "py-1",
+        name: "script.py",
+        kind: "binary",
+        path: "/mock/script.py",
+        mime: "text/x-python",
+      }),
+    ];
+
+    controller.bridge.open = async () => "/mock";
+    controller.onInvoke("scan_folder", () => ({ files, total: files.length }));
+    controller.onInvoke(
+      "read_text_preview",
+      () => 'def tidy(value):\n    return "preview"\n',
+    );
+
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+
+    await clickFolderPicker(user);
+    await user.click(screen.getByRole("button", { name: "Scan folder" }));
+
+    expect(await screen.findByText("Python")).toBeVisible();
+    expect(screen.getByLabelText("Code preview of script.py")).toBeVisible();
+    expect(container.querySelector(".token-keyword")?.textContent).toBe("def");
+    expect(screen.queryByText("No rich preview available.")).toBeNull();
+  });
+
   it("starts type groups folded when grouping changes", async () => {
     const controller = createMockBridge();
     installBaseHandlers(controller);

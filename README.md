@@ -69,10 +69,22 @@ AI can help with many things, but cleanup still depends on your judgment. Tidy-A
 - PDFs
 - Archives
 - Office documents
+- Syntax-aware code and script previews with line numbers for common source and config files
 
 On Windows, rich preview for Office documents requires LibreOffice to be installed. Without LibreOffice, Office files fall back to text extraction when possible.
 
 Additional preview tools include image zoom, pan controls, media shortcuts, file reveal, and opening files in the default system app.
+
+Supported preview extensions and filenames:
+
+- Images: `jpg`, `jpeg`, `png`, `gif`, `bmp`, `webp`, `tiff`, `heic`, `heif`
+- Video: `mp4`, `mov`, `mkv`, `webm`, `avi`, `wmv`, `m4v`, `mpeg`, `mpg`
+- Audio: `mp3`, `wav`, `flac`, `aac`, `m4a`, `ogg`, `opus`, `aiff`, `wma`, `alac`
+- Documents: `pdf`, `doc`, `docx`, `odt`, `rtf`, `ppt`, `pptx`, `key`, `pages`, `numbers`, `xls`, `xlsx`, `ods`, `odp`
+- Archives: `zip`, `rar`, `7z`, `tar`, `gz`, `tgz`, `bz2`, `xz`, `zst`, `lz`, `lz4`, `cab`
+- Plain text: `txt`, `log`, `csv`, `tsv`, `md`, `markdown`
+- Code, script, and config preview: `json`, `yaml`, `yml`, `xml`, `htm`, `html`, `css`, `scss`, `sass`, `less`, `js`, `mjs`, `cjs`, `ts`, `mts`, `cts`, `jsx`, `tsx`, `vue`, `svelte`, `astro`, `ini`, `conf`, `cfg`, `toml`, `properties`, `env`, `sql`, `graphql`, `gql`, `py`, `rb`, `php`, `java`, `kt`, `kts`, `groovy`, `scala`, `clj`, `cljs`, `edn`, `go`, `rs`, `c`, `h`, `cpp`, `cc`, `cxx`, `hpp`, `hh`, `hxx`, `cs`, `swift`, `dart`, `lua`, `pl`, `pm`, `r`, `sh`, `bash`, `zsh`, `fish`, `ps1`, `psm1`, `psd1`, `bat`, `cmd`, `cmake`, `m`, `mm`
+- Special filenames with rich text/code preview: `Dockerfile`, `Makefile`, `GNUmakefile`, `Justfile`, `CMakeLists.txt`, `Procfile`, `Gemfile`, `Rakefile`, `.env*`, `.gitignore`, `.gitattributes`, `.gitmodules`, `.editorconfig`, `.npmrc`, `.yarnrc`, `.bashrc`, `.bash_profile`, `.profile`, `.zshrc`, `.eslintrc*`, `.prettierrc*`, `.stylelintrc*`, `.babelrc*`
 
 ### Duplicate Finder
 

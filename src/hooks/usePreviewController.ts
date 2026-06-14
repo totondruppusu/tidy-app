@@ -24,6 +24,7 @@ import {
   getPreviewCapabilities,
   listArchiveEntries,
 } from "../services/previewService";
+import { isSupportedTextPreviewFile } from "../lib/codePreview";
 import { useAsyncWorkflow } from "./useAsyncWorkflow";
 import type {
   FileEntry,
@@ -111,10 +112,14 @@ export const usePreviewController = ({
   const isAudioPreview = canRenderPreview && previewFile?.kind === "audio";
   const isMarkdownPreview =
     canRenderPreview &&
-    previewFile?.kind === "text" &&
+    Boolean(previewFile) &&
+    (previewFile.kind === "text" || isSupportedTextPreviewFile(previewFile.name)) &&
     isMarkdownExtension(previewExtension);
   const isTextPreview =
-    canRenderPreview && previewFile?.kind === "text" && !isMarkdownPreview;
+    canRenderPreview &&
+    Boolean(previewFile) &&
+    (previewFile.kind === "text" || isSupportedTextPreviewFile(previewFile.name)) &&
+    !isMarkdownPreview;
   const isPdfPreview =
     canRenderPreview &&
     previewFile?.kind === "docs" &&
@@ -123,7 +128,7 @@ export const usePreviewController = ({
     canRenderPreview &&
     previewFile?.kind === "docs" &&
     OFFICE_PREVIEW_EXTENSIONS.includes(previewExtension);
-  const isDocumentPreview = isTextPreview || isPdfPreview;
+  const isDocumentPreview = isPdfPreview;
   const isArchivePreview =
     canRenderPreview && previewFile?.kind === "compressed";
   const isFallbackPreview =
@@ -132,6 +137,7 @@ export const usePreviewController = ({
     !isMediaPreview &&
     !isAudioPreview &&
     !isMarkdownPreview &&
+    !isTextPreview &&
     !isDocumentPreview &&
     !isOfficePreview &&
     !isArchivePreview;

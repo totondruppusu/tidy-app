@@ -25,6 +25,9 @@ use tar::Archive;
 use xz2::read::XzDecoder;
 use zip::ZipArchive;
 
+#[cfg(target_os = "macos")]
+use objc2_app_kit::NSWindow;
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum FileKind {
@@ -4535,6 +4538,19 @@ fn protocol_response(
   build_response(StatusCode::OK, headers, buffer)
 }
 
+#[cfg(target_os = "macos")]
+fn configure_macos_window_dragging(app: &tauri::AppHandle) -> Result<(), String> {
+  let window = app
+    .get_webview_window("main")
+    .ok_or_else(|| "main window not found".to_string())?;
+  let ns_window = window.ns_window().map_err(|error| error.to_string())?;
+  unsafe {
+    let ns_window: &NSWindow = &*ns_window.cast();
+    ns_window.setMovableByWindowBackground(true);
+  }
+  Ok(())
+}
+
 fn main() {
   let context = tauri::generate_context!();
   tauri::Builder::default()
@@ -4596,6 +4612,8 @@ fn main() {
         scan_cancellations: Mutex::new(HashMap::new()),
         trash_dir,
       });
+      #[cfg(target_os = "macos")]
+      configure_macos_window_dragging(app.handle())?;
       Ok(())
     })
     .plugin(tauri_plugin_dialog::init())

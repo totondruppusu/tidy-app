@@ -157,7 +157,7 @@ describe("App integration", () => {
     expect(archiveToggle).toHaveTextContent("3.0 KB");
   });
 
-  it("respects size sorting for visible root items in tree view", async () => {
+  it("keeps folders above files in tree view while preserving size sorting within folders", async () => {
     const controller = createMockBridge();
     installBaseHandlers(controller);
     window.__TIDY_DESKTOP_BRIDGE__ = controller.bridge;
@@ -209,11 +209,7 @@ describe("App integration", () => {
       return labelNode?.textContent?.trim() ?? "";
     });
 
-    expect(visibleRootLabels.slice(0, 3)).toEqual([
-      "z-large",
-      "medium.txt",
-      "a-small",
-    ]);
+    expect(visibleRootLabels.slice(0, 3)).toEqual(["z-large", "a-small", "medium.txt"]);
   });
 
   it("keeps folded tree folders folded when sort changes", async () => {

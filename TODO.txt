@@ -86,6 +86,7 @@ BUG
 .box around last selected file
 .tree indentation of files
 .light theme shadow in settings
+title bar drag on Mac
 
 
 REFACTORING

@@ -42,6 +42,24 @@ describe("files/path/tree/dom/media", () => {
     });
   });
 
+  it("places folders before files within the same tree level", () => {
+    const files = [
+      createFile({ id: "1", path: "/root/readme.txt", name: "readme.txt", kind: "text" }),
+      createFile({ id: "2", path: "/root/docs/guide.txt", name: "guide.txt", kind: "text" }),
+    ];
+
+    const tree = buildFileTree(files, "/root");
+
+    expect(tree.children[0]).toMatchObject({
+      type: "folder",
+      name: "docs",
+    });
+    expect(tree.children[1]).toMatchObject({
+      type: "file",
+      file: { name: "readme.txt" },
+    });
+  });
+
   it("updates scroll hints and keyboard eligibility", () => {
     const scrollNode = document.createElement("div");
     const frameNode = document.createElement("div");

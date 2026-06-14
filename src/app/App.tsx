@@ -3038,7 +3038,7 @@ export default function App() {
       aria-busy={isLoading || isInteractionBlocked}
       data-window-platform={isWindowsDesktop ? "windows" : "default"}
     >
-      <div className="titlebar-drag" data-tauri-drag-region />
+      {isWindowsDesktop && <div className="titlebar-drag" data-tauri-drag-region />}
       <Toolbar
         isSidebarCollapsed={isSidebarCollapsed}
         isDrawerMode={isDrawerMode}

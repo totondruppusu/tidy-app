@@ -585,7 +585,7 @@ const highlightMarkupLine = (line: string, language: CodeLanguage) => {
   const { tokens, value } = protectTokens(line, [
     {
       className: "token-comment",
-      pattern: language === "xml" ? /<!--.*?(?:-->|$)/g : /<!--.*?(?:-->|$)/g,
+      pattern: language === "xml" ? /<!--[\s\S]*?(?:--!?>|$)/g : /<!--[\s\S]*?(?:--!?>|$)/g,
     },
     {
       className: "token-string",

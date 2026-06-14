@@ -3169,9 +3169,55 @@ optgroup {
 
 .settings-section-header {
   display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  width: 100%;
+  padding: var(--space-2);
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  text-align: left;
+}
+
+.settings-section-header:hover {
+  background: transparent;
+}
+
+.settings-section-header > div {
+  display: flex;
   flex-direction: column;
   gap: 4px;
-  padding: 0 var(--space-2);
+}
+
+.settings-section-content {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.settings-section-chevron {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  color: var(--color-text-secondary);
+  background: var(--glass-fill-soft);
+  border: 1px solid var(--color-border-card);
+  transition: transform 140ms ease, color 140ms ease;
+}
+
+.settings-section-chevron svg {
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
+}
+
+.settings-section.is-expanded .settings-section-chevron {
+  transform: rotate(90deg);
+  color: var(--color-text-primary);
 }
 
 .settings-section-title {

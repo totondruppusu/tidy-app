@@ -55,7 +55,7 @@ auto load to last opened file in view
 .markdown rich preview
 .better code preview and support
 scalable ui
-collapsable categories of settings
+.collapsable categories of settings
 .themed scrollbar
 .tree view folder size under name
 html toggle preview

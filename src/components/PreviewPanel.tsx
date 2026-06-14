@@ -9,6 +9,8 @@ import { buildMediaUrl } from "../lib/media";
 import { extractFolder } from "../lib/path";
 import { formatBytes, formatKindLabel, formatTimestamp } from "../lib/format";
 import type { PreviewController } from "../hooks/usePreviewController";
+import { MarkdownPreview } from "./MarkdownPreview";
+import { TextPreview } from "./TextPreview";
 
 type PreviewPanelProps = {
   frameRef: Ref<HTMLDivElement>;
@@ -121,6 +123,16 @@ export const PreviewPanel = ({
                   controls
                   autoPlay={autoPlayMedia}
                 />
+              )}
+              {preview.isMarkdownPreview && (
+                <div className="preview-markdown-shell">
+                  <MarkdownPreview fileId={previewFile.id} fileName={previewFile.name} />
+                </div>
+              )}
+              {preview.isTextPreview && (
+                <div className="preview-text-shell">
+                  <TextPreview fileId={previewFile.id} fileName={previewFile.name} />
+                </div>
               )}
               {preview.isDocumentPreview && (
                 <div className="preview-document">

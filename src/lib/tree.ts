@@ -43,5 +43,19 @@ export const buildFileTree = (list: FileEntry[], basePath: string | null) => {
     });
     parent.children.push({ type: "file", file });
   });
+  const sortFoldersFirst = (folder: TreeFolderNode) => {
+    folder.children.sort((a, b) => {
+      if (a.type === b.type) {
+        return 0;
+      }
+      return a.type === "folder" ? -1 : 1;
+    });
+    folder.children.forEach((child) => {
+      if (child.type === "folder") {
+        sortFoldersFirst(child);
+      }
+    });
+  };
+  sortFoldersFirst(root);
   return root;
 };

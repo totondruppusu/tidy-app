@@ -35,6 +35,7 @@ const installBaseHandlers = (controller: ReturnType<typeof createMockBridge>) =>
     excerpt: "preview",
   }));
   controller.onInvoke("list_archive_entries", () => ({ entries: [], truncated: false }));
+  controller.onInvoke("read_text_preview", () => "");
 };
 
 describe("App integration", () => {
@@ -157,7 +158,7 @@ describe("App integration", () => {
     expect(archiveToggle).toHaveTextContent("3.0 KB");
   });
 
-  it("respects size sorting for visible root items in tree view", async () => {
+  it("keeps folders above files in tree view while preserving size sorting within folders", async () => {
     const controller = createMockBridge();
     installBaseHandlers(controller);
     window.__TIDY_DESKTOP_BRIDGE__ = controller.bridge;
@@ -209,11 +210,7 @@ describe("App integration", () => {
       return labelNode?.textContent?.trim() ?? "";
     });
 
-    expect(visibleRootLabels.slice(0, 3)).toEqual([
-      "z-large",
-      "medium.txt",
-      "a-small",
-    ]);
+    expect(visibleRootLabels.slice(0, 3)).toEqual(["z-large", "a-small", "medium.txt"]);
   });
 
   it("keeps folded tree folders folded when sort changes", async () => {
@@ -269,6 +266,73 @@ describe("App integration", () => {
       screen.getByRole("button", { name: "Expand beta" }),
     ).toHaveAttribute("aria-expanded", "false");
     expect(container.querySelector(".file-item .filename")).toBeNull();
+  });
+
+  it("renders markdown files with a rich preview", async () => {
+    const controller = createMockBridge();
+    installBaseHandlers(controller);
+    window.__TIDY_DESKTOP_BRIDGE__ = controller.bridge;
+
+    const files = [
+      createFile({
+        id: "md-1",
+        name: "README.md",
+        kind: "text",
+        path: "/mock/README.md",
+        mime: "text/markdown",
+      }),
+    ];
+
+    controller.bridge.open = async () => "/mock";
+    controller.onInvoke("scan_folder", () => ({ files, total: files.length }));
+    controller.onInvoke(
+      "read_text_preview",
+      () => "# Project title\n\nA **bold** intro with `code`.\n\n- First item\n- Second item\n",
+    );
+
+    const user = userEvent.setup();
+    render(<App />);
+
+    await clickFolderPicker(user);
+    await user.click(screen.getByRole("button", { name: "Scan folder" }));
+
+    expect(await screen.findByRole("heading", { name: "Project title" })).toBeVisible();
+    expect(screen.getByText("bold")).toHaveProperty("tagName", "STRONG");
+    expect(screen.getByText("First item")).toHaveProperty("tagName", "LI");
+  });
+
+  it("renders code files with a syntax-aware preview", async () => {
+    const controller = createMockBridge();
+    installBaseHandlers(controller);
+    window.__TIDY_DESKTOP_BRIDGE__ = controller.bridge;
+
+    const files = [
+      createFile({
+        id: "py-1",
+        name: "script.py",
+        kind: "binary",
+        path: "/mock/script.py",
+        mime: "text/x-python",
+      }),
+    ];
+
+    controller.bridge.open = async () => "/mock";
+    controller.onInvoke("scan_folder", () => ({ files, total: files.length }));
+    controller.onInvoke(
+      "read_text_preview",
+      () => 'def tidy(value):\n    return "preview"\n',
+    );
+
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+
+    await clickFolderPicker(user);
+    await user.click(screen.getByRole("button", { name: "Scan folder" }));
+
+    expect(await screen.findByText("Python")).toBeVisible();
+    expect(screen.getByLabelText("Code preview of script.py")).toBeVisible();
+    expect(container.querySelector(".token-keyword")?.textContent).toBe("def");
+    expect(screen.queryByText("No rich preview available.")).toBeNull();
   });
 
   it("starts type groups folded when grouping changes", async () => {
@@ -547,6 +611,38 @@ describe("App integration", () => {
         files: [cachedFile],
       },
     });
+  });
+
+  it("closes the previous scan prompt from the top-right close button", async () => {
+    const controller = createMockBridge();
+    installBaseHandlers(controller);
+    window.__TIDY_DESKTOP_BRIDGE__ = controller.bridge;
+
+    controller.bridge.open = async () => "/mock";
+    controller.onInvoke("get_cached_scan", () => ({
+      folderPath: "/mock",
+      filterMode: "all",
+      includeSubfolders: false,
+      includeHidden: false,
+      useHashForDuplicates: true,
+      duplicateMinSizeBytes: 0,
+      cachedAtMs: Date.now(),
+      files: [],
+      total: 0,
+    }));
+
+    const user = userEvent.setup();
+    render(<App />);
+
+    await clickFolderPicker(user);
+    await user.click(screen.getByRole("button", { name: "Scan folder" }));
+    expect(screen.getByText("Previous scan available")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Close previous scan dialog" }));
+
+    await waitFor(() =>
+      expect(screen.queryByText("Previous scan available")).not.toBeInTheDocument()
+    );
   });
 
   it("selects the next visible file after repeated trash operations", async () => {

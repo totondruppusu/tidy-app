@@ -1,4 +1,4 @@
-import type { Dispatch, RefObject, SetStateAction } from "react";
+import { useState, type Dispatch, type ReactNode, type RefObject, type SetStateAction } from "react";
 import type {
   DensityMode,
   ExtensionFilterMode,
@@ -80,6 +80,57 @@ export const SettingsModal = ({
     return null;
   }
 
+  const [openSections, setOpenSections] = useState({
+    layout: false,
+    scanning: false,
+    cleanup: false,
+    playback: false,
+  });
+
+  const toggleSection = (section: keyof typeof openSections) => {
+    setOpenSections((current) => ({
+      ...current,
+      [section]: !current[section],
+    }));
+  };
+
+  const renderSection = (
+    section: keyof typeof openSections,
+    title: string,
+    subtitle: string,
+    children: ReactNode,
+  ) => {
+    const contentId = `settings-section-${section}`;
+    const isExpanded = openSections[section];
+
+    return (
+      <section className={`settings-section${isExpanded ? " is-expanded" : ""}`}>
+        <button
+          type="button"
+          className="settings-section-header"
+          onClick={() => toggleSection(section)}
+          aria-expanded={isExpanded}
+          aria-controls={contentId}
+        >
+          <div>
+            <h3 className="settings-section-title">{title}</h3>
+            <p className="settings-section-subtitle">{subtitle}</p>
+          </div>
+          <span className="settings-section-chevron" aria-hidden="true">
+            <svg viewBox="0 0 20 20" focusable="false">
+              <path d="M7.2 4.8a1 1 0 0 1 1.4 0l4.5 4.5a1 1 0 0 1 0 1.4l-4.5 4.5a1 1 0 1 1-1.4-1.4L11 10 7.2 6.2a1 1 0 0 1 0-1.4Z" />
+            </svg>
+          </span>
+        </button>
+        {isExpanded ? (
+          <div id={contentId} className="settings-section-content">
+            {children}
+          </div>
+        ) : null}
+      </section>
+    );
+  };
+
   return (
     <div
       className="modal-backdrop"
@@ -109,11 +160,11 @@ export const SettingsModal = ({
         <div className="settings-scroll-frame scroll-hints" ref={settingsFrameRef}>
           <div className="modal-body" ref={settingsBodyRef}>
             <div className="settings-grid">
-              <section className="settings-section">
-                <div className="settings-section-header">
-                  <h3 className="settings-section-title">Layout and defaults</h3>
-                  <p className="settings-section-subtitle">Define how the list starts and appears.</p>
-                </div>
+              {renderSection(
+                "layout",
+                "Layout and defaults",
+                "Define how the list starts and appears.",
+                <>
                 <div className="settings-row">
                   <div className="setting-info">
                     <div className="setting-title">Start view</div>
@@ -210,12 +261,13 @@ export const SettingsModal = ({
                     <option value="compact">Compact</option>
                   </select>
                 </div>
-              </section>
-              <section className="settings-section">
-                <div className="settings-section-header">
-                  <h3 className="settings-section-title">Scanning</h3>
-                  <p className="settings-section-subtitle">Control what gets picked up on import.</p>
-                </div>
+                </>,
+              )}
+              {renderSection(
+                "scanning",
+                "Scanning",
+                "Control what gets picked up on import.",
+                <>
                 <div className="settings-row">
                   <div className="setting-info">
                     <div className="setting-title">Auto-scan on pick</div>
@@ -284,12 +336,13 @@ export const SettingsModal = ({
                     <span>{scanning.includeHidden ? "On" : "Off"}</span>
                   </label>
                 </div>
-              </section>
-              <section className="settings-section">
-                <div className="settings-section-header">
-                  <h3 className="settings-section-title">Duplicates and cleanup</h3>
-                  <p className="settings-section-subtitle">Tune accuracy and deletion behavior.</p>
-                </div>
+                </>,
+              )}
+              {renderSection(
+                "cleanup",
+                "Duplicates and cleanup",
+                "Tune accuracy and deletion behavior.",
+                <>
                 <div className="settings-row">
                   <div className="setting-info">
                     <div className="setting-title">Duplicate matching</div>
@@ -371,12 +424,13 @@ export const SettingsModal = ({
                     <span>{cleanup.confirmTrash ? "On" : "Off"}</span>
                   </label>
                 </div>
-              </section>
-              <section className="settings-section">
-                <div className="settings-section-header">
-                  <h3 className="settings-section-title">Playback and appearance</h3>
-                  <p className="settings-section-subtitle">Media behavior and theme preferences.</p>
-                </div>
+                </>,
+              )}
+              {renderSection(
+                "playback",
+                "Playback and appearance",
+                "Media behavior and theme preferences.",
+                <>
                 <div className="settings-row">
                   <div className="setting-info">
                     <div className="setting-title">Auto-play media</div>
@@ -432,7 +486,8 @@ export const SettingsModal = ({
                     <span>{appearance.theme === "dark" ? "On" : "Off"}</span>
                   </label>
                 </div>
-              </section>
+                </>,
+              )}
             </div>
           </div>
         </div>

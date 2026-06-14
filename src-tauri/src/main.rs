@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command};
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -24,6 +24,15 @@ use flate2::read::GzDecoder;
 use tar::Archive;
 use xz2::read::XzDecoder;
 use zip::ZipArchive;
+
+#[cfg(target_os = "macos")]
+use objc2_app_kit::NSWindow;
+
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -186,6 +195,7 @@ static TRASH_CLEANED: AtomicBool = AtomicBool::new(false);
 
 const MAX_ARCHIVE_ENTRIES: usize = 200;
 const MAX_RANGE_CHUNK_BYTES: u64 = 1_048_576;
+const MAX_TEXT_PREVIEW_BYTES: u64 = 1_048_576;
 const QLMANAGE_TIMEOUT_SECS: u64 = 10;
 const WINDOWS_OFFICE_PREVIEW_TIMEOUT_SECS: u64 = 20;
 const QLMANAGE_POLL_MS: u64 = 100;
@@ -2056,6 +2066,35 @@ fn get_file_by_id(
 }
 
 #[tauri::command]
+async fn read_text_preview(
+  state: tauri::State<'_, AppState>,
+  id: String,
+) -> Result<String, String> {
+  let path = {
+    let map = state.map.lock().expect("map lock");
+    map.get(&id).cloned().ok_or("File not found")?
+  };
+  if !path.exists() {
+    return Err("File not found".into());
+  }
+  tauri::async_runtime::spawn_blocking(move || {
+    let metadata = fs::metadata(&path).map_err(|error| error.to_string())?;
+    let max_len = usize::try_from(MAX_TEXT_PREVIEW_BYTES).unwrap_or(usize::MAX);
+    let mut file = File::open(&path).map_err(|error| error.to_string())?;
+    let mut buffer = Vec::with_capacity(
+      usize::try_from(metadata.len().min(MAX_TEXT_PREVIEW_BYTES)).unwrap_or(max_len),
+    );
+    file
+      .take(MAX_TEXT_PREVIEW_BYTES)
+      .read_to_end(&mut buffer)
+      .map_err(|error| error.to_string())?;
+    Ok(String::from_utf8_lossy(&buffer).into_owned())
+  })
+  .await
+  .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
 fn trash_file(
   app_handle: AppHandle,
   state: tauri::State<'_, AppState>,
@@ -3258,6 +3297,7 @@ fn upsert_index_path_or_tree(index: &mut IndexStore, path: &Path) -> Vec<(String
 }
 
 fn classify_file(path: &Path) -> FileKind {
+  let file_name = path.file_name().and_then(|name| name.to_str()).unwrap_or("");
   let extension = path
     .extension()
     .and_then(|ext| ext.to_str())
@@ -3275,7 +3315,7 @@ fn classify_file(path: &Path) -> FileKind {
   if is_docs_extension(&extension) {
     return FileKind::Docs;
   }
-  if is_text_extension(&extension) {
+  if is_text_extension(&extension) || is_text_file_name(file_name) {
     return FileKind::Text;
   }
   if is_compressed_extension(&extension) {
@@ -4082,19 +4122,103 @@ fn is_text_extension(extension: &str) -> bool {
       | "yaml"
       | "yml"
       | "xml"
+      | "htm"
       | "html"
       | "css"
+      | "scss"
+      | "sass"
+      | "less"
       | "js"
+      | "mjs"
+      | "cjs"
       | "ts"
+      | "mts"
+      | "cts"
       | "jsx"
       | "tsx"
+      | "vue"
+      | "svelte"
+      | "astro"
       | "log"
       | "ini"
       | "conf"
+      | "cfg"
       | "toml"
+      | "properties"
       | "env"
       | "sql"
+      | "graphql"
+      | "gql"
+      | "py"
+      | "rb"
+      | "php"
+      | "java"
+      | "kt"
+      | "kts"
+      | "groovy"
+      | "scala"
+      | "clj"
+      | "cljs"
+      | "edn"
+      | "go"
+      | "rs"
+      | "c"
+      | "h"
+      | "cpp"
+      | "cc"
+      | "cxx"
+      | "hpp"
+      | "hh"
+      | "hxx"
+      | "cs"
+      | "swift"
+      | "dart"
+      | "lua"
+      | "pl"
+      | "pm"
+      | "r"
+      | "bash"
+      | "zsh"
+      | "fish"
+      | "psm1"
+      | "psd1"
+      | "cmake"
+      | "m"
+      | "mm"
   )
+}
+
+fn is_text_file_name(file_name: &str) -> bool {
+  let normalized = file_name.to_lowercase();
+  normalized.starts_with(".env")
+    || normalized.starts_with(".babelrc")
+    || normalized.starts_with(".eslintrc.")
+    || normalized.starts_with(".prettierrc.")
+    || normalized.starts_with(".stylelintrc.")
+    || matches!(
+      normalized.as_str(),
+      ".bash_profile"
+        | ".bashrc"
+        | ".editorconfig"
+        | ".eslintrc"
+        | ".gitattributes"
+        | ".gitignore"
+        | ".gitmodules"
+        | ".npmrc"
+        | ".prettierrc"
+        | ".profile"
+        | ".stylelintrc"
+        | ".yarnrc"
+        | ".zshrc"
+        | "cmakelists.txt"
+        | "dockerfile"
+        | "gemfile"
+        | "gnumakefile"
+        | "justfile"
+        | "makefile"
+        | "procfile"
+        | "rakefile"
+    )
 }
 
 fn is_compressed_extension(extension: &str) -> bool {
@@ -4227,13 +4351,13 @@ fn detect_windows_libreoffice() -> Option<PathBuf> {
       PathBuf::from(&program_files)
         .join("LibreOffice")
         .join("program")
-        .join("soffice.com"),
+        .join("soffice.exe"),
     );
     candidates.push(
       PathBuf::from(&program_files)
         .join("LibreOffice")
         .join("program")
-        .join("soffice.exe"),
+        .join("soffice.com"),
     );
   }
   if let Some(program_files_x86) = std::env::var_os("ProgramFiles(x86)") {
@@ -4241,13 +4365,13 @@ fn detect_windows_libreoffice() -> Option<PathBuf> {
       PathBuf::from(&program_files_x86)
         .join("LibreOffice")
         .join("program")
-        .join("soffice.com"),
+        .join("soffice.exe"),
     );
     candidates.push(
       PathBuf::from(&program_files_x86)
         .join("LibreOffice")
         .join("program")
-        .join("soffice.exe"),
+        .join("soffice.com"),
     );
   }
   if let Some(candidate) = candidates.into_iter().find(|candidate| candidate.exists()) {
@@ -4255,7 +4379,7 @@ fn detect_windows_libreoffice() -> Option<PathBuf> {
   }
 
   let discovered = Command::new("where")
-    .arg("soffice.com")
+    .arg("soffice.exe")
     .output()
     .ok()
     .filter(|output| output.status.success())
@@ -4272,7 +4396,7 @@ fn detect_windows_libreoffice() -> Option<PathBuf> {
   }
 
   Command::new("where")
-    .arg("soffice.exe")
+    .arg("soffice.com")
     .output()
     .ok()
     .filter(|output| output.status.success())
@@ -4300,7 +4424,8 @@ fn run_windows_libreoffice_preview(
   fs::create_dir_all(&profile_dir).map_err(|error| error.to_string())?;
   let user_installation = file_url_from_path(&profile_dir);
 
-  let mut child = Command::new(&soffice_path)
+  let mut command = Command::new(&soffice_path);
+  command
     .arg("--headless")
     .arg("--nologo")
     .arg("--nodefault")
@@ -4312,14 +4437,18 @@ fn run_windows_libreoffice_preview(
     .arg("--outdir")
     .arg(session_dir)
     .arg(source_path)
-    .spawn()
-    .map_err(|error| {
-      if soffice_path.as_os_str().to_string_lossy().contains("soffice.") {
-        format!("Failed to start LibreOffice: {}. Install LibreOffice or add it to PATH.", error)
-      } else {
-        error.to_string()
-      }
-    })?;
+    .stdin(Stdio::null())
+    .stdout(Stdio::null())
+    .stderr(Stdio::null());
+  #[cfg(target_os = "windows")]
+  command.creation_flags(CREATE_NO_WINDOW);
+  let mut child = command.spawn().map_err(|error| {
+    if soffice_path.as_os_str().to_string_lossy().contains("soffice.") {
+      format!("Failed to start LibreOffice: {}. Install LibreOffice or add it to PATH.", error)
+    } else {
+      error.to_string()
+    }
+  })?;
 
   wait_for_child(&mut child, WINDOWS_OFFICE_PREVIEW_TIMEOUT_SECS)?;
 
@@ -4535,6 +4664,19 @@ fn protocol_response(
   build_response(StatusCode::OK, headers, buffer)
 }
 
+#[cfg(target_os = "macos")]
+fn configure_macos_window_dragging(app: &tauri::AppHandle) -> Result<(), String> {
+  let window = app
+    .get_webview_window("main")
+    .ok_or_else(|| "main window not found".to_string())?;
+  let ns_window = window.ns_window().map_err(|error| error.to_string())?;
+  unsafe {
+    let ns_window: &NSWindow = &*ns_window.cast();
+    ns_window.setMovableByWindowBackground(true);
+  }
+  Ok(())
+}
+
 fn main() {
   let context = tauri::generate_context!();
   tauri::Builder::default()
@@ -4596,6 +4738,8 @@ fn main() {
         scan_cancellations: Mutex::new(HashMap::new()),
         trash_dir,
       });
+      #[cfg(target_os = "macos")]
+      configure_macos_window_dragging(app.handle())?;
       Ok(())
     })
     .plugin(tauri_plugin_dialog::init())
@@ -4625,6 +4769,7 @@ fn main() {
       query_index,
       get_index_stats,
       get_file_by_id,
+      read_text_preview,
       cancel_scan,
       build_cleanup_suggestions,
       apply_action_batch,
@@ -4774,6 +4919,15 @@ mod tests {
       "/tmp/Photos/holiday.png",
       &image_kind,
     ));
+  }
+
+  #[test]
+  fn classify_file_recognizes_code_and_config_text_files() {
+    assert!(matches!(classify_file(Path::new("/tmp/main.rs")), FileKind::Text));
+    assert!(matches!(classify_file(Path::new("/tmp/script.py")), FileKind::Text));
+    assert!(matches!(classify_file(Path::new("/tmp/.env.local")), FileKind::Text));
+    assert!(matches!(classify_file(Path::new("/tmp/Dockerfile")), FileKind::Text));
+    assert!(matches!(classify_file(Path::new("/tmp/.gitignore")), FileKind::Text));
   }
 
   #[test]

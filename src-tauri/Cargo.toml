@@ -1,6 +1,6 @@
 [package]
 name = "tidy-app"
-version = "1.0.0"
+version = "1.1.0"
 description = "Local-first desktop file organizer and cleanup tool built with Tauri, React, TypeScript, and Rust."
 authors = ["totondruppusu"]
 license = "AGPL-3.0-only"
@@ -28,6 +28,9 @@ bzip2 = "0.4"
 xz2 = "0.1"
 sha2 = "0.10"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "webp", "tiff"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-app-kit = "0.3.2"
 
 [features]
 default = ["custom-protocol"]

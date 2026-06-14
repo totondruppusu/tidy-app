@@ -18,3 +18,6 @@ export const extractOfficeFallbackPreview = (id: string) =>
 
 export const listArchiveEntries = (id: string) =>
   invokeCommand<ArchivePreview>("list_archive_entries", { id });
+
+export const readTextPreview = (id: string) =>
+  invokeCommand<string>("read_text_preview", { id });

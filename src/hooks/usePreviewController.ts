@@ -16,6 +16,7 @@ import {
 } from "../constants/appConstants";
 import { isDesktopRuntime } from "../lib/desktopBridge";
 import { getExtension } from "../lib/files";
+import { isMarkdownExtension } from "../lib/markdown";
 import { clampNumber } from "../lib/number";
 import {
   extractOfficeFallbackPreview,
@@ -23,6 +24,7 @@ import {
   getPreviewCapabilities,
   listArchiveEntries,
 } from "../services/previewService";
+import { isSupportedTextPreviewFile } from "../lib/codePreview";
 import { useAsyncWorkflow } from "./useAsyncWorkflow";
 import type {
   FileEntry,
@@ -108,7 +110,16 @@ export const usePreviewController = ({
     canRenderPreview &&
     (previewFile?.kind === "image" || previewFile?.kind === "video");
   const isAudioPreview = canRenderPreview && previewFile?.kind === "audio";
-  const isTextPreview = canRenderPreview && previewFile?.kind === "text";
+  const isMarkdownPreview =
+    canRenderPreview &&
+    Boolean(previewFile) &&
+    (previewFile.kind === "text" || isSupportedTextPreviewFile(previewFile.name)) &&
+    isMarkdownExtension(previewExtension);
+  const isTextPreview =
+    canRenderPreview &&
+    Boolean(previewFile) &&
+    (previewFile.kind === "text" || isSupportedTextPreviewFile(previewFile.name)) &&
+    !isMarkdownPreview;
   const isPdfPreview =
     canRenderPreview &&
     previewFile?.kind === "docs" &&
@@ -117,7 +128,7 @@ export const usePreviewController = ({
     canRenderPreview &&
     previewFile?.kind === "docs" &&
     OFFICE_PREVIEW_EXTENSIONS.includes(previewExtension);
-  const isDocumentPreview = isTextPreview || isPdfPreview;
+  const isDocumentPreview = isPdfPreview;
   const isArchivePreview =
     canRenderPreview && previewFile?.kind === "compressed";
   const isFallbackPreview =
@@ -125,6 +136,8 @@ export const usePreviewController = ({
     canRenderPreview &&
     !isMediaPreview &&
     !isAudioPreview &&
+    !isMarkdownPreview &&
+    !isTextPreview &&
     !isDocumentPreview &&
     !isOfficePreview &&
     !isArchivePreview;
@@ -447,6 +460,7 @@ export const usePreviewController = ({
       canRenderPreview,
       isMediaPreview,
       isAudioPreview,
+      isMarkdownPreview,
       isTextPreview,
       isPdfPreview,
       isOfficePreview,
@@ -483,6 +497,7 @@ export const usePreviewController = ({
       isFallbackPreview,
       isLargePreview,
       isMediaPreview,
+      isMarkdownPreview,
       isOfficePreview,
       isPdfPreview,
       isPreviewPanning,

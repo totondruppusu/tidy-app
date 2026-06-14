@@ -54,7 +54,7 @@ describe("format", () => {
       createdMs: Date.now(),
       message: "boom",
       appName: "tidy",
-      appVersion: "1.0.0",
+      appVersion: "1.1.0",
       os: "mac",
       arch: "arm",
       reportPath: "/tmp/report",

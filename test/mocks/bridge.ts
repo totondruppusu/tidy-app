@@ -38,7 +38,11 @@ export const createMockBridge = (): MockBridgeController => {
     },
     getCurrentWindow: () => ({
       isFullscreen: async () => false,
+      isMaximized: async () => false,
       onResized: async () => () => {},
+      minimize: async () => {},
+      toggleMaximize: async () => {},
+      close: async () => {},
       setTheme: async () => {},
     }),
     open: async (_options: BridgeOpenOptions) => null,

@@ -189,6 +189,7 @@ static TRASH_CLEANED: AtomicBool = AtomicBool::new(false);
 
 const MAX_ARCHIVE_ENTRIES: usize = 200;
 const MAX_RANGE_CHUNK_BYTES: u64 = 1_048_576;
+const MAX_TEXT_PREVIEW_BYTES: u64 = 1_048_576;
 const QLMANAGE_TIMEOUT_SECS: u64 = 10;
 const WINDOWS_OFFICE_PREVIEW_TIMEOUT_SECS: u64 = 20;
 const QLMANAGE_POLL_MS: u64 = 100;
@@ -2056,6 +2057,35 @@ fn get_file_by_id(
 ) -> Result<Option<FileEntry>, String> {
   let index = state.index.lock().expect("index lock");
   Ok(index.by_id.get(&id).cloned())
+}
+
+#[tauri::command]
+async fn read_text_preview(
+  state: tauri::State<'_, AppState>,
+  id: String,
+) -> Result<String, String> {
+  let path = {
+    let map = state.map.lock().expect("map lock");
+    map.get(&id).cloned().ok_or("File not found")?
+  };
+  if !path.exists() {
+    return Err("File not found".into());
+  }
+  tauri::async_runtime::spawn_blocking(move || {
+    let metadata = fs::metadata(&path).map_err(|error| error.to_string())?;
+    let max_len = usize::try_from(MAX_TEXT_PREVIEW_BYTES).unwrap_or(usize::MAX);
+    let mut file = File::open(&path).map_err(|error| error.to_string())?;
+    let mut buffer = Vec::with_capacity(
+      usize::try_from(metadata.len().min(MAX_TEXT_PREVIEW_BYTES)).unwrap_or(max_len),
+    );
+    file
+      .take(MAX_TEXT_PREVIEW_BYTES)
+      .read_to_end(&mut buffer)
+      .map_err(|error| error.to_string())?;
+    Ok(String::from_utf8_lossy(&buffer).into_owned())
+  })
+  .await
+  .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -4643,6 +4673,7 @@ fn main() {
       query_index,
       get_index_stats,
       get_file_by_id,
+      read_text_preview,
       cancel_scan,
       build_cleanup_suggestions,
       apply_action_batch,

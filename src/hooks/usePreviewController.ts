@@ -16,6 +16,7 @@ import {
 } from "../constants/appConstants";
 import { isDesktopRuntime } from "../lib/desktopBridge";
 import { getExtension } from "../lib/files";
+import { isMarkdownExtension } from "../lib/markdown";
 import { clampNumber } from "../lib/number";
 import {
   extractOfficeFallbackPreview,
@@ -108,7 +109,12 @@ export const usePreviewController = ({
     canRenderPreview &&
     (previewFile?.kind === "image" || previewFile?.kind === "video");
   const isAudioPreview = canRenderPreview && previewFile?.kind === "audio";
-  const isTextPreview = canRenderPreview && previewFile?.kind === "text";
+  const isMarkdownPreview =
+    canRenderPreview &&
+    previewFile?.kind === "text" &&
+    isMarkdownExtension(previewExtension);
+  const isTextPreview =
+    canRenderPreview && previewFile?.kind === "text" && !isMarkdownPreview;
   const isPdfPreview =
     canRenderPreview &&
     previewFile?.kind === "docs" &&
@@ -125,6 +131,7 @@ export const usePreviewController = ({
     canRenderPreview &&
     !isMediaPreview &&
     !isAudioPreview &&
+    !isMarkdownPreview &&
     !isDocumentPreview &&
     !isOfficePreview &&
     !isArchivePreview;
@@ -447,6 +454,7 @@ export const usePreviewController = ({
       canRenderPreview,
       isMediaPreview,
       isAudioPreview,
+      isMarkdownPreview,
       isTextPreview,
       isPdfPreview,
       isOfficePreview,
@@ -483,6 +491,7 @@ export const usePreviewController = ({
       isFallbackPreview,
       isLargePreview,
       isMediaPreview,
+      isMarkdownPreview,
       isOfficePreview,
       isPdfPreview,
       isPreviewPanning,

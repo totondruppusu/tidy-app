@@ -52,7 +52,7 @@ auto load to last opened file in view
 .possibility to load old scans and indexing
 ?crop images
 .rich documents preview on windows
-markdown rich preview
+.markdown rich preview
 better code preview and support
 scalable ui
 collapsable categories of settings
@@ -86,7 +86,7 @@ BUG
 .box around last selected file
 .tree indentation of files
 .light theme shadow in settings
-title bar drag on Mac
+.title bar drag on Mac
 
 
 REFACTORING

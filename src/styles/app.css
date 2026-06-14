@@ -2273,6 +2273,7 @@ optgroup {
 
 .preview-document,
 .preview-office,
+.preview-markdown-shell,
 .preview-fallback {
   width: 100%;
   align-self: stretch;
@@ -2310,6 +2311,134 @@ optgroup {
 
 .preview-document {
   background: var(--color-media-bg);
+}
+
+.preview-markdown-shell {
+  padding: var(--space-4);
+  overflow: auto;
+}
+
+.preview-markdown-status {
+  min-height: clamp(240px, 45vh, 520px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+  text-align: center;
+  padding: var(--space-6);
+}
+
+.preview-markdown {
+  width: min(100%, 820px);
+  margin: 0 auto;
+  padding: clamp(20px, 2vw, 28px);
+  border-radius: 14px;
+  background: linear-gradient(
+    180deg,
+    var(--glass-fill-strong) 0%,
+    var(--glass-fill-soft) 100%
+  );
+  border: 1px solid var(--color-border-faint);
+  color: var(--color-text-primary);
+  box-shadow: inset 0 1px 0 var(--glass-highlight);
+}
+
+.preview-markdown > :first-child {
+  margin-top: 0;
+}
+
+.preview-markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.preview-markdown h1,
+.preview-markdown h2,
+.preview-markdown h3,
+.preview-markdown h4,
+.preview-markdown h5,
+.preview-markdown h6 {
+  margin: 1.2em 0 0.5em;
+  line-height: 1.15;
+  color: var(--color-text-tertiary);
+}
+
+.preview-markdown h1 {
+  font-size: clamp(28px, 3vw, 38px);
+}
+
+.preview-markdown h2 {
+  font-size: clamp(22px, 2.2vw, 30px);
+}
+
+.preview-markdown h3 {
+  font-size: 20px;
+}
+
+.preview-markdown p,
+.preview-markdown li,
+.preview-markdown blockquote {
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.preview-markdown p,
+.preview-markdown ul,
+.preview-markdown ol,
+.preview-markdown blockquote,
+.preview-markdown pre,
+.preview-markdown hr {
+  margin: 0 0 1em;
+}
+
+.preview-markdown ul,
+.preview-markdown ol {
+  padding-left: 1.4em;
+}
+
+.preview-markdown blockquote {
+  padding: 0.2em 0 0.2em 1em;
+  border-left: 3px solid var(--color-accent-bright);
+  color: var(--color-text-secondary);
+  background: var(--color-accent-soft);
+  border-radius: 0 10px 10px 0;
+}
+
+.preview-markdown code {
+  font-family:
+    "SFMono-Regular", "Menlo", "Consolas", "Liberation Mono", monospace;
+  font-size: 0.92em;
+  padding: 0.18em 0.42em;
+  border-radius: 6px;
+  background: var(--glass-fill-soft);
+  border: 1px solid var(--color-border-faint);
+}
+
+.preview-markdown pre {
+  overflow: auto;
+  padding: 14px;
+  border-radius: 12px;
+  background: var(--color-media-bg);
+  border: 1px solid var(--color-border-soft);
+}
+
+.preview-markdown pre code {
+  display: block;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #e2e8f0;
+}
+
+.preview-markdown a {
+  color: var(--color-accent-strong);
+  text-decoration: underline;
+  text-underline-offset: 0.16em;
+}
+
+.preview-markdown hr {
+  border: 0;
+  border-top: 1px solid var(--color-border-soft);
 }
 
 .preview-document iframe {
@@ -2823,9 +2952,16 @@ optgroup {
 }
 
 .blocking-overlay-card {
+  position: relative;
   min-width: min(360px, calc(100vw - (var(--space-6) * 2)));
   box-shadow: var(--shadow-modal);
   pointer-events: auto;
+}
+
+.blocking-overlay-close {
+  position: absolute;
+  top: var(--space-3);
+  right: var(--space-3);
 }
 
 :root[data-theme="dark"] .modal-backdrop {

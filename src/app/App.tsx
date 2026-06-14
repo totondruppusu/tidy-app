@@ -1408,6 +1408,11 @@ export default function App() {
     [buildScanCacheRequest, runFreshScan, updateStatus],
   );
 
+  const dismissScanCachePrompt = useCallback(() => {
+    setScanCachePrompt(null);
+    updateStatus("Scan cancelled.");
+  }, [updateStatus]);
+
   const cancelActiveScan = useCallback(async () => {
     const scanId = activeScanId.current;
     if (!scanId || isCancellingScan) {
@@ -2948,7 +2953,15 @@ export default function App() {
     return `Scanning ${percent}% · ${scanProgress.scanned}/${scanProgress.total} files · ${scanProgress.matched} matched`;
   }, [isLoading, scanProgress]);
 
-  const activeBlockingOverlay = useMemo(() => {
+  const activeBlockingOverlay = useMemo<{
+    title: string;
+    subtitle: string;
+    showSpinner: boolean;
+    showCancel: boolean;
+    showClose?: boolean;
+    onClose?: () => void;
+    actions: { label: string; onClick: () => void; disabled?: boolean }[];
+  } | null>(() => {
     if (blockingOverlay) {
       return {
         title: blockingOverlay.title,
@@ -2965,6 +2978,8 @@ export default function App() {
           "A cached scan matches this folder and these scan options. Load it now or run a fresh scan.",
         showSpinner: false,
         showCancel: false,
+        showClose: true,
+        onClose: dismissScanCachePrompt,
         actions: [
           {
             label: "Load previous scan",
@@ -2983,11 +2998,21 @@ export default function App() {
         subtitle: loadingMessage ?? "Collecting file list...",
         showSpinner: true,
         showCancel: true,
+        showClose: false,
+        onClose: undefined,
         actions: [] as { label: string; onClick: () => void; disabled?: boolean }[],
       };
     }
     return null;
-  }, [blockingOverlay, isLoading, loadCachedScan, loadingMessage, runFreshScan, scanCachePrompt]);
+  }, [
+    blockingOverlay,
+    dismissScanCachePrompt,
+    isLoading,
+    loadCachedScan,
+    loadingMessage,
+    runFreshScan,
+    scanCachePrompt,
+  ]);
 
   const isInteractionBlocked = Boolean(activeBlockingOverlay);
   const areControlsDisabled = isLoading || isInteractionBlocked;
@@ -3186,6 +3211,18 @@ export default function App() {
       {activeBlockingOverlay && (
         <div className="blocking-overlay" role="alert" aria-live="assertive">
           <div className="loading-state blocking-overlay-card">
+            {activeBlockingOverlay.showClose && activeBlockingOverlay.onClose && (
+              <button
+                type="button"
+                className="icon-button blocking-overlay-close"
+                onClick={activeBlockingOverlay.onClose}
+                aria-label="Close previous scan dialog"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                  <path d="M18.3 5.7a1 1 0 0 0-1.4 0L12 10.6 7.1 5.7a1 1 0 1 0-1.4 1.4L10.6 12l-4.9 4.9a1 1 0 1 0 1.4 1.4L12 13.4l4.9 4.9a1 1 0 0 0 1.4-1.4L13.4 12l4.9-4.9a1 1 0 0 0 0-1.4Z" />
+                </svg>
+              </button>
+            )}
             {activeBlockingOverlay.showSpinner && (
               <div className="spinner" aria-hidden="true" />
             )}

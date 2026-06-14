@@ -37,7 +37,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; img-src 'self' asset: media: data: blob:; media-src 'self' media: data: blob:; connect-src 'self' ipc: http://ipc.localhost"
+      "csp": "default-src 'self'; img-src 'self' asset: media: data: blob: http://media.localhost; media-src 'self' media: data: blob: http://media.localhost; frame-src 'self' media: data: blob: http://media.localhost; connect-src 'self' ipc: http://ipc.localhost"
     }
   }
 }

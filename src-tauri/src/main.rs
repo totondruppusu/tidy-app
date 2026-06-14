@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command};
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -27,6 +27,12 @@ use zip::ZipArchive;
 
 #[cfg(target_os = "macos")]
 use objc2_app_kit::NSWindow;
+
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -4345,13 +4351,13 @@ fn detect_windows_libreoffice() -> Option<PathBuf> {
       PathBuf::from(&program_files)
         .join("LibreOffice")
         .join("program")
-        .join("soffice.com"),
+        .join("soffice.exe"),
     );
     candidates.push(
       PathBuf::from(&program_files)
         .join("LibreOffice")
         .join("program")
-        .join("soffice.exe"),
+        .join("soffice.com"),
     );
   }
   if let Some(program_files_x86) = std::env::var_os("ProgramFiles(x86)") {
@@ -4359,13 +4365,13 @@ fn detect_windows_libreoffice() -> Option<PathBuf> {
       PathBuf::from(&program_files_x86)
         .join("LibreOffice")
         .join("program")
-        .join("soffice.com"),
+        .join("soffice.exe"),
     );
     candidates.push(
       PathBuf::from(&program_files_x86)
         .join("LibreOffice")
         .join("program")
-        .join("soffice.exe"),
+        .join("soffice.com"),
     );
   }
   if let Some(candidate) = candidates.into_iter().find(|candidate| candidate.exists()) {
@@ -4373,7 +4379,7 @@ fn detect_windows_libreoffice() -> Option<PathBuf> {
   }
 
   let discovered = Command::new("where")
-    .arg("soffice.com")
+    .arg("soffice.exe")
     .output()
     .ok()
     .filter(|output| output.status.success())
@@ -4390,7 +4396,7 @@ fn detect_windows_libreoffice() -> Option<PathBuf> {
   }
 
   Command::new("where")
-    .arg("soffice.exe")
+    .arg("soffice.com")
     .output()
     .ok()
     .filter(|output| output.status.success())
@@ -4418,7 +4424,8 @@ fn run_windows_libreoffice_preview(
   fs::create_dir_all(&profile_dir).map_err(|error| error.to_string())?;
   let user_installation = file_url_from_path(&profile_dir);
 
-  let mut child = Command::new(&soffice_path)
+  let mut command = Command::new(&soffice_path);
+  command
     .arg("--headless")
     .arg("--nologo")
     .arg("--nodefault")
@@ -4430,14 +4437,18 @@ fn run_windows_libreoffice_preview(
     .arg("--outdir")
     .arg(session_dir)
     .arg(source_path)
-    .spawn()
-    .map_err(|error| {
-      if soffice_path.as_os_str().to_string_lossy().contains("soffice.") {
-        format!("Failed to start LibreOffice: {}. Install LibreOffice or add it to PATH.", error)
-      } else {
-        error.to_string()
-      }
-    })?;
+    .stdin(Stdio::null())
+    .stdout(Stdio::null())
+    .stderr(Stdio::null());
+  #[cfg(target_os = "windows")]
+  command.creation_flags(CREATE_NO_WINDOW);
+  let mut child = command.spawn().map_err(|error| {
+    if soffice_path.as_os_str().to_string_lossy().contains("soffice.") {
+      format!("Failed to start LibreOffice: {}. Install LibreOffice or add it to PATH.", error)
+    } else {
+      error.to_string()
+    }
+  })?;
 
   wait_for_child(&mut child, WINDOWS_OFFICE_PREVIEW_TIMEOUT_SECS)?;
 

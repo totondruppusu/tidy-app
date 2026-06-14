@@ -1,6 +1,6 @@
 [package]
 name = "tidy-app"
-version = "1.1.0"
+version = "1.2.0"
 description = "Local-first desktop file organizer and cleanup tool built with Tauri, React, TypeScript, and Rust."
 authors = ["totondruppusu"]
 license = "AGPL-3.0-only"

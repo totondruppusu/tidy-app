@@ -2,7 +2,7 @@
   "name": "tidy-app",
   "description": "Local-first desktop file organizer and cleanup tool built with Tauri, React, TypeScript, and Rust.",
   "private": true,
-  "version": "1.1.0",
+  "version": "1.2.0",
   "license": "AGPL-3.0-only",
   "author": "totondruppusu",
   "homepage": "https://github.com/totondruppusu/tidy-app",

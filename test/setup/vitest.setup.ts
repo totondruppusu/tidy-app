@@ -22,18 +22,22 @@ const localStorageMock = {
   },
 };
 
+const createMatchMediaResult = (query: string, matches = false) => ({
+  matches,
+  media: query,
+  onchange: null,
+  addEventListener: vi.fn(),
+  removeEventListener: vi.fn(),
+  addListener: vi.fn(),
+  removeListener: vi.fn(),
+  dispatchEvent: vi.fn(),
+});
+
 Object.defineProperty(window, "matchMedia", {
   writable: true,
-  value: vi.fn().mockImplementation((query: string) => ({
-    matches: false,
-    media: query,
-    onchange: null,
-    addEventListener: vi.fn(),
-    removeEventListener: vi.fn(),
-    addListener: vi.fn(),
-    removeListener: vi.fn(),
-    dispatchEvent: vi.fn(),
-  })),
+  value: vi.fn().mockImplementation((query: string) =>
+    createMatchMediaResult(query),
+  ),
 });
 
 Object.defineProperty(window, "ResizeObserver", {
@@ -85,6 +89,9 @@ Object.defineProperty(window, "prompt", {
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  vi.mocked(window.matchMedia).mockImplementation((query: string) =>
+    createMatchMediaResult(query),
+  );
   localStorageMock.clear();
   delete window.__TIDY_DESKTOP_BRIDGE__;
 });

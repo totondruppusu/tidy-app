@@ -116,6 +116,11 @@ export type ScanBatch = {
   files: FileEntry[];
 };
 
+export type PickedDirectory = {
+  token: string;
+  label: string;
+};
+
 export type QueryIndexRequest = {
   filterMode?: FilterMode;
   selectedExtensions?: string[];
@@ -148,10 +153,13 @@ export type IndexStats = {
 export type MoveResult = {
   newName: string;
   targetPath: string;
+  restoreSource?: string | null;
+  restoreDestination?: string | null;
 };
 
 export type TrashResult = {
   trashPath: string | null;
+  restoreDestination?: string | null;
 };
 
 export type ActivitySnapshot = {
@@ -213,12 +221,16 @@ export type UndoAction =
       file: FileEntry;
       fromPath: string;
       toPath: string;
+      sourceToken?: string | null;
+      destinationToken?: string | null;
     }
   | {
       kind: "trash";
       file: FileEntry;
       fromPath: string;
       trashPath: string;
+      sourceToken?: string | null;
+      destinationToken?: string | null;
     }
   | {
       kind: "trash-folder";

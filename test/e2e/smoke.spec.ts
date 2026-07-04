@@ -1,4 +1,4 @@
-import { expect, test } from "playwright/test";
+import { expect, test, type Page } from "playwright/test";
 
 const installBridgeScript = () => {
   (window as Window & { __TIDY_DESKTOP_BRIDGE__?: unknown }).__TIDY_DESKTOP_BRIDGE__ = (() => {
@@ -157,19 +157,48 @@ test.beforeEach(async ({ page }) => {
   await page.goto("/");
 });
 
+const swipeHandle = async (page: Page, deltaX: number, deltaY: number) => {
+  const handle = page.getByRole("button", { name: "Swipe actions" });
+  const box = await handle.boundingBox();
+  if (!box) {
+    throw new Error("Swipe handle not found");
+  }
+  const startX = box.x + box.width / 2;
+  const startY = box.y + box.height / 2;
+  await page.mouse.move(startX, startY);
+  await page.mouse.down();
+  await page.mouse.move(startX + deltaX, startY + deltaY, { steps: 8 });
+  await page.mouse.up();
+};
+
+const openFolderPicker = async (page: Page) => {
+  const picker = page.getByText("Select folder…");
+  if ((await picker.count()) === 0) {
+    await page.getByRole("button", { name: "Show sidebar" }).click();
+  }
+  await page.getByText("Select folder…").click();
+};
+
+const closeSidebarIfOpen = async (page: Page) => {
+  const hideSidebar = page.getByRole("button", { name: "Hide sidebar" });
+  if ((await hideSidebar.count()) > 0) {
+    await hideSidebar.click();
+  }
+};
+
 test("boots with empty prompt", async ({ page }) => {
   await expect(page.getByText("Select a folder to preview files.")).toBeVisible();
 });
 
 test("scan journey populates files", async ({ page }) => {
-  await page.getByText("Select folder…").click();
+  await openFolderPicker(page);
   await page.getByRole("button", { name: "Scan folder" }).click();
   await expect(page.locator(".file-list .filename", { hasText: "alpha.txt" })).toBeVisible();
   await expect(page.locator(".file-list .filename", { hasText: "old.zip" })).toBeVisible();
 });
 
 test("trash and undo restores file", async ({ page }) => {
-  await page.getByText("Select folder…").click();
+  await openFolderPicker(page);
   await page.getByRole("button", { name: "Scan folder" }).click();
   await expect(page.locator(".file-list .filename", { hasText: "alpha.txt" })).toBeVisible();
 
@@ -180,10 +209,53 @@ test("trash and undo restores file", async ({ page }) => {
   await expect(page.locator(".file-list .filename", { hasText: "alpha.txt" })).toBeVisible();
 });
 
+test("mobile viewport swaps directional buttons for the swipe handle", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await openFolderPicker(page);
+  await page.getByRole("button", { name: "Scan folder" }).click();
+  await closeSidebarIfOpen(page);
+
+  await expect(page.getByRole("button", { name: "Swipe actions" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Prev ←" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Next →" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Trash ↑" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Undo ↓" })).toHaveCount(0);
+});
+
+test("mobile swipe gestures navigate files", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await openFolderPicker(page);
+  await page.getByRole("button", { name: "Scan folder" }).click();
+  await closeSidebarIfOpen(page);
+  await expect(page.getByText("/mock/alpha.txt")).toBeVisible();
+
+  await swipeHandle(page, -90, 0);
+  await expect(page.getByText("/mock/old.zip")).toBeVisible();
+
+  await swipeHandle(page, 90, 0);
+  await expect(page.getByText("/mock/alpha.txt")).toBeVisible();
+});
+
+test("mobile swipe up trashes and swipe down undoes", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await openFolderPicker(page);
+  await page.getByRole("button", { name: "Scan folder" }).click();
+  await closeSidebarIfOpen(page);
+  await expect(page.getByText("/mock/alpha.txt")).toBeVisible();
+
+  await swipeHandle(page, 0, -90);
+  await expect(page.getByText("/mock/old.zip")).toBeVisible();
+
+  await swipeHandle(page, 0, 90);
+  await expect(page.getByText("/mock/alpha.txt")).toBeVisible();
+});
+
 test("suggestions entrypoint remains hidden for now", async ({
   page,
 }) => {
-  await page.getByText("Select folder…").click();
+  await openFolderPicker(page);
   await page.getByRole("button", { name: "Scan folder" }).click();
 
   await expect(

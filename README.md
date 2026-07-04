@@ -197,6 +197,14 @@ sudo apt-get install -y \
   patchelf
 ```
 
+#### Android
+
+- Node.js `18+`
+- Rust stable toolchain
+- Java `17` to `21` with `21` recommended
+- Android Studio with the Android SDK and platform tools
+- An emulator or physical Android device if you want to run the app locally
+
 ### Install dependencies
 
 ```bash
@@ -217,6 +225,20 @@ Run the desktop app with Tauri:
 npm run tauri dev
 ```
 
+Run the Android app on an emulator or connected device:
+
+```bash
+npm run android:dev
+```
+
+These Android npm scripts automatically prefer Android Studio's bundled JDK and other compatible macOS JDK installs, even if your shell `JAVA_HOME` still points to an old SDKMAN Java.
+
+Initialize the Android project files:
+
+```bash
+npm run android:init
+```
+
 ### Build
 
 Build the frontend bundle:
@@ -231,8 +253,33 @@ Build the desktop application:
 npm run tauri build
 ```
 
+Use this only for desktop builds. It does not produce Android packages.
+
+Build Android APK/AAB artifacts:
+
+```bash
+npm run android:build
+```
+
+If you run `tauri android ...` directly instead of the npm scripts, make sure `JAVA_HOME` points to a Java 17-21 JDK first. Android Studio's bundled JDK is a good default on macOS:
+
+```bash
+export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
+```
+
 > [!TIP]
 > Tauri is configured to run the frontend build before packaging, so `npm run tauri build` is the normal release build command.
+
+> [!TIP]
+> For Android, use `npm run android:build` instead of `npm run tauri build`.
+
+> [!NOTE]
+> Android now uses the platform document-tree picker (`ACTION_OPEN_DOCUMENT_TREE`) and a SAF-backed file flow for scanning, moving, trashing, and undoing file actions. Desktop path handling on macOS and Windows remains unchanged.
+
+> [!NOTE]
+> Current Android limitations:
+> Android may refuse storage roots in the folder picker with a system “Can’t use this folder” message. Choose a real subfolder inside that location instead.
+> duplicate scans are not enabled yet, folder-trash actions are still desktop-only, and opening a file in an external app or file manager is not wired up yet.
 
 ## Testing
 

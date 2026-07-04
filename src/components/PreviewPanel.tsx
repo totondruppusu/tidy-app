@@ -9,6 +9,10 @@ import { buildMediaUrl } from "../lib/media";
 import { extractFolder } from "../lib/path";
 import { formatBytes, formatKindLabel, formatTimestamp } from "../lib/format";
 import type { PreviewController } from "../hooks/usePreviewController";
+import type {
+  SwipeGestureAction,
+  SwipeGestureController,
+} from "../hooks/useSwipeGestureController";
 import { MarkdownPreview } from "./MarkdownPreview";
 import { TextPreview } from "./TextPreview";
 
@@ -21,7 +25,82 @@ type PreviewPanelProps = {
   autoPlayMedia: boolean;
   videoRef: Ref<HTMLVideoElement>;
   audioRef: Ref<HTMLAudioElement>;
+  gesture: SwipeGestureController;
+  canOpenFile: boolean;
   onOpenFile: (file: FileEntry) => void | Promise<void>;
+};
+
+const GESTURE_LABELS: Record<SwipeGestureAction, string> = {
+  prev: "Previous file",
+  next: "Next file",
+  trash: "Trash file",
+  undo: "Undo action",
+};
+
+const renderGestureHandle = (gesture: SwipeGestureController) => {
+  if (!gesture.enabled) {
+    return null;
+  }
+  const activeLabel = gesture.activeAction
+    ? GESTURE_LABELS[gesture.activeAction]
+    : "Swipe to browse";
+  return (
+    <div className="preview-gesture-shell" aria-live="polite">
+      <div
+        className={`preview-gesture-hint${
+          gesture.isBlocked ? " is-disabled" : ""
+        }`}
+      >
+        Left next, right previous, up trash, down undo
+      </div>
+      <button
+        type="button"
+        className={`preview-gesture-handle${
+          gesture.isDragging ? " is-dragging" : ""
+        }${
+          gesture.activeAction && gesture.activeActionAvailable
+            ? ` is-${gesture.activeAction}`
+            : ""
+        }${
+          gesture.activeAction && !gesture.activeActionAvailable
+            ? " is-unavailable"
+            : ""
+        }${gesture.isBlocked ? " is-disabled" : ""}`}
+        aria-label="Swipe actions"
+        aria-describedby="preview-gesture-map"
+        title="Swipe left for next, right for previous, up to trash, down to undo"
+        onPointerDown={
+          gesture.handlePointerDown as PointerEventHandler<HTMLButtonElement>
+        }
+        onPointerMove={
+          gesture.handlePointerMove as PointerEventHandler<HTMLButtonElement>
+        }
+        onPointerUp={
+          gesture.handlePointerUp as PointerEventHandler<HTMLButtonElement>
+        }
+        onPointerCancel={
+          gesture.handlePointerCancel as PointerEventHandler<HTMLButtonElement>
+        }
+        data-active-action={gesture.activeAction ?? "idle"}
+        style={{
+          transform: `translate(${gesture.offsetX}px, ${gesture.offsetY}px)`,
+        }}
+      >
+        <span className="preview-gesture-handle-bar" aria-hidden="true" />
+        <span className="preview-gesture-label">
+          {gesture.activeAction && !gesture.activeActionAvailable
+            ? `${activeLabel} unavailable`
+            : activeLabel}
+        </span>
+      </button>
+      <div id="preview-gesture-map" className="preview-gesture-map">
+        <span className={!gesture.canNext ? "is-disabled" : ""}>← Next</span>
+        <span className={!gesture.canPrev ? "is-disabled" : ""}>→ Previous</span>
+        <span className={!gesture.canTrash ? "is-disabled" : ""}>↑ Trash</span>
+        <span className={!gesture.canUndo ? "is-disabled" : ""}>↓ Undo</span>
+      </div>
+    </div>
+  );
 };
 
 export const PreviewPanel = ({
@@ -33,6 +112,8 @@ export const PreviewPanel = ({
   autoPlayMedia,
   videoRef,
   audioRef,
+  gesture,
+  canOpenFile,
   onOpenFile,
 }: PreviewPanelProps) => {
   const previewFile = preview.previewFile;
@@ -44,6 +125,7 @@ export const PreviewPanel = ({
           <div className="preview-message">
             <div className="placeholder">Select a folder to preview files.</div>
           </div>
+          {renderGestureHandle(gesture)}
         </section>
       </div>
     );
@@ -239,12 +321,19 @@ export const PreviewPanel = ({
                   <div className="preview-fallback-hint">No rich preview available.</div>
                 </div>
               )}
+              {renderGestureHandle(gesture)}
             </div>
             <div className="preview-actions">
               <button
                 type="button"
                 className="preview-action-button"
+                disabled={!canOpenFile}
                 onClick={() => void onOpenFile(previewFile)}
+                title={
+                  canOpenFile
+                    ? "Open file in the system default app"
+                    : "Opening files in external apps is not available on Android yet"
+                }
               >
                 Open file
               </button>

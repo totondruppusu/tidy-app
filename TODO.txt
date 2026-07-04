@@ -59,6 +59,7 @@ scalable ui
 .themed scrollbar
 .tree view folder size under name
 html toggle preview
+android version
 
 
 

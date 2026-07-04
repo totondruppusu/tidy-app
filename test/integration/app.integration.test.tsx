@@ -1,6 +1,6 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import App from "../../src/app/App";
 import { createMockBridge } from "../mocks/bridge";
 import { createFile } from "../mocks/files";
@@ -38,11 +38,70 @@ const installBaseHandlers = (controller: ReturnType<typeof createMockBridge>) =>
   controller.onInvoke("read_text_preview", () => "");
 };
 
+const withAndroidUserAgent = async (run: () => Promise<void>) => {
+  const originalUserAgent = window.navigator.userAgent;
+  Object.defineProperty(window.navigator, "userAgent", {
+    configurable: true,
+    value: "Mozilla/5.0 (Linux; Android 15; Pixel 9)",
+  });
+  try {
+    await run();
+  } finally {
+    Object.defineProperty(window.navigator, "userAgent", {
+      configurable: true,
+      value: originalUserAgent,
+    });
+  }
+};
+
 describe("App integration", () => {
+  const mockNarrowLayout = () => {
+    vi.mocked(window.matchMedia).mockImplementation((query: string) => ({
+      matches: query === "(max-width: 900px)",
+      media: query,
+      onchange: null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    }));
+  };
+
   const clickFolderPicker = async (user: ReturnType<typeof userEvent.setup>) => {
-    const picker = screen.getByText("Select folder…").closest("button");
+    if (!screen.queryByText("Select folder…")) {
+      const revealSidebar = screen.queryByRole("button", { name: "Show sidebar" });
+      if (revealSidebar) {
+        await user.click(revealSidebar);
+      }
+    }
+    const picker = await screen.findByText("Select folder…").then((node) => node.closest("button"));
     expect(picker).not.toBeNull();
     await user.click(picker!);
+  };
+
+  const swipeHandle = async (
+    target: HTMLElement,
+    deltaX: number,
+    deltaY: number,
+  ) => {
+    await act(async () => {
+      fireEvent.pointerDown(target, {
+        pointerId: 1,
+        clientX: 100,
+        clientY: 100,
+      });
+      fireEvent.pointerMove(target, {
+        pointerId: 1,
+        clientX: 100 + deltaX,
+        clientY: 100 + deltaY,
+      });
+      fireEvent.pointerUp(target, {
+        pointerId: 1,
+        clientX: 100 + deltaX,
+        clientY: 100 + deltaY,
+      });
+    });
   };
 
   it("scans and renders files with list controls", async () => {
@@ -440,6 +499,188 @@ describe("App integration", () => {
     await waitFor(() =>
       expect(container.querySelector(".file-list")?.textContent).toContain("doc.txt")
     );
+  });
+
+  it("switches narrow layouts to the swipe handle and hides directional buttons", async () => {
+    mockNarrowLayout();
+    const controller = createMockBridge();
+    installBaseHandlers(controller);
+    window.__TIDY_DESKTOP_BRIDGE__ = controller.bridge;
+
+    const file = createFile({ id: "f1", name: "doc.txt", kind: "text", path: "/mock/doc.txt" });
+    controller.bridge.open = async () => "/mock";
+    controller.onInvoke("scan_folder", () => ({ files: [file], total: 1 }));
+
+    const user = userEvent.setup();
+    render(<App />);
+
+    await clickFolderPicker(user);
+    await user.click(screen.getByRole("button", { name: "Scan folder" }));
+
+    expect(screen.queryByRole("button", { name: "Prev ←" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Next →" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Trash ↑" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Undo ↓" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Swipe actions" })).toBeInTheDocument();
+  });
+
+  it("uses swipe gestures for next and previous selection on narrow layouts", async () => {
+    mockNarrowLayout();
+    const controller = createMockBridge();
+    installBaseHandlers(controller);
+    window.__TIDY_DESKTOP_BRIDGE__ = controller.bridge;
+
+    const files = [
+      createFile({ id: "f1", name: "alpha.txt", kind: "text", path: "/mock/alpha.txt" }),
+      createFile({ id: "f2", name: "beta.txt", kind: "text", path: "/mock/beta.txt" }),
+    ];
+    controller.bridge.open = async () => "/mock";
+    controller.onInvoke("scan_folder", () => ({ files, total: files.length }));
+
+    const user = userEvent.setup();
+    render(<App />);
+
+    await clickFolderPicker(user);
+    await user.click(screen.getByRole("button", { name: "Scan folder" }));
+    await screen.findByText("/mock/alpha.txt");
+
+    const handle = screen.getByRole("button", { name: "Swipe actions" });
+    await swipeHandle(handle, -80, 0);
+    await waitFor(() => expect(screen.getByText("/mock/beta.txt")).toBeInTheDocument());
+
+    await swipeHandle(handle, 80, 0);
+    await waitFor(() => expect(screen.getByText("/mock/alpha.txt")).toBeInTheDocument());
+  });
+
+  it("uses swipe up to trash and swipe down to undo on narrow layouts", async () => {
+    mockNarrowLayout();
+    const controller = createMockBridge();
+    installBaseHandlers(controller);
+    window.__TIDY_DESKTOP_BRIDGE__ = controller.bridge;
+
+    const file = createFile({ id: "f1", name: "doc.txt", kind: "text", path: "/mock/doc.txt" });
+    controller.bridge.open = async () => "/mock";
+    controller.onInvoke("scan_folder", () => ({ files: [file], total: 1 }));
+    controller.onInvoke("trash_file", () => ({ trashPath: "/trash/doc.txt" }));
+    controller.onInvoke("restore_file", () => null);
+
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+
+    await clickFolderPicker(user);
+    await user.click(screen.getByRole("button", { name: "Scan folder" }));
+    await waitFor(() =>
+      expect(container.querySelector(".file-list")?.textContent).toContain("doc.txt")
+    );
+
+    const handle = screen.getByRole("button", { name: "Swipe actions" });
+    await swipeHandle(handle, 0, -80);
+    await waitFor(() =>
+      expect(container.querySelector(".file-list")?.textContent ?? "").not.toContain("doc.txt")
+    );
+
+    await swipeHandle(screen.getByRole("button", { name: "Swipe actions" }), 0, 80);
+    await waitFor(() =>
+      expect(container.querySelector(".file-list")?.textContent).toContain("doc.txt")
+    );
+  });
+
+  it("ignores swipe gestures while the settings modal is open", async () => {
+    mockNarrowLayout();
+    const controller = createMockBridge();
+    installBaseHandlers(controller);
+    window.__TIDY_DESKTOP_BRIDGE__ = controller.bridge;
+
+    const files = [
+      createFile({ id: "f1", name: "alpha.txt", kind: "text", path: "/mock/alpha.txt" }),
+      createFile({ id: "f2", name: "beta.txt", kind: "text", path: "/mock/beta.txt" }),
+    ];
+    controller.bridge.open = async () => "/mock";
+    controller.onInvoke("scan_folder", () => ({ files, total: files.length }));
+
+    const user = userEvent.setup();
+    render(<App />);
+
+    await clickFolderPicker(user);
+    await user.click(screen.getByRole("button", { name: "Scan folder" }));
+    await screen.findByText("/mock/alpha.txt");
+    await user.click(screen.getByRole("button", { name: "Open settings" }));
+
+    const handle = screen.getByRole("button", { name: "Swipe actions" });
+    await swipeHandle(handle, -80, 0);
+
+    expect(screen.getByText("/mock/alpha.txt")).toBeInTheDocument();
+  });
+
+  it("uses the Android directory picker and passes SAF tokens into scans", async () => {
+    await withAndroidUserAgent(async () => {
+      const controller = createMockBridge();
+      installBaseHandlers(controller);
+      window.__TIDY_DESKTOP_BRIDGE__ = controller.bridge;
+
+      const desktopOpen = vi.fn(async () => "/desktop-should-not-open");
+      controller.bridge.open = desktopOpen;
+      controller.onInvoke("pick_android_directory", () => ({
+        token: "content://tree/pictures",
+        label: "Pictures",
+      }));
+      controller.onInvoke("scan_folder", (args) => {
+        expect(args?.folderPath).toBe("content://tree/pictures");
+        expect(args?.folderLabel).toBe("Pictures");
+        return {
+          files: [
+            createFile({
+              id: "f1",
+              name: "photo.jpg",
+              kind: "image",
+              path: "Pictures/photo.jpg",
+            }),
+          ],
+          total: 1,
+        };
+      });
+
+      const user = userEvent.setup();
+      render(<App />);
+
+      await clickFolderPicker(user);
+      expect(desktopOpen).not.toHaveBeenCalled();
+      await user.click(screen.getByRole("button", { name: "Scan folder" }));
+
+      await screen.findByText("Pictures/photo.jpg");
+    });
+  });
+
+  it("disables external open actions on Android", async () => {
+    await withAndroidUserAgent(async () => {
+      const controller = createMockBridge();
+      installBaseHandlers(controller);
+      window.__TIDY_DESKTOP_BRIDGE__ = controller.bridge;
+
+      controller.onInvoke("pick_android_directory", () => ({
+        token: "content://tree/pictures",
+        label: "Pictures",
+      }));
+      controller.onInvoke("scan_folder", () => ({
+        files: [
+          createFile({
+            id: "f1",
+            name: "photo.jpg",
+            kind: "image",
+            path: "Pictures/photo.jpg",
+          }),
+        ],
+        total: 1,
+      }));
+
+      const user = userEvent.setup();
+      render(<App />);
+
+      await clickFolderPicker(user);
+      await user.click(screen.getByRole("button", { name: "Scan folder" }));
+
+      expect(await screen.findByRole("button", { name: "Open file" })).toBeDisabled();
+    });
   });
 
   it("renders streamed scan batches and keeps the final result authoritative", async () => {

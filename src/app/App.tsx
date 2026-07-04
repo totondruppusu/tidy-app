@@ -32,6 +32,7 @@ import type {
   TreeNode,
   UndoAction,
   ViewMode,
+  PickedDirectory,
 } from "../types";
 import {
   COMMON_EXTENSIONS,
@@ -74,14 +75,18 @@ import {
   invokeCommand,
   isDesktopRuntime,
   listenEvent,
-  openDialog,
 } from "../lib/desktopBridge";
 import { usePreviewController } from "../hooks/usePreviewController";
 import { useAsyncWorkflow } from "../hooks/useAsyncWorkflow";
 import { useSuggestionsController } from "../hooks/useSuggestionsController";
+import { useSwipeGestureController } from "../hooks/useSwipeGestureController";
 import { getInitialTheme, getStoredSettings } from "../lib/settings";
 import { revealInFileManager } from "../services/fileManagerService";
 import { runActionBatch } from "../services/suggestionsService";
+import {
+  isAndroidRuntime,
+  pickManagedDirectory,
+} from "../services/directoryService";
 import { HelpModal } from "../components/HelpModal";
 import { CrashReportModal } from "../components/CrashReportModal";
 import { DestinationSlots } from "../components/DestinationSlots";
@@ -122,6 +127,12 @@ const SUGGESTION_MIN_LARGE_FILE_OPTIONS = [
   { value: 2 * 1024 * 1024 * 1024, label: "2 GB+" },
 ];
 
+const createEmptyDestinationSlots = () =>
+  Array.from({ length: DESTINATION_SLOT_COUNT }, () => null);
+
+const ANDROID_FOLDER_PICKER_HINT =
+  'Android only allows folder access for real subfolders. If the system picker says "Can\'t use this folder", open that location and choose a folder inside it instead of the storage root.';
+
 type BlockingOverlayState = {
   title: string;
   subtitle: string;
@@ -146,6 +157,7 @@ export default function App() {
     typeof navigator !== "undefined" &&
     isDesktopRuntime() &&
     /windows/i.test(navigator.userAgent);
+  const isAndroidApp = isAndroidRuntime();
   const [storedSettings] = useState(() => getStoredSettings());
   const [files, setFiles] = useState<FileEntry[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
@@ -181,9 +193,12 @@ export default function App() {
   );
   const [destinationSlots, setDestinationSlots] = useState<(string | null)[]>(
     () => {
+      if (isAndroidApp) {
+        return createEmptyDestinationSlots();
+      }
       const storedSlots = storedSettings.destinationSlots;
       if (!storedSlots) {
-        return Array.from({ length: DESTINATION_SLOT_COUNT }, () => null);
+        return createEmptyDestinationSlots();
       }
       const normalized = storedSlots.slice(0, DESTINATION_SLOT_COUNT);
       while (normalized.length < DESTINATION_SLOT_COUNT) {
@@ -192,6 +207,22 @@ export default function App() {
       return normalized;
     },
   );
+  const [destinationSlotTokens, setDestinationSlotTokens] = useState<
+    (string | null)[]
+  >(() => {
+    if (isAndroidApp) {
+      return createEmptyDestinationSlots();
+    }
+    const storedSlots = storedSettings.destinationSlots;
+    if (!storedSlots) {
+      return createEmptyDestinationSlots();
+    }
+    const normalized = storedSlots.slice(0, DESTINATION_SLOT_COUNT);
+    while (normalized.length < DESTINATION_SLOT_COUNT) {
+      normalized.push(null);
+    }
+    return normalized;
+  });
   const [confirmTrash, setConfirmTrash] = useState(
     storedSettings.confirmTrash ?? true,
   );
@@ -233,12 +264,15 @@ export default function App() {
       : [],
   );
   const [lastFolder, setLastFolder] = useState<string | null>(
-    storedSettings.lastFolder ?? null,
+    isAndroidApp ? null : (storedSettings.lastFolder ?? null),
   );
-  const initialFolder = storedSettings.rememberLastFolder
+  const initialFolder = !isAndroidApp && storedSettings.rememberLastFolder
     ? (storedSettings.lastFolder ?? null)
     : null;
   const [currentFolder, setCurrentFolder] = useState<string | null>(
+    initialFolder,
+  );
+  const [currentFolderToken, setCurrentFolderToken] = useState<string | null>(
     initialFolder,
   );
   const {
@@ -308,7 +342,7 @@ export default function App() {
   const [crashReport, setCrashReport] = useState<CrashReport | null>(null);
   const [isCrashReportOpen, setIsCrashReportOpen] = useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
-  const [isDrawerMode, setIsDrawerMode] = useState(false);
+  const [isNarrowLayout, setIsNarrowLayout] = useState(false);
   const [isWindowFullscreen, setIsWindowFullscreen] = useState(false);
   const [isWindowMaximized, setIsWindowMaximized] = useState(false);
   const [isExtensionsCollapsed, setIsExtensionsCollapsed] = useState(true);
@@ -431,17 +465,17 @@ export default function App() {
   }, [theme]);
 
   useEffect(() => {
-    if (currentFolder) {
-      setLastFolder(currentFolder);
+    if (!isAndroidApp && currentFolderToken) {
+      setLastFolder(currentFolderToken);
     }
-  }, [currentFolder]);
+  }, [currentFolderToken, isAndroidApp]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
       return;
     }
     const mediaQuery = window.matchMedia("(max-width: 900px)");
-    const handleChange = () => setIsDrawerMode(mediaQuery.matches);
+    const handleChange = () => setIsNarrowLayout(mediaQuery.matches);
     handleChange();
     if (mediaQuery.addEventListener) {
       mediaQuery.addEventListener("change", handleChange);
@@ -452,10 +486,10 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (isDrawerMode) {
+    if (isNarrowLayout) {
       setIsSidebarCollapsed(true);
     }
-  }, [isDrawerMode]);
+  }, [isNarrowLayout]);
 
   useEffect(() => {
     if (!isDesktopRuntime()) {
@@ -822,7 +856,7 @@ export default function App() {
       viewMode,
       extensionFilterMode,
       extensionSelection: selectedExtensions,
-      destinationSlots,
+      destinationSlots: isAndroidApp ? undefined : destinationSlots,
       suggestionStaleDays,
       suggestionMinLargeFileBytes,
       suggestionMaxResults,
@@ -857,6 +891,7 @@ export default function App() {
     extensionFilterMode,
     selectedExtensions,
     destinationSlots,
+    isAndroidApp,
     suggestionStaleDays,
     suggestionMinLargeFileBytes,
     suggestionMaxResults,
@@ -1240,7 +1275,7 @@ export default function App() {
   }, [cancelPendingScanBatchFlush, resetSuggestionsState]);
 
   const applyScanResult = useCallback(
-    (folderPath: string, result: ScanResult) => {
+    (folderLabel: string, folderToken: string, result: ScanResult) => {
       cancelPendingScanBatchFlush();
       resetSelectionToFirstRef.current = true;
       const uniqueFiles = dedupeFileEntries(result.files);
@@ -1250,10 +1285,11 @@ export default function App() {
       );
       const nextCollapsedFolders = buildInitialCollapsedFolders(
         uniqueFiles,
-        folderPath,
+        folderLabel,
       );
       setFiles(uniqueFiles);
-      setCurrentFolder(folderPath);
+      setCurrentFolder(folderLabel);
+      setCurrentFolderToken(folderToken);
       currentFileIdRef.current = null;
       skipAutoExpandCurrentFileRef.current =
         viewMode === "tree" && Object.keys(nextCollapsedFolders).length > 0;
@@ -1263,7 +1299,7 @@ export default function App() {
       resetSuggestionsState();
       setCollapsedGroups(nextCollapsedGroups);
       setCollapsedFolders(nextCollapsedFolders);
-      updateStatus(`Loaded ${uniqueFiles.length} items from ${folderPath}.`);
+      updateStatus(`Loaded ${uniqueFiles.length} items from ${folderLabel}.`);
     },
     [
       buildInitialCollapsedGroups,
@@ -1277,8 +1313,8 @@ export default function App() {
   );
 
   const runFreshScan = useCallback(
-    async (request: ScanCacheRequest) => {
-      const { folderPath } = request;
+    async (request: ScanCacheRequest, folderLabel: string) => {
+      const { folderPath: folderToken } = request;
       setLastScanFilterMode(request.filterMode);
       const scanId =
         typeof crypto?.randomUUID === "function"
@@ -1304,16 +1340,19 @@ export default function App() {
       try {
         const result = await invokeCommand<ScanResult>("scan_folder", {
           ...request,
+          folderLabel,
           scanId,
         });
         if (activeScanId.current !== scanId) {
           return;
         }
-        applyScanResult(folderPath, result);
-        try {
-          await invokeCommand("store_cached_scan_result", { request, result });
-        } catch (cacheError) {
-          console.warn("Failed to store cached scan.", cacheError);
+        applyScanResult(folderLabel, folderToken, result);
+        if (!isAndroidApp) {
+          try {
+            await invokeCommand("store_cached_scan_result", { request, result });
+          } catch (cacheError) {
+            console.warn("Failed to store cached scan.", cacheError);
+          }
         }
         succeedScanWorkflow();
       } catch (error) {
@@ -1339,6 +1378,7 @@ export default function App() {
     [
       applyScanResult,
       failScanWorkflow,
+      isAndroidApp,
       resetCancelScanWorkflow,
       resetScanViewState,
       resetScanWorkflow,
@@ -1374,7 +1414,7 @@ export default function App() {
       activeScanId.current = null;
       resetCancelScanWorkflow();
       setLastScanFilterMode(cachedScan.filterMode);
-      applyScanResult(cachedScan.folderPath, {
+      applyScanResult(cachedScan.folderPath, cachedScan.folderPath, {
         files: cachedScan.files,
         total: cachedScan.total,
       });
@@ -1383,29 +1423,35 @@ export default function App() {
   );
 
   const handleScan = useCallback(
-    async (folderPath?: string) => {
-      if (!folderPath) {
+    async (target?: PickedDirectory | string) => {
+      const resolvedTarget =
+        typeof target === "string"
+          ? { token: target, label: target }
+          : target;
+      if (!resolvedTarget) {
         updateStatus("No folder selected.");
         return;
       }
-      const request = buildScanCacheRequest(folderPath);
+      const request = buildScanCacheRequest(resolvedTarget.token);
       setScanCachePrompt(null);
-      try {
-        const cachedScan = await invokeCommand<CachedScan | null>(
-          "get_cached_scan",
-          { request },
-        );
-        if (cachedScan) {
-          setScanCachePrompt({ request, cachedScan });
-          updateStatus("Previous scan found. Choose how to continue.");
-          return;
+      if (!isAndroidApp) {
+        try {
+          const cachedScan = await invokeCommand<CachedScan | null>(
+            "get_cached_scan",
+            { request },
+          );
+          if (cachedScan) {
+            setScanCachePrompt({ request, cachedScan });
+            updateStatus("Previous scan found. Choose how to continue.");
+            return;
+          }
+        } catch (error) {
+          console.warn("Failed to load cached scan.", error);
         }
-      } catch (error) {
-        console.warn("Failed to load cached scan.", error);
       }
-      await runFreshScan(request);
+      await runFreshScan(request, resolvedTarget.label);
     },
-    [buildScanCacheRequest, runFreshScan, updateStatus],
+    [buildScanCacheRequest, isAndroidApp, runFreshScan, updateStatus],
   );
 
   const dismissScanCachePrompt = useCallback(() => {
@@ -1436,21 +1482,31 @@ export default function App() {
 
   const pickFolder = useCallback(async () => {
     try {
-      const selected = await openDialog({ directory: true, multiple: false });
-      if (typeof selected === "string") {
-        setCurrentFolder(selected);
+      if (isAndroidApp) {
+        updateStatus(ANDROID_FOLDER_PICKER_HINT);
+      }
+      const selected = await pickManagedDirectory();
+      if (selected) {
+        setCurrentFolder(selected.label);
+        setCurrentFolderToken(selected.token);
         if (autoScanOnPick) {
           void handleScan(selected);
         } else {
           updateStatus("Folder selected. Click search to scan.");
         }
       } else {
-        updateStatus("No folder selected.");
+        updateStatus(
+          isAndroidApp ? `No folder selected. ${ANDROID_FOLDER_PICKER_HINT}` : "No folder selected.",
+        );
       }
     } catch (error) {
-      updateStatus(`Folder picker failed: ${String(error)}`);
+      updateStatus(
+        isAndroidApp
+          ? `Folder picker failed: ${String(error)} ${ANDROID_FOLDER_PICKER_HINT}`
+          : `Folder picker failed: ${String(error)}`,
+      );
     }
-  }, [autoScanOnPick, handleScan, updateStatus]);
+  }, [autoScanOnPick, handleScan, isAndroidApp, updateStatus]);
 
   const handleDeleteSuggestionPreset = useCallback(async () => {
     const preset = await getDeleteSuggestionPreset();
@@ -1473,8 +1529,12 @@ export default function App() {
   }, []);
 
   const handleCurrentFolderScan = useCallback(() => {
-    void handleScan(currentFolder ?? undefined);
-  }, [currentFolder, handleScan]);
+    if (!currentFolder || !currentFolderToken) {
+      void handleScan(undefined);
+      return;
+    }
+    void handleScan({ token: currentFolderToken, label: currentFolder });
+  }, [currentFolder, currentFolderToken, handleScan]);
 
   const handleFilterModeChange = useCallback(
     (value: FilterMode) => {
@@ -1564,7 +1624,7 @@ export default function App() {
       updateStatus("No folder selected.");
       return;
     }
-    if (!isDesktopRuntime()) {
+    if (!isDesktopRuntime() || isAndroidApp) {
       updateStatus("Suggestions apply is available in the desktop app.");
       return;
     }
@@ -1636,6 +1696,7 @@ export default function App() {
     previewSelectedSuggestions,
     clearSuggestionDryRunPreview,
     removeAppliedSuggestions,
+    isAndroidApp,
   ]);
 
   useEffect(() => {
@@ -1650,10 +1711,15 @@ export default function App() {
   }, [handleScan, initialFolder]);
 
   const updateDestinationSlot = useCallback(
-    (slotIndex: number, destination: string) => {
+    (slotIndex: number, destination: PickedDirectory) => {
       setDestinationSlots((prev) => {
         const next = [...prev];
-        next[slotIndex] = destination;
+        next[slotIndex] = destination.label;
+        return next;
+      });
+      setDestinationSlotTokens((prev) => {
+        const next = [...prev];
+        next[slotIndex] = destination.token;
         return next;
       });
     },
@@ -1663,19 +1729,30 @@ export default function App() {
   const pickDestinationForSlot = useCallback(
     async (slotIndex: number) => {
       try {
-        const selected = await openDialog({ directory: true, multiple: false });
-        if (typeof selected === "string") {
+        if (isAndroidApp) {
+          updateStatus(ANDROID_FOLDER_PICKER_HINT);
+        }
+        const selected = await pickManagedDirectory();
+        if (selected) {
           updateDestinationSlot(slotIndex, selected);
-          updateStatus(`Destination ${slotIndex + 1} set to ${selected}.`);
+          updateStatus(`Destination ${slotIndex + 1} set to ${selected.label}.`);
           return selected;
         }
-        updateStatus("No destination selected.");
+        updateStatus(
+          isAndroidApp
+            ? `No destination selected. ${ANDROID_FOLDER_PICKER_HINT}`
+            : "No destination selected.",
+        );
       } catch (error) {
-        updateStatus(`Destination picker failed: ${String(error)}`);
+        updateStatus(
+          isAndroidApp
+            ? `Destination picker failed: ${String(error)} ${ANDROID_FOLDER_PICKER_HINT}`
+            : `Destination picker failed: ${String(error)}`,
+        );
       }
       return null;
     },
-    [updateDestinationSlot, updateStatus],
+    [isAndroidApp, updateDestinationSlot, updateStatus],
   );
 
   const removeFileById = useCallback(
@@ -1885,12 +1962,15 @@ export default function App() {
               file: currentFile,
               fromPath: currentFile.path,
               trashPath: result.trashPath,
+              destinationToken: result.restoreDestination ?? null,
             });
           }
           const baseMessage =
             trashBehavior === "permanent"
               ? `Deleted ${currentFile.name}.`
-              : `Moved ${currentFile.name} to system trash.`;
+              : isAndroidApp
+                ? `Removed ${currentFile.name}.`
+                : `Moved ${currentFile.name} to system trash.`;
           updateStatus(
             result.trashPath ? baseMessage : `${baseMessage} Undo unavailable.`,
           );
@@ -1907,6 +1987,7 @@ export default function App() {
     pushUndo,
     trashBehavior,
     runMutationWithSpinner,
+    isAndroidApp,
   ]);
 
   const permanentlyDeleteCurrent = useCallback(async () => {
@@ -1967,6 +2048,10 @@ export default function App() {
     async (folderPath: string) => {
       if (!currentFolder) {
         updateStatus("No folder selected.");
+        return;
+      }
+      if (isAndroidApp) {
+        updateStatus("Folder trash is not available on Android yet.");
         return;
       }
       const folderFiles = getFolderFiles(folderPath);
@@ -2043,6 +2128,7 @@ export default function App() {
       confirmTrash,
       currentFolder,
       getFolderFiles,
+      isAndroidApp,
       updateStatus,
       removeFilesByIds,
       pushUndo,
@@ -2057,22 +2143,26 @@ export default function App() {
         updateStatus("No file selected.");
         return;
       }
-      let destinationPath = destinationSlots[slotIndex] ?? null;
-      if (!destinationPath) {
+      let destinationToken = destinationSlotTokens[slotIndex] ?? null;
+      let destinationLabel = destinationSlots[slotIndex] ?? null;
+      if (!destinationToken || !destinationLabel) {
         if (allowPickIfMissing) {
-          destinationPath = await pickDestinationForSlot(slotIndex);
+          const selected = await pickDestinationForSlot(slotIndex);
+          destinationToken = selected?.token ?? null;
+          destinationLabel = selected?.label ?? null;
         } else {
           updateStatus(`Destination ${slotIndex + 1} not set.`);
           return;
         }
       }
-      if (!destinationPath) {
+      if (!destinationToken || !destinationLabel) {
         return;
       }
       await runMutationWithSpinner("Moving…", async () => {
         try {
           await invokeCommand("set_destination", {
-            destination: destinationPath,
+            destination: destinationToken,
+            label: destinationLabel,
           });
           const result = await invokeCommand<MoveResult>("move_file", {
             id: currentFile.id,
@@ -2083,6 +2173,8 @@ export default function App() {
             file: currentFile,
             fromPath: currentFile.path,
             toPath: result.targetPath,
+            sourceToken: result.restoreSource ?? null,
+            destinationToken: result.restoreDestination ?? null,
           });
           updateStatus(`Moved to ${result.targetPath}.`);
         } catch (error) {
@@ -2093,6 +2185,7 @@ export default function App() {
     [
       currentFile,
       destinationSlots,
+      destinationSlotTokens,
       pickDestinationForSlot,
       removeFileById,
       updateStatus,
@@ -2103,6 +2196,10 @@ export default function App() {
 
   const openFileInFinder = useCallback(
     async (file: FileEntry) => {
+      if (isAndroidApp) {
+        updateStatus("Reveal in file manager is not available on Android yet.");
+        return;
+      }
       try {
         await revealInFileManager({
           path: file.path,
@@ -2112,11 +2209,15 @@ export default function App() {
         updateStatus(`Reveal in file manager failed: ${String(error)}`);
       }
     },
-    [updateStatus],
+    [isAndroidApp, updateStatus],
   );
 
   const openFileInSystem = useCallback(
     async (file: FileEntry) => {
+      if (isAndroidApp) {
+        updateStatus("Open in another app is not available on Android yet.");
+        return;
+      }
       try {
         await revealInFileManager({
           path: file.path,
@@ -2126,7 +2227,7 @@ export default function App() {
         updateStatus(`Open file failed: ${String(error)}`);
       }
     },
-    [updateStatus],
+    [isAndroidApp, updateStatus],
   );
 
   const openCurrentInFinder = useCallback(async () => {
@@ -2202,13 +2303,20 @@ export default function App() {
       return;
     }
     const sourcePath =
-      lastAction.kind === "move" ? lastAction.toPath : lastAction.trashPath;
+      lastAction.sourceToken ??
+      (lastAction.kind === "move" ? lastAction.toPath : lastAction.trashPath);
+    const destinationPath = lastAction.destinationToken ?? lastAction.fromPath;
     await runMutationWithSpinner("Restoring…", async () => {
       try {
         await invokeCommand("restore_file", {
           id: lastAction.file.id,
           source: sourcePath,
-          destination: lastAction.fromPath,
+          destination: destinationPath,
+          fileName: lastAction.file.name,
+          mimeType: lastAction.file.mime,
+          displayPath: lastAction.file.path,
+          sizeBytes: lastAction.file.sizeBytes,
+          modifiedMs: lastAction.file.modifiedMs,
         });
         restoreFileEntry(lastAction.file);
         setUndoStack((prev) => prev.slice(1));
@@ -2466,7 +2574,11 @@ export default function App() {
           currentFileIdRef.current = file.id;
           setCurrentIndex(index);
         }}
-        onDoubleClick={() => void openFileInFinder(file)}
+        onDoubleClick={() => {
+          if (!isAndroidApp) {
+            void openFileInFinder(file);
+          }
+        }}
         ref={(node) => listItemRefs.current.set(file.id, node)}
         type="button"
         aria-current={index === currentIndex ? "true" : undefined}
@@ -2729,6 +2841,7 @@ export default function App() {
     isMutating,
     effectiveGroupMode,
     shouldGroupDuplicates,
+    isAndroidApp,
     openFileInFinder,
     currentFolder,
     viewMode,
@@ -2987,7 +3100,11 @@ export default function App() {
           },
           {
             label: "Scan again",
-            onClick: () => void runFreshScan(scanCachePrompt.request),
+            onClick: () =>
+              void runFreshScan(
+                scanCachePrompt.request,
+                scanCachePrompt.cachedScan.folderPath,
+              ),
           },
         ],
       };
@@ -3019,6 +3136,47 @@ export default function App() {
   const isRenderingList = renderCount < sortedFiles.length;
   const totalFiles = files.length;
   const filteredCount = sortedFiles.length;
+  const isDrawerMode = isNarrowLayout;
+  const isGestureMode = isNarrowLayout;
+  const canGoPrev =
+    hasFiles && currentIndex > 0 && !areControlsDisabled && !isMutating;
+  const canGoNext =
+    hasFiles &&
+    currentIndex < filteredCount - 1 &&
+    !areControlsDisabled &&
+    !isMutating;
+  const canTrashCurrent = hasFiles && !areControlsDisabled && !isMutating;
+  const canUndoLastAction =
+    undoStack.length > 0 && !areControlsDisabled && !isMutating;
+  const isGestureInteractionBlocked =
+    isHelpOpen ||
+    isSuggestionsOpen ||
+    isSettingsOpen ||
+    isCrashReportOpen ||
+    isInteractionBlocked ||
+    isMutating;
+  const swipeGesture = useSwipeGestureController({
+    enabled: isGestureMode,
+    isBlocked: isGestureInteractionBlocked,
+    actions: {
+      prev: {
+        enabled: canGoPrev,
+        run: goPrev,
+      },
+      next: {
+        enabled: canGoNext,
+        run: goNext,
+      },
+      trash: {
+        enabled: canTrashCurrent,
+        run: trashCurrent,
+      },
+      undo: {
+        enabled: canUndoLastAction,
+        run: undoLastAction,
+      },
+    },
+  });
 
   useEffect(() => {
     syncScrollHints(fileListScrollRef.current, fileListFrameRef.current);
@@ -3135,6 +3293,8 @@ export default function App() {
             autoPlayMedia={autoPlayMedia}
             videoRef={videoRef}
             audioRef={audioRef}
+            gesture={swipeGesture}
+            canOpenFile={!isAndroidApp}
             onOpenFile={openFileInSystem}
           />
         </main>
@@ -3146,64 +3306,58 @@ export default function App() {
               disabled={areControlsDisabled || isMutating}
               onPickDestination={pickDestinationForSlot}
             />
-            <div className="action-row">
-              {mutationSpinnerLabel && (
-                <div
-                  className="action-progress"
-                  role="status"
-                  aria-live="polite"
-                >
-                  <div className="spinner" aria-hidden="true" />
-                  <span className="action-progress-label">
-                    {mutationSpinnerLabel}
-                  </span>
-                </div>
-              )}
-              <button
-                className="action-button action-prev"
-                type="button"
-                onClick={goPrev}
-                disabled={
-                  !hasFiles ||
-                  currentIndex === 0 ||
-                  areControlsDisabled ||
-                  isMutating
-                }
-              >
-                Prev ←
-              </button>
-              <button
-                className="action-button action-undo"
-                type="button"
-                onClick={undoLastAction}
-                disabled={
-                  undoStack.length === 0 || areControlsDisabled || isMutating
-                }
-              >
-                Undo ↓
-              </button>
-              <button
-                className="action-button action-next"
-                type="button"
-                onClick={goNext}
-                disabled={
-                  !hasFiles ||
-                  currentIndex >= filteredCount - 1 ||
-                  areControlsDisabled ||
-                  isMutating
-                }
-              >
-                Next →
-              </button>
-              <button
-                className="action-button action-trash"
-                type="button"
-                onClick={trashCurrent}
-                disabled={!hasFiles || areControlsDisabled || isMutating}
-              >
-                Trash ↑
-              </button>
-            </div>
+            {(mutationSpinnerLabel || !isGestureMode) && (
+              <div className={`action-row${isGestureMode ? " gesture-mode" : ""}`}>
+                {mutationSpinnerLabel && (
+                  <div
+                    className="action-progress"
+                    role="status"
+                    aria-live="polite"
+                  >
+                    <div className="spinner" aria-hidden="true" />
+                    <span className="action-progress-label">
+                      {mutationSpinnerLabel}
+                    </span>
+                  </div>
+                )}
+                {!isGestureMode && (
+                  <>
+                    <button
+                      className="action-button action-prev"
+                      type="button"
+                      onClick={goPrev}
+                      disabled={!canGoPrev}
+                    >
+                      Prev ←
+                    </button>
+                    <button
+                      className="action-button action-undo"
+                      type="button"
+                      onClick={undoLastAction}
+                      disabled={!canUndoLastAction}
+                    >
+                      Undo ↓
+                    </button>
+                    <button
+                      className="action-button action-next"
+                      type="button"
+                      onClick={goNext}
+                      disabled={!canGoNext}
+                    >
+                      Next →
+                    </button>
+                    <button
+                      className="action-button action-trash"
+                      type="button"
+                      onClick={trashCurrent}
+                      disabled={!canTrashCurrent}
+                    >
+                      Trash ↑
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
           </div>
         </footer>
       </div>

@@ -17,6 +17,9 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "android:init": "node scripts/run-android-tauri.mjs init --ci --skip-targets-install",
+    "android:dev": "node scripts/run-android-tauri.mjs dev",
+    "android:build": "node scripts/run-android-tauri.mjs build",
     "preview": "vite preview",
     "tauri": "tauri",
     "release:minor": "node scripts/release-minor.mjs",

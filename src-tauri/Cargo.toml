@@ -8,6 +8,10 @@ repository = "https://github.com/totondruppusu/tidy-app"
 homepage = "https://github.com/totondruppusu/tidy-app"
 edition = "2021"
 
+[lib]
+name = "tidy_app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
@@ -15,7 +19,6 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-trash = "3.0"
 walkdir = "2.5"
 mime_guess = "2.0"
 rayon = "1"
@@ -28,6 +31,9 @@ bzip2 = "0.4"
 xz2 = "0.1"
 sha2 = "0.10"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "webp", "tiff"] }
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
+trash = "3.0"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-app-kit = "0.3.2"

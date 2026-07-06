@@ -1,5 +1,8 @@
 import { invokeCommand, isDesktopRuntime, openDialog } from "../lib/desktopBridge";
-import type { PickedDirectory } from "../types";
+import type {
+  LocalDirectoryListing,
+  PickedDirectory,
+} from "../types";
 
 export const isAndroidRuntime = () =>
   typeof navigator !== "undefined" &&
@@ -21,3 +24,9 @@ export const pickManagedDirectory = async (): Promise<PickedDirectory | null> =>
     label: selected,
   };
 };
+
+export const listLocalDirectories = (path?: string) =>
+  invokeCommand<LocalDirectoryListing>(
+    "list_local_directories",
+    path ? { path } : {},
+  );

@@ -180,7 +180,7 @@ fn run_plugin<R: Runtime, T: DeserializeOwned, P: Serialize>(
 
 #[cfg(target_os = "android")]
 pub fn pick_directory<R: Runtime>(app: &AppHandle<R>) -> Result<DirectorySelection, String> {
-  let response: DirectorySelectionResponse = run_plugin(app, "pickDirectory", ())?;
+  let response: DirectorySelectionResponse = run_plugin(app, "requestAllFilesAccess", ())?;
   Ok(DirectorySelection {
     token: response.token,
     label: response.label,

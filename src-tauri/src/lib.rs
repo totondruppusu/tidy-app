@@ -661,6 +661,21 @@ struct IndexStats {
   duplicate_groups: usize,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalDirectoryEntry {
+  path: String,
+  label: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalDirectoryListing {
+  current_path: String,
+  parent_path: Option<String>,
+  directories: Vec<LocalDirectoryEntry>,
+}
+
 #[derive(Clone, Copy)]
 enum TrashMode {
   System,
@@ -1569,6 +1584,61 @@ fn pick_android_directory(app_handle: AppHandle) -> Result<android_files::Direct
 
   #[allow(unreachable_code)]
   Err("Android folder picking is unavailable on this platform.".to_string())
+}
+
+#[tauri::command]
+fn list_local_directories(path: Option<String>) -> Result<LocalDirectoryListing, String> {
+  #[cfg(target_os = "android")]
+  let fallback_root = "/storage/emulated/0".to_string();
+  #[cfg(not(target_os = "android"))]
+  let fallback_root = "/".to_string();
+
+  let current_path = path.unwrap_or(fallback_root);
+  let current = PathBuf::from(&current_path);
+  if !current.exists() {
+    return Err("Folder not found.".to_string());
+  }
+  if !current.is_dir() {
+    return Err("Path is not a folder.".to_string());
+  }
+
+  let mut directories = Vec::new();
+  for entry in fs::read_dir(&current).map_err(|error| error.to_string())? {
+    let entry = match entry {
+      Ok(entry) => entry,
+      Err(_) => continue,
+    };
+    let path = entry.path();
+    let metadata = match entry.metadata() {
+      Ok(metadata) => metadata,
+      Err(_) => continue,
+    };
+    if !metadata.is_dir() {
+      continue;
+    }
+    let label = match path.file_name().and_then(|name| name.to_str()) {
+      Some(name) => name.to_string(),
+      None => continue,
+    };
+    directories.push(LocalDirectoryEntry {
+      path: path.to_string_lossy().to_string(),
+      label,
+    });
+  }
+
+  directories.sort_by(|a, b| a.label.to_lowercase().cmp(&b.label.to_lowercase()));
+
+  let parent_path = current
+    .parent()
+    .and_then(|parent| parent.to_str())
+    .map(|parent| parent.to_string())
+    .filter(|parent| !parent.is_empty() && parent != &current_path);
+
+  Ok(LocalDirectoryListing {
+    current_path,
+    parent_path,
+    directories,
+  })
 }
 
 #[tauri::command]
@@ -5283,6 +5353,7 @@ pub fn run() {
       restore_folder,
       set_destination,
       pick_android_directory,
+      list_local_directories,
       list_archive_entries,
       extract_office_fallback_preview,
       generate_preview,

@@ -3532,6 +3532,82 @@ optgroup {
   width: min(760px, 100%);
 }
 
+.android-folder-browser {
+  width: min(720px, 100%);
+  max-height: min(82vh, 760px);
+}
+
+.android-folder-browser-body {
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
+.android-folder-browser-toolbar {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.android-folder-browser-path {
+  padding: var(--space-3);
+  border-radius: 12px;
+  border: 1px solid var(--color-border-card);
+  background: var(--glass-fill-soft);
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  word-break: break-word;
+}
+
+.android-folder-browser-list {
+  min-height: 240px;
+  max-height: min(52vh, 420px);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding-right: 4px;
+}
+
+.android-folder-browser-state {
+  padding: var(--space-4);
+  border-radius: 12px;
+  border: 1px solid var(--color-border-card);
+  background: var(--glass-fill-soft);
+  color: var(--color-text-secondary);
+  font-size: 13px;
+}
+
+.android-folder-entry {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  width: 100%;
+  text-align: left;
+}
+
+.android-folder-entry-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.android-folder-entry-chevron {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  color: var(--color-text-muted);
+}
+
+.android-folder-entry-chevron svg {
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
+}
+
 .crash-modal {
   width: min(720px, 100%);
   max-height: min(80vh, 720px);

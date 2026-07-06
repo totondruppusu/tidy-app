@@ -33,6 +33,7 @@ import type {
   UndoAction,
   ViewMode,
   PickedDirectory,
+  LocalDirectoryEntry,
 } from "../types";
 import {
   COMMON_EXTENSIONS,
@@ -85,8 +86,10 @@ import { revealInFileManager } from "../services/fileManagerService";
 import { runActionBatch } from "../services/suggestionsService";
 import {
   isAndroidRuntime,
+  listLocalDirectories,
   pickManagedDirectory,
 } from "../services/directoryService";
+import { AndroidFolderBrowserModal } from "../components/AndroidFolderBrowserModal";
 import { HelpModal } from "../components/HelpModal";
 import { CrashReportModal } from "../components/CrashReportModal";
 import { DestinationSlots } from "../components/DestinationSlots";
@@ -131,7 +134,7 @@ const createEmptyDestinationSlots = () =>
   Array.from({ length: DESTINATION_SLOT_COUNT }, () => null);
 
 const ANDROID_FOLDER_PICKER_HINT =
-  'Android only allows folder access for real subfolders. If the system picker says "Can\'t use this folder", open that location and choose a folder inside it instead of the storage root.';
+  "Android will ask for all files access first, then open an in-app folder browser so you can choose what to scan. Protected app-private folders may still be blocked by Android.";
 
 type BlockingOverlayState = {
   title: string;
@@ -338,6 +341,21 @@ export default function App() {
     };
   }, [isSettingsOpen]);
   const [isHelpOpen, setIsHelpOpen] = useState(false);
+  const [isAndroidFolderBrowserOpen, setIsAndroidFolderBrowserOpen] =
+    useState(false);
+  const [androidFolderBrowserPath, setAndroidFolderBrowserPath] = useState("");
+  const [androidFolderBrowserParentPath, setAndroidFolderBrowserParentPath] =
+    useState<string | null>(null);
+  const [androidFolderBrowserDirectories, setAndroidFolderBrowserDirectories] =
+    useState<LocalDirectoryEntry[]>([]);
+  const [isAndroidFolderBrowserLoading, setIsAndroidFolderBrowserLoading] =
+    useState(false);
+  const [androidFolderBrowserError, setAndroidFolderBrowserError] = useState<
+    string | null
+  >(null);
+  const androidFolderBrowserResolverRef = useRef<
+    ((selection: PickedDirectory | null) => void) | null
+  >(null);
   const [isSuggestionsOpen, setIsSuggestionsOpen] = useState(false);
   const [crashReport, setCrashReport] = useState<CrashReport | null>(null);
   const [isCrashReportOpen, setIsCrashReportOpen] = useState(false);
@@ -407,6 +425,54 @@ export default function App() {
       );
     },
     [flushQueuedScanBatches],
+  );
+  const resolveAndroidFolderBrowser = useCallback(
+    (selection: PickedDirectory | null) => {
+      setIsAndroidFolderBrowserOpen(false);
+      setIsAndroidFolderBrowserLoading(false);
+      setAndroidFolderBrowserError(null);
+      setAndroidFolderBrowserDirectories([]);
+      setAndroidFolderBrowserParentPath(null);
+      const resolve = androidFolderBrowserResolverRef.current;
+      androidFolderBrowserResolverRef.current = null;
+      resolve?.(selection);
+    },
+    [],
+  );
+  const loadAndroidFolderBrowserPath = useCallback(async (path: string) => {
+    setIsAndroidFolderBrowserLoading(true);
+    setAndroidFolderBrowserError(null);
+    try {
+      const listing = await listLocalDirectories(path);
+      setAndroidFolderBrowserPath(listing.currentPath);
+      setAndroidFolderBrowserParentPath(listing.parentPath);
+      setAndroidFolderBrowserDirectories(listing.directories);
+    } catch (error) {
+      setAndroidFolderBrowserError(String(error));
+    } finally {
+      setIsAndroidFolderBrowserLoading(false);
+    }
+  }, []);
+  const openAndroidFolderBrowser = useCallback(
+    async (initialPath?: string): Promise<PickedDirectory | null> => {
+      const root = await pickManagedDirectory();
+      if (!root) {
+        return null;
+      }
+
+      const startPath = initialPath ?? root.token;
+      setAndroidFolderBrowserPath(startPath);
+      setAndroidFolderBrowserParentPath(null);
+      setAndroidFolderBrowserDirectories([]);
+      setAndroidFolderBrowserError(null);
+      setIsAndroidFolderBrowserOpen(true);
+      void loadAndroidFolderBrowserPath(startPath);
+
+      return new Promise((resolve) => {
+        androidFolderBrowserResolverRef.current = resolve;
+      });
+    },
+    [loadAndroidFolderBrowserPath],
   );
   const crashReportText = useMemo(
     () => (crashReport ? formatCrashReport(crashReport) : ""),
@@ -1484,6 +1550,21 @@ export default function App() {
     try {
       if (isAndroidApp) {
         updateStatus(ANDROID_FOLDER_PICKER_HINT);
+        const selected = await openAndroidFolderBrowser(
+          currentFolderToken ?? undefined,
+        );
+        if (selected) {
+          setCurrentFolder(selected.label);
+          setCurrentFolderToken(selected.token);
+          if (autoScanOnPick) {
+            void handleScan(selected);
+          } else {
+            updateStatus("Folder selected. Click search to scan.");
+          }
+        } else {
+          updateStatus(`No folder selected. ${ANDROID_FOLDER_PICKER_HINT}`);
+        }
+        return;
       }
       const selected = await pickManagedDirectory();
       if (selected) {
@@ -1495,9 +1576,7 @@ export default function App() {
           updateStatus("Folder selected. Click search to scan.");
         }
       } else {
-        updateStatus(
-          isAndroidApp ? `No folder selected. ${ANDROID_FOLDER_PICKER_HINT}` : "No folder selected.",
-        );
+        updateStatus("No folder selected.");
       }
     } catch (error) {
       updateStatus(
@@ -1506,7 +1585,14 @@ export default function App() {
           : `Folder picker failed: ${String(error)}`,
       );
     }
-  }, [autoScanOnPick, handleScan, isAndroidApp, updateStatus]);
+  }, [
+    autoScanOnPick,
+    currentFolderToken,
+    handleScan,
+    isAndroidApp,
+    openAndroidFolderBrowser,
+    updateStatus,
+  ]);
 
   const handleDeleteSuggestionPreset = useCallback(async () => {
     const preset = await getDeleteSuggestionPreset();
@@ -1731,6 +1817,16 @@ export default function App() {
       try {
         if (isAndroidApp) {
           updateStatus(ANDROID_FOLDER_PICKER_HINT);
+          const selected = await openAndroidFolderBrowser(
+            destinationSlotTokens[slotIndex] ?? undefined,
+          );
+          if (selected) {
+            updateDestinationSlot(slotIndex, selected);
+            updateStatus(`Destination ${slotIndex + 1} set to ${selected.label}.`);
+            return selected;
+          }
+          updateStatus(`No destination selected. ${ANDROID_FOLDER_PICKER_HINT}`);
+          return null;
         }
         const selected = await pickManagedDirectory();
         if (selected) {
@@ -1752,7 +1848,13 @@ export default function App() {
       }
       return null;
     },
-    [isAndroidApp, updateDestinationSlot, updateStatus],
+    [
+      destinationSlotTokens,
+      isAndroidApp,
+      openAndroidFolderBrowser,
+      updateDestinationSlot,
+      updateStatus,
+    ],
   );
 
   const removeFileById = useCallback(
@@ -3242,6 +3344,7 @@ export default function App() {
             search={{
               currentFolder,
               folderLabel,
+              emptyFolderLabel: "Select folder…",
               filterMode,
               onPickFolder: pickFolder,
               onFilterModeChange: handleFilterModeChange,
@@ -3421,6 +3524,32 @@ export default function App() {
         onReveal={handleRevealCrashReport}
         onCopy={handleCopyCrashReport}
         onSend={handleSendCrashReport}
+      />
+
+      <AndroidFolderBrowserModal
+        isOpen={isAndroidFolderBrowserOpen}
+        title="Choose folder"
+        currentPath={androidFolderBrowserPath}
+        parentPath={androidFolderBrowserParentPath}
+        directories={androidFolderBrowserDirectories}
+        isLoading={isAndroidFolderBrowserLoading}
+        error={androidFolderBrowserError}
+        onClose={() => resolveAndroidFolderBrowser(null)}
+        onNavigateUp={() => {
+          if (!androidFolderBrowserParentPath) {
+            return;
+          }
+          void loadAndroidFolderBrowserPath(androidFolderBrowserParentPath);
+        }}
+        onOpenDirectory={(path) => {
+          void loadAndroidFolderBrowserPath(path);
+        }}
+        onConfirm={() =>
+          resolveAndroidFolderBrowser({
+            token: androidFolderBrowserPath,
+            label: androidFolderBrowserPath,
+          })
+        }
       />
 
       <SuggestionsModal

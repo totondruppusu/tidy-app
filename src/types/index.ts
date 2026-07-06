@@ -121,6 +121,17 @@ export type PickedDirectory = {
   label: string;
 };
 
+export type LocalDirectoryEntry = {
+  path: string;
+  label: string;
+};
+
+export type LocalDirectoryListing = {
+  currentPath: string;
+  parentPath: string | null;
+  directories: LocalDirectoryEntry[];
+};
+
 export type QueryIndexRequest = {
   filterMode?: FilterMode;
   selectedExtensions?: string[];

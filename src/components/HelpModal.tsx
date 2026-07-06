@@ -38,7 +38,7 @@ export const HelpModal = ({ isOpen, onClose }: HelpModalProps) => {
                 <li>Pick a filter mode to focus on images, docs, or other file types.</li>
                 <li>Click a file to preview it; double-click to reveal it in your file manager.</li>
                 <li>Use the extensions list to narrow the scan to specific suffixes.</li>
-                <li>On Android, choose a real subfolder in the picker. Storage roots like Downloads or Internal storage may show “Can’t use this folder”.</li>
+                <li>On Android, grant all files access, then choose a folder from the in-app browser to scan shared phone storage.</li>
               </ul>
             </section>
             <section className="help-section">

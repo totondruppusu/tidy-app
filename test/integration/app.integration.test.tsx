@@ -612,7 +612,7 @@ describe("App integration", () => {
     expect(screen.getByText("/mock/alpha.txt")).toBeInTheDocument();
   });
 
-  it("uses the Android directory picker and passes SAF tokens into scans", async () => {
+  it("uses Android all-files access and passes the selected storage path into scans", async () => {
     await withAndroidUserAgent(async () => {
       const controller = createMockBridge();
       installBaseHandlers(controller);
@@ -621,19 +621,38 @@ describe("App integration", () => {
       const desktopOpen = vi.fn(async () => "/desktop-should-not-open");
       controller.bridge.open = desktopOpen;
       controller.onInvoke("pick_android_directory", () => ({
-        token: "content://tree/pictures",
-        label: "Pictures",
+        token: "/storage/emulated/0",
+        label: "/storage/emulated/0",
       }));
+      controller.onInvoke("list_local_directories", (args) => {
+        if (args?.path === "/storage/emulated/0/Pictures") {
+          return {
+            currentPath: "/storage/emulated/0/Pictures",
+            parentPath: "/storage/emulated/0",
+            directories: [],
+          };
+        }
+        return {
+          currentPath: "/storage/emulated/0",
+          parentPath: "/storage/emulated",
+          directories: [
+            {
+              path: "/storage/emulated/0/Pictures",
+              label: "Pictures",
+            },
+          ],
+        };
+      });
       controller.onInvoke("scan_folder", (args) => {
-        expect(args?.folderPath).toBe("content://tree/pictures");
-        expect(args?.folderLabel).toBe("Pictures");
+        expect(args?.folderPath).toBe("/storage/emulated/0/Pictures");
+        expect(args?.folderLabel).toBe("/storage/emulated/0/Pictures");
         return {
           files: [
             createFile({
               id: "f1",
               name: "photo.jpg",
               kind: "image",
-              path: "Pictures/photo.jpg",
+              path: "/storage/emulated/0/Pictures/photo.jpg",
             }),
           ],
           total: 1,
@@ -644,10 +663,12 @@ describe("App integration", () => {
       render(<App />);
 
       await clickFolderPicker(user);
+      await user.click(screen.getByRole("button", { name: "Pictures" }));
+      await user.click(screen.getByRole("button", { name: "Use this folder" }));
       expect(desktopOpen).not.toHaveBeenCalled();
       await user.click(screen.getByRole("button", { name: "Scan folder" }));
 
-      await screen.findByText("Pictures/photo.jpg");
+      await screen.findByText("/storage/emulated/0/Pictures/photo.jpg");
     });
   });
 
@@ -658,9 +679,28 @@ describe("App integration", () => {
       window.__TIDY_DESKTOP_BRIDGE__ = controller.bridge;
 
       controller.onInvoke("pick_android_directory", () => ({
-        token: "content://tree/pictures",
-        label: "Pictures",
+        token: "/storage/emulated/0",
+        label: "/storage/emulated/0",
       }));
+      controller.onInvoke("list_local_directories", (args) => {
+        if (args?.path === "/storage/emulated/0/Pictures") {
+          return {
+            currentPath: "/storage/emulated/0/Pictures",
+            parentPath: "/storage/emulated/0",
+            directories: [],
+          };
+        }
+        return {
+          currentPath: "/storage/emulated/0",
+          parentPath: "/storage/emulated",
+          directories: [
+            {
+              path: "/storage/emulated/0/Pictures",
+              label: "Pictures",
+            },
+          ],
+        };
+      });
       controller.onInvoke("scan_folder", () => ({
         files: [
           createFile({
@@ -677,6 +717,8 @@ describe("App integration", () => {
       render(<App />);
 
       await clickFolderPicker(user);
+      await user.click(screen.getByRole("button", { name: "Pictures" }));
+      await user.click(screen.getByRole("button", { name: "Use this folder" }));
       await user.click(screen.getByRole("button", { name: "Scan folder" }));
 
       expect(await screen.findByRole("button", { name: "Open file" })).toBeDisabled();

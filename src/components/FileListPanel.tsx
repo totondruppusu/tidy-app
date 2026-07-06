@@ -12,6 +12,7 @@ import type {
 type SearchControls = {
   currentFolder: string | null;
   folderLabel: string;
+  emptyFolderLabel: string;
   filterMode: FilterMode;
   onPickFolder: () => void | Promise<void>;
   onFilterModeChange: (value: FilterMode) => void;
@@ -102,7 +103,7 @@ export const FileListPanel = ({
         >
           <span className="pill-label">Folder</span>
           <span className="pill-value">
-            {search.currentFolder ? search.folderLabel : "Select folder…"}
+            {search.currentFolder ? search.folderLabel : search.emptyFolderLabel}
           </span>
         </button>
         <div className="toolbar-control">

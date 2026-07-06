@@ -1,7 +1,9 @@
-import type {
-  PointerEventHandler,
-  Ref,
-  WheelEventHandler,
+import {
+  useEffect,
+  useState,
+  type PointerEventHandler,
+  type Ref,
+  type WheelEventHandler,
 } from "react";
 import { LARGE_PREVIEW_SIZE_BYTES } from "../constants/appConstants";
 import type { FileEntry } from "../types";
@@ -9,10 +11,7 @@ import { buildMediaUrl } from "../lib/media";
 import { extractFolder } from "../lib/path";
 import { formatBytes, formatKindLabel, formatTimestamp } from "../lib/format";
 import type { PreviewController } from "../hooks/usePreviewController";
-import type {
-  SwipeGestureAction,
-  SwipeGestureController,
-} from "../hooks/useSwipeGestureController";
+import type { SwipeGestureController } from "../hooks/useSwipeGestureController";
 import { MarkdownPreview } from "./MarkdownPreview";
 import { TextPreview } from "./TextPreview";
 
@@ -26,76 +25,26 @@ type PreviewPanelProps = {
   videoRef: Ref<HTMLVideoElement>;
   audioRef: Ref<HTMLAudioElement>;
   gesture: SwipeGestureController;
+  isAndroidApp: boolean;
+  isSettingsOpen: boolean;
   canOpenFile: boolean;
+  onOpenSettings: () => void;
   onOpenFile: (file: FileEntry) => void | Promise<void>;
 };
 
-const GESTURE_LABELS: Record<SwipeGestureAction, string> = {
-  prev: "Previous file",
-  next: "Next file",
-  trash: "Trash file",
-  undo: "Undo action",
-};
-
-const renderGestureHandle = (gesture: SwipeGestureController) => {
+export const PreviewGestureLegend = ({
+  gesture,
+}: {
+  gesture: SwipeGestureController;
+}) => {
   if (!gesture.enabled) {
     return null;
   }
-  const activeLabel = gesture.activeAction
-    ? GESTURE_LABELS[gesture.activeAction]
-    : "Swipe to browse";
   return (
     <div className="preview-gesture-shell" aria-live="polite">
-      <div
-        className={`preview-gesture-hint${
-          gesture.isBlocked ? " is-disabled" : ""
-        }`}
-      >
-        Left next, right previous, up trash, down undo
-      </div>
-      <button
-        type="button"
-        className={`preview-gesture-handle${
-          gesture.isDragging ? " is-dragging" : ""
-        }${
-          gesture.activeAction && gesture.activeActionAvailable
-            ? ` is-${gesture.activeAction}`
-            : ""
-        }${
-          gesture.activeAction && !gesture.activeActionAvailable
-            ? " is-unavailable"
-            : ""
-        }${gesture.isBlocked ? " is-disabled" : ""}`}
-        aria-label="Swipe actions"
-        aria-describedby="preview-gesture-map"
-        title="Swipe left for next, right for previous, up to trash, down to undo"
-        onPointerDown={
-          gesture.handlePointerDown as PointerEventHandler<HTMLButtonElement>
-        }
-        onPointerMove={
-          gesture.handlePointerMove as PointerEventHandler<HTMLButtonElement>
-        }
-        onPointerUp={
-          gesture.handlePointerUp as PointerEventHandler<HTMLButtonElement>
-        }
-        onPointerCancel={
-          gesture.handlePointerCancel as PointerEventHandler<HTMLButtonElement>
-        }
-        data-active-action={gesture.activeAction ?? "idle"}
-        style={{
-          transform: `translate(${gesture.offsetX}px, ${gesture.offsetY}px)`,
-        }}
-      >
-        <span className="preview-gesture-handle-bar" aria-hidden="true" />
-        <span className="preview-gesture-label">
-          {gesture.activeAction && !gesture.activeActionAvailable
-            ? `${activeLabel} unavailable`
-            : activeLabel}
-        </span>
-      </button>
       <div id="preview-gesture-map" className="preview-gesture-map">
-        <span className={!gesture.canNext ? "is-disabled" : ""}>← Next</span>
-        <span className={!gesture.canPrev ? "is-disabled" : ""}>→ Previous</span>
+        <span className={!gesture.canPrev ? "is-disabled" : ""}>← Previous</span>
+        <span className={!gesture.canNext ? "is-disabled" : ""}>→ Next</span>
         <span className={!gesture.canTrash ? "is-disabled" : ""}>↑ Trash</span>
         <span className={!gesture.canUndo ? "is-disabled" : ""}>↓ Undo</span>
       </div>
@@ -113,19 +62,129 @@ export const PreviewPanel = ({
   videoRef,
   audioRef,
   gesture,
+  isAndroidApp,
+  isSettingsOpen,
   canOpenFile,
+  onOpenSettings,
   onOpenFile,
 }: PreviewPanelProps) => {
   const previewFile = preview.previewFile;
+  const [isInfoOpen, setIsInfoOpen] = useState(false);
+
+  useEffect(() => {
+    setIsInfoOpen(false);
+  }, [isAndroidApp, previewFile?.id]);
+
+  const shouldUseAndroidFloatingInfo = isAndroidApp;
+
+  const detailsContent = previewFile ? (
+    <div className="file-meta">
+      <div>
+        <span className="meta-label">Name</span>
+        <span className="meta-value">{previewFile.name}</span>
+      </div>
+      <div>
+        <span className="meta-label">Type</span>
+        <span className="meta-value">{formatKindLabel(previewFile.kind)}</span>
+      </div>
+      <div>
+        <span className="meta-label">Extension</span>
+        <span className="meta-value">
+          {preview.previewExtension === "none"
+            ? "None"
+            : `.${preview.previewExtension}`}
+        </span>
+      </div>
+      <div>
+        <span className="meta-label">MIME</span>
+        <span className="meta-value">{previewFile.mime}</span>
+      </div>
+      <div>
+        <span className="meta-label">Size</span>
+        <span className="meta-value">{formatBytes(previewFile.sizeBytes)}</span>
+      </div>
+      <div>
+        <span className="meta-label">Modified</span>
+        <span className="meta-value">
+          {formatTimestamp(previewFile.modifiedMs)}
+        </span>
+      </div>
+      <div>
+        <span className="meta-label">Folder</span>
+        <span className="meta-value">{extractFolder(previewFile.path)}</span>
+      </div>
+      <div>
+        <span className="meta-label">Folder size</span>
+        <span className="meta-value">{formatBytes(folderSizeBytes)}</span>
+      </div>
+      <div>
+        <span className="meta-label">Full path</span>
+        <span className="meta-value mono">{previewFile.path}</span>
+      </div>
+      <div>
+        <span className="meta-label">Position</span>
+        <span className="meta-value">
+          {preview.previewIndex + 1} of {filteredCount}
+        </span>
+      </div>
+      <div>
+        <span className="meta-label">ID</span>
+        <span className="meta-value mono">{previewFile.id}</span>
+      </div>
+    </div>
+  ) : null;
 
   if (!previewFile) {
     return (
       <div className="preview-frame scroll-hints" ref={frameRef}>
         <section className="preview-panel" ref={scrollRef}>
-          <div className="preview-message">
+          <div
+            className={`preview-message${
+              gesture.enabled ? " preview-media-swipeable" : ""
+            }${
+              gesture.isDragging ? " is-dragging" : ""
+            }${
+              gesture.activeAction && gesture.activeActionAvailable
+                ? ` is-${gesture.activeAction}`
+                : ""
+            }${
+              gesture.activeAction && !gesture.activeActionAvailable
+                ? " is-unavailable"
+                : ""
+            }${gesture.isBlocked ? " is-disabled" : ""}`}
+            aria-label={gesture.enabled ? gesture.surfaceLabel : undefined}
+            data-active-action={gesture.activeAction ?? "idle"}
+            style={
+              gesture.enabled
+                ? {
+                    transform: `translate(${gesture.offsetX}px, ${gesture.offsetY}px)`,
+                  }
+                : undefined
+            }
+            onPointerDown={
+              gesture.enabled
+                ? (gesture.handlePointerDown as PointerEventHandler<HTMLDivElement>)
+                : undefined
+            }
+            onPointerMove={
+              gesture.enabled
+                ? (gesture.handlePointerMove as PointerEventHandler<HTMLDivElement>)
+                : undefined
+            }
+            onPointerUp={
+              gesture.enabled
+                ? (gesture.handlePointerUp as PointerEventHandler<HTMLDivElement>)
+                : undefined
+            }
+            onPointerCancel={
+              gesture.enabled
+                ? (gesture.handlePointerCancel as PointerEventHandler<HTMLDivElement>)
+                : undefined
+            }
+          >
             <div className="placeholder">Select a folder to preview files.</div>
           </div>
-          {renderGestureHandle(gesture)}
+          {!isAndroidApp && <PreviewGestureLegend gesture={gesture} />}
         </section>
       </div>
     );
@@ -137,8 +196,49 @@ export const PreviewPanel = ({
         <div className="preview-content">
           <div className="preview-layout">
             <div
-              className="preview-media"
+              className={`preview-media${
+                gesture.enabled ? " preview-media-swipeable" : ""
+              }${
+                gesture.isDragging ? " is-dragging" : ""
+              }${
+                gesture.activeAction && gesture.activeActionAvailable
+                  ? ` is-${gesture.activeAction}`
+                  : ""
+              }${
+                gesture.activeAction && !gesture.activeActionAvailable
+                  ? " is-unavailable"
+                  : ""
+              }${gesture.isBlocked ? " is-disabled" : ""}`}
+              aria-label={gesture.enabled ? gesture.surfaceLabel : undefined}
+              data-active-action={gesture.activeAction ?? "idle"}
+              style={
+                gesture.enabled
+                  ? {
+                      transform: `translate(${gesture.offsetX}px, ${gesture.offsetY}px)`,
+                    }
+                  : undefined
+              }
               onWheel={preview.handlePreviewWheel as WheelEventHandler<HTMLDivElement>}
+              onPointerDown={
+                gesture.enabled
+                  ? (gesture.handlePointerDown as PointerEventHandler<HTMLDivElement>)
+                  : undefined
+              }
+              onPointerMove={
+                gesture.enabled
+                  ? (gesture.handlePointerMove as PointerEventHandler<HTMLDivElement>)
+                  : undefined
+              }
+              onPointerUp={
+                gesture.enabled
+                  ? (gesture.handlePointerUp as PointerEventHandler<HTMLDivElement>)
+                  : undefined
+              }
+              onPointerCancel={
+                gesture.enabled
+                  ? (gesture.handlePointerCancel as PointerEventHandler<HTMLDivElement>)
+                  : undefined
+              }
             >
               {preview.isPreviewSuppressed && (
                 <div className="preview-suppressed">
@@ -168,16 +268,24 @@ export const PreviewPanel = ({
                         : `scale(${preview.previewZoom})`,
                   }}
                   onPointerDown={
-                    preview.handlePreviewPanStart as PointerEventHandler<HTMLDivElement>
+                    gesture.enabled
+                      ? undefined
+                      : (preview.handlePreviewPanStart as PointerEventHandler<HTMLDivElement>)
                   }
                   onPointerMove={
-                    preview.handlePreviewPanMove as PointerEventHandler<HTMLDivElement>
+                    gesture.enabled
+                      ? undefined
+                      : (preview.handlePreviewPanMove as PointerEventHandler<HTMLDivElement>)
                   }
                   onPointerUp={
-                    preview.handlePreviewPanEnd as PointerEventHandler<HTMLDivElement>
+                    gesture.enabled
+                      ? undefined
+                      : (preview.handlePreviewPanEnd as PointerEventHandler<HTMLDivElement>)
                   }
                   onPointerCancel={
-                    preview.handlePreviewPanEnd as PointerEventHandler<HTMLDivElement>
+                    gesture.enabled
+                      ? undefined
+                      : (preview.handlePreviewPanEnd as PointerEventHandler<HTMLDivElement>)
                   }
                 >
                   {previewFile.kind === "image" && (
@@ -321,7 +429,7 @@ export const PreviewPanel = ({
                   <div className="preview-fallback-hint">No rich preview available.</div>
                 </div>
               )}
-              {renderGestureHandle(gesture)}
+              {!isAndroidApp && <PreviewGestureLegend gesture={gesture} />}
             </div>
             <div className="preview-actions">
               <button
@@ -337,6 +445,36 @@ export const PreviewPanel = ({
               >
                 Open file
               </button>
+              {shouldUseAndroidFloatingInfo && (
+                <>
+                  <button
+                    type="button"
+                    className="icon-button preview-bar-button"
+                    aria-label={isInfoOpen ? "Hide file details" : "Show file details"}
+                    aria-expanded={isInfoOpen}
+                    aria-controls="preview-details-sheet"
+                    onClick={() => setIsInfoOpen((current) => !current)}
+                    title={isInfoOpen ? "Hide file details" : "Show file details"}
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                      <path d="M12 2.75A9.25 9.25 0 1 0 21.25 12 9.26 9.26 0 0 0 12 2.75Zm0 3.5a1.2 1.2 0 1 1-1.2 1.2 1.2 1.2 0 0 1 1.2-1.2Zm1.5 11h-3v-1.5h.75v-4h-.75v-1.5H12.75v5.5h.75Z" />
+                    </svg>
+                  </button>
+                  <button
+                    type="button"
+                    className="icon-button preview-bar-button"
+                    onClick={onOpenSettings}
+                    aria-label="Open settings"
+                    aria-haspopup="dialog"
+                    aria-expanded={isSettingsOpen}
+                    title="Open settings"
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                      <path d="M19.14 12.94c.04-.31.06-.63.06-.94s-.02-.63-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.02 7.02 0 0 0-1.62-.94l-.36-2.54a.5.5 0 0 0-.5-.42h-3.84a.5.5 0 0 0-.5.42l-.36 2.54c-.57.23-1.12.54-1.62.94l-2.39-.96a.5.5 0 0 0-.6.22L2.61 7.86a.5.5 0 0 0 .12.64l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58a.5.5 0 0 0-.12.64l1.92 3.32c.13.22.39.3.6.22l2.39-.96c.5.4 1.05.71 1.62.94l.36 2.54c.05.24.26.42.5.42h3.84c.25 0 .46-.18.5-.42l.36-2.54c.57-.23 1.12-.54 1.62-.94l2.39.96c.22.08.47 0 .6-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58ZM12 15.5A3.5 3.5 0 1 1 12 8a3.5 3.5 0 0 1 0 7.5Z" />
+                    </svg>
+                  </button>
+                </>
+              )}
               <div className="preview-zoom-controls">
                 <button
                   type="button"
@@ -377,67 +515,48 @@ export const PreviewPanel = ({
               </div>
             </div>
             <div className="caption" aria-hidden="true" />
-            <aside className="preview-details" aria-label="File details">
-              <div className="file-meta">
-                <div>
-                  <span className="meta-label">Name</span>
-                  <span className="meta-value">{previewFile.name}</span>
-                </div>
-                <div>
-                  <span className="meta-label">Type</span>
-                  <span className="meta-value">{formatKindLabel(previewFile.kind)}</span>
-                </div>
-                <div>
-                  <span className="meta-label">Extension</span>
-                  <span className="meta-value">
-                    {preview.previewExtension === "none"
-                      ? "None"
-                      : `.${preview.previewExtension}`}
-                  </span>
-                </div>
-                <div>
-                  <span className="meta-label">MIME</span>
-                  <span className="meta-value">{previewFile.mime}</span>
-                </div>
-                <div>
-                  <span className="meta-label">Size</span>
-                  <span className="meta-value">
-                    {formatBytes(previewFile.sizeBytes)}
-                  </span>
-                </div>
-                <div>
-                  <span className="meta-label">Modified</span>
-                  <span className="meta-value">
-                    {formatTimestamp(previewFile.modifiedMs)}
-                  </span>
-                </div>
-                <div>
-                  <span className="meta-label">Folder</span>
-                  <span className="meta-value">{extractFolder(previewFile.path)}</span>
-                </div>
-                <div>
-                  <span className="meta-label">Folder size</span>
-                  <span className="meta-value">{formatBytes(folderSizeBytes)}</span>
-                </div>
-                <div>
-                  <span className="meta-label">Full path</span>
-                  <span className="meta-value mono">{previewFile.path}</span>
-                </div>
-                <div>
-                  <span className="meta-label">Position</span>
-                  <span className="meta-value">
-                    {preview.previewIndex + 1} of {filteredCount}
-                  </span>
-                </div>
-                <div>
-                  <span className="meta-label">ID</span>
-                  <span className="meta-value mono">{previewFile.id}</span>
-                </div>
-              </div>
-            </aside>
+            {!shouldUseAndroidFloatingInfo && (
+              <aside className="preview-details" aria-label="File details">
+                {detailsContent}
+              </aside>
+            )}
           </div>
         </div>
       </section>
+      {shouldUseAndroidFloatingInfo && isInfoOpen && (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onClick={(event) => {
+            if (event.target === event.currentTarget) {
+              setIsInfoOpen(false);
+            }
+          }}
+        >
+          <section
+            id="preview-details-sheet"
+            className="modal-panel preview-info-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="File details"
+          >
+            <div className="preview-details-sheet-header">
+              <div className="preview-details-sheet-title">File details</div>
+              <button
+                type="button"
+                className="icon-button"
+                onClick={() => setIsInfoOpen(false)}
+                aria-label="Close file details"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                  <path d="M18.3 5.7a1 1 0 0 0-1.4 0L12 10.6 7.1 5.7a1 1 0 1 0-1.4 1.4L10.6 12l-4.9 4.9a1 1 0 1 0 1.4 1.4L12 13.4l4.9 4.9a1 1 0 0 0 1.4-1.4L13.4 12l4.9-4.9a1 1 0 0 0 0-1.4Z" />
+                </svg>
+              </button>
+            </div>
+            <div className="preview-info-modal-body">{detailsContent}</div>
+          </section>
+        </div>
+      )}
     </div>
   );
 };

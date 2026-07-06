@@ -158,10 +158,12 @@ test.beforeEach(async ({ page }) => {
 });
 
 const swipeHandle = async (page: Page, deltaX: number, deltaY: number) => {
-  const handle = page.getByRole("button", { name: "Swipe actions" });
-  const box = await handle.boundingBox();
+  const surface = page.getByLabel(
+    "Swipe the preview: left previous, right next, up trash, down undo",
+  );
+  const box = await surface.boundingBox();
   if (!box) {
-    throw new Error("Swipe handle not found");
+    throw new Error("Swipe preview surface not found");
   }
   const startX = box.x + box.width / 2;
   const startY = box.y + box.height / 2;
@@ -209,7 +211,7 @@ test("trash and undo restores file", async ({ page }) => {
   await expect(page.locator(".file-list .filename", { hasText: "alpha.txt" })).toBeVisible();
 });
 
-test("mobile viewport swaps directional buttons for the swipe handle", async ({
+test("mobile viewport swaps directional buttons for preview swipes", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 390, height: 844 });
@@ -217,11 +219,14 @@ test("mobile viewport swaps directional buttons for the swipe handle", async ({
   await page.getByRole("button", { name: "Scan folder" }).click();
   await closeSidebarIfOpen(page);
 
-  await expect(page.getByRole("button", { name: "Swipe actions" })).toBeVisible();
+  await expect(
+    page.getByLabel("Swipe the preview: left previous, right next, up trash, down undo"),
+  ).toBeVisible();
   await expect(page.getByRole("button", { name: "Prev ←" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Next →" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Trash ↑" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Undo ↓" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Swipe actions" })).toHaveCount(0);
 });
 
 test("mobile swipe gestures navigate files", async ({ page }) => {
@@ -231,10 +236,10 @@ test("mobile swipe gestures navigate files", async ({ page }) => {
   await closeSidebarIfOpen(page);
   await expect(page.getByText("/mock/alpha.txt")).toBeVisible();
 
-  await swipeHandle(page, -90, 0);
+  await swipeHandle(page, 90, 0);
   await expect(page.getByText("/mock/old.zip")).toBeVisible();
 
-  await swipeHandle(page, 90, 0);
+  await swipeHandle(page, -90, 0);
   await expect(page.getByText("/mock/alpha.txt")).toBeVisible();
 });
 

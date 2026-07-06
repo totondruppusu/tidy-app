@@ -94,7 +94,7 @@ import { HelpModal } from "../components/HelpModal";
 import { CrashReportModal } from "../components/CrashReportModal";
 import { DestinationSlots } from "../components/DestinationSlots";
 import { FileListPanel } from "../components/FileListPanel";
-import { PreviewPanel } from "../components/PreviewPanel";
+import { PreviewGestureLegend, PreviewPanel } from "../components/PreviewPanel";
 import { SettingsModal } from "../components/SettingsModal";
 import { SuggestionsModal } from "../components/SuggestionsModal";
 import { Toolbar } from "../components/Toolbar";
@@ -3328,6 +3328,7 @@ export default function App() {
         isSidebarCollapsed={isSidebarCollapsed}
         isDrawerMode={isDrawerMode}
         isSettingsOpen={isSettingsOpen}
+        showSettingsButton={!isAndroidApp}
         showWindowControls={isWindowsDesktop}
         isWindowMaximized={isWindowMaximized}
         onToggleSidebar={toggleSidebar}
@@ -3397,7 +3398,10 @@ export default function App() {
             videoRef={videoRef}
             audioRef={audioRef}
             gesture={swipeGesture}
+            isAndroidApp={isAndroidApp}
+            isSettingsOpen={isSettingsOpen}
             canOpenFile={!isAndroidApp}
+            onOpenSettings={() => setIsSettingsOpen(true)}
             onOpenFile={openFileInSystem}
           />
         </main>
@@ -3463,6 +3467,9 @@ export default function App() {
             )}
           </div>
         </footer>
+        {isGestureMode && isAndroidApp && (
+          <PreviewGestureLegend gesture={swipeGesture} />
+        )}
       </div>
 
       {activeBlockingOverlay && (

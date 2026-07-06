@@ -80,7 +80,7 @@ describe("App integration", () => {
     await user.click(picker!);
   };
 
-  const swipeHandle = async (
+  const swipeSurface = async (
     target: HTMLElement,
     deltaX: number,
     deltaY: number,
@@ -501,7 +501,7 @@ describe("App integration", () => {
     );
   });
 
-  it("switches narrow layouts to the swipe handle and hides directional buttons", async () => {
+  it("switches narrow layouts to preview swipes and hides directional buttons", async () => {
     mockNarrowLayout();
     const controller = createMockBridge();
     installBaseHandlers(controller);
@@ -521,7 +521,12 @@ describe("App integration", () => {
     expect(screen.queryByRole("button", { name: "Next →" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Trash ↑" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Undo ↓" })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Swipe actions" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Swipe actions" })).not.toBeInTheDocument();
+    expect(
+      screen.getByLabelText(
+        "Swipe the preview: left previous, right next, up trash, down undo",
+      ),
+    ).toBeInTheDocument();
   });
 
   it("uses swipe gestures for next and previous selection on narrow layouts", async () => {
@@ -544,11 +549,13 @@ describe("App integration", () => {
     await user.click(screen.getByRole("button", { name: "Scan folder" }));
     await screen.findByText("/mock/alpha.txt");
 
-    const handle = screen.getByRole("button", { name: "Swipe actions" });
-    await swipeHandle(handle, -80, 0);
+    const previewSurface = screen.getByLabelText(
+      "Swipe the preview: left previous, right next, up trash, down undo",
+    );
+    await swipeSurface(previewSurface, 80, 0);
     await waitFor(() => expect(screen.getByText("/mock/beta.txt")).toBeInTheDocument());
 
-    await swipeHandle(handle, 80, 0);
+    await swipeSurface(previewSurface, -80, 0);
     await waitFor(() => expect(screen.getByText("/mock/alpha.txt")).toBeInTheDocument());
   });
 
@@ -573,13 +580,21 @@ describe("App integration", () => {
       expect(container.querySelector(".file-list")?.textContent).toContain("doc.txt")
     );
 
-    const handle = screen.getByRole("button", { name: "Swipe actions" });
-    await swipeHandle(handle, 0, -80);
+    const previewSurface = screen.getByLabelText(
+      "Swipe the preview: left previous, right next, up trash, down undo",
+    );
+    await swipeSurface(previewSurface, 0, -80);
     await waitFor(() =>
       expect(container.querySelector(".file-list")?.textContent ?? "").not.toContain("doc.txt")
     );
 
-    await swipeHandle(screen.getByRole("button", { name: "Swipe actions" }), 0, 80);
+    await swipeSurface(
+      screen.getByLabelText(
+        "Swipe the preview: left previous, right next, up trash, down undo",
+      ),
+      0,
+      80,
+    );
     await waitFor(() =>
       expect(container.querySelector(".file-list")?.textContent).toContain("doc.txt")
     );
@@ -606,8 +621,10 @@ describe("App integration", () => {
     await screen.findByText("/mock/alpha.txt");
     await user.click(screen.getByRole("button", { name: "Open settings" }));
 
-    const handle = screen.getByRole("button", { name: "Swipe actions" });
-    await swipeHandle(handle, -80, 0);
+    const previewSurface = screen.getByLabelText(
+      "Swipe the preview: left previous, right next, up trash, down undo",
+    );
+    await swipeSurface(previewSurface, 80, 0);
 
     expect(screen.getByText("/mock/alpha.txt")).toBeInTheDocument();
   });
@@ -705,9 +722,9 @@ describe("App integration", () => {
         files: [
           createFile({
             id: "f1",
-            name: "photo.jpg",
-            kind: "image",
-            path: "Pictures/photo.jpg",
+            name: "notes.txt",
+            kind: "text",
+            path: "Pictures/notes.txt",
           }),
         ],
         total: 1,
@@ -722,6 +739,67 @@ describe("App integration", () => {
       await user.click(screen.getByRole("button", { name: "Scan folder" }));
 
       expect(await screen.findByRole("button", { name: "Open file" })).toBeDisabled();
+    });
+  });
+
+  it("moves Android details and settings into the preview action bar", async () => {
+    await withAndroidUserAgent(async () => {
+      const controller = createMockBridge();
+      installBaseHandlers(controller);
+      window.__TIDY_DESKTOP_BRIDGE__ = controller.bridge;
+
+      controller.onInvoke("pick_android_directory", () => ({
+        token: "/storage/emulated/0",
+        label: "/storage/emulated/0",
+      }));
+      controller.onInvoke("list_local_directories", (args) => {
+        if (args?.path === "/storage/emulated/0/Pictures") {
+          return {
+            currentPath: "/storage/emulated/0/Pictures",
+            parentPath: "/storage/emulated/0",
+            directories: [],
+          };
+        }
+        return {
+          currentPath: "/storage/emulated/0",
+          parentPath: "/storage/emulated",
+          directories: [
+            {
+              path: "/storage/emulated/0/Pictures",
+              label: "Pictures",
+            },
+          ],
+        };
+      });
+      controller.onInvoke("scan_folder", () => ({
+        files: [
+          createFile({
+            id: "f1",
+            name: "notes.txt",
+            kind: "text",
+            path: "Pictures/notes.txt",
+          }),
+        ],
+        total: 1,
+      }));
+
+      const user = userEvent.setup();
+      render(<App />);
+
+      expect(screen.queryByRole("button", { name: "Open settings" })).not.toBeInTheDocument();
+
+      await clickFolderPicker(user);
+      await user.click(screen.getByRole("button", { name: "Pictures" }));
+      await user.click(screen.getByRole("button", { name: "Use this folder" }));
+      await user.click(screen.getByRole("button", { name: "Scan folder" }));
+
+      await screen.findByText("notes.txt");
+      expect(screen.queryByLabelText("File details")).not.toBeInTheDocument();
+      expect(await screen.findByRole("button", { name: "Open settings" })).toBeInTheDocument();
+
+      await user.click(screen.getByRole("button", { name: "Show file details" }));
+      expect(await screen.findByLabelText("File details")).toBeInTheDocument();
+      expect(screen.getByText("Full path")).toBeInTheDocument();
     });
   });
 

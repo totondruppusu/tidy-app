@@ -46,7 +46,7 @@ const resolveGestureAction = (
     return null;
   }
   if (Math.abs(deltaX) >= Math.abs(deltaY)) {
-    return deltaX < 0 ? "next" : "prev";
+    return deltaX < 0 ? "prev" : "next";
   }
   return deltaY < 0 ? "trash" : "undo";
 };
@@ -168,6 +168,8 @@ export const useSwipeGestureController = ({
       canNext: actions.next.enabled,
       canTrash: actions.trash.enabled,
       canUndo: actions.undo.enabled,
+      surfaceLabel:
+        "Swipe the preview: left previous, right next, up trash, down undo",
       handlePointerDown,
       handlePointerMove,
       handlePointerUp,

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { mockConvertFileSrc } from "@tauri-apps/api/mocks";
 import { getExtension } from "../../src/lib/files";
 import { buildFileTree, getFolderCollapseKey } from "../../src/lib/tree";
 import { extractFolder, formatRelativeFolder, getRelativeSegments, splitPathSegments } from "../../src/lib/path";
@@ -88,10 +89,12 @@ describe("files/path/tree/dom/media", () => {
   });
 
   it("builds media urls by platform", () => {
+    mockConvertFileSrc("windows");
     window.__TIDY_DESKTOP_BRIDGE__ = { isTauri: () => true };
-    const uaSpy = vi.spyOn(window.navigator, "userAgent", "get").mockReturnValue("Windows");
     expect(buildMediaUrl("abc")).toBe("http://media.localhost/abc");
-    uaSpy.mockRestore();
+
+    mockConvertFileSrc("linux");
+    expect(buildMediaUrl("preview:abc.png")).toBe("media://localhost/preview%3Aabc.png");
 
     window.__TIDY_DESKTOP_BRIDGE__ = { isTauri: () => false };
     expect(buildMediaUrl("abc")).toBe("media://localhost/abc");

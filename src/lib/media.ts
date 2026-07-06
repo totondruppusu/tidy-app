@@ -1,8 +1,9 @@
+import { convertFileSrc } from "@tauri-apps/api/core";
 import { isDesktopRuntime } from "./desktopBridge";
 
 export const buildMediaUrl = (id: string) => {
-  if (isDesktopRuntime() && /windows/i.test(navigator.userAgent)) {
-    return `http://media.localhost/${id}`;
+  if (isDesktopRuntime()) {
+    return convertFileSrc(id, "media");
   }
   return `media://localhost/${id}`;
 };

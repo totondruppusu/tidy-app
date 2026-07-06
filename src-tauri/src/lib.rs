@@ -4,6 +4,7 @@ mod android_files;
 
 use image::ImageReader;
 use mime_guess::MimeGuess;
+use percent_encoding::percent_decode_str;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -5157,11 +5158,12 @@ fn protocol_response(
   app: &AppHandle,
   request: tauri::http::Request<Vec<u8>>,
 ) -> Result<Response<Vec<u8>>, Box<dyn std::error::Error + Send + Sync>> {
-  let id = request
+  let raw_id = request
     .uri()
     .path()
     .trim_start_matches('/')
     .to_string();
+  let id = percent_decode_str(&raw_id).decode_utf8_lossy().to_string();
   if id.is_empty() {
     return build_response(StatusCode::NOT_FOUND, HeaderMap::new(), Vec::new());
   }

@@ -3847,6 +3847,7 @@ dependencies = [
  "image",
  "mime_guess",
  "objc2-app-kit",
+ "percent-encoding",
  "rayon",
  "serde",
  "serde_json",

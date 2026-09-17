@@ -62,6 +62,7 @@ const installBridgeScript = () => {
 
     return {
       isTauri: () => true,
+      convertFileSrc: (path: string, protocol = "asset") => `${protocol}://localhost/${encodeURIComponent(path)}`,
       open: async () => "/mock",
       confirm: async () => true,
       listen: async () => () => {},
@@ -161,6 +162,10 @@ const swipeHandle = async (page: Page, deltaX: number, deltaY: number) => {
   const surface = page.getByLabel(
     "Swipe the preview: left previous, right next, up trash, down undo",
   );
+  await expect(surface).not.toHaveClass(/is-disabled/);
+  // Hover waits for the previous swipe's transform animation to settle and
+  // scrolls the surface into view before measuring the next gesture.
+  await surface.hover();
   const box = await surface.boundingBox();
   if (!box) {
     throw new Error("Swipe preview surface not found");

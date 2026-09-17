@@ -1,4 +1,4 @@
-import { invoke, isTauri } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { confirm, open } from "@tauri-apps/plugin-dialog";
@@ -27,6 +27,7 @@ export type BridgeConfirmOptions = {
 
 export type DesktopBridge = {
   isTauri: () => boolean;
+  convertFileSrc: (path: string, protocol?: string) => string;
   invoke: <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
   listen: <T>(event: string, handler: (event: BridgeListenerEvent<T>) => void) => Promise<BridgeUnlisten>;
   getCurrentWindow: () => BridgeWindow;
@@ -36,6 +37,7 @@ export type DesktopBridge = {
 
 const defaultBridge: DesktopBridge = {
   isTauri,
+  convertFileSrc,
   invoke,
   listen,
   getCurrentWindow: () => getCurrentWindow(),
@@ -71,3 +73,6 @@ export const setDesktopBridgeForTests = (bridge: Partial<DesktopBridge> | null) 
   }
   delete window.__TIDY_DESKTOP_BRIDGE__;
 };
+
+export const convertDesktopFileSrc = (path: string, protocol?: string) =>
+  getBridge().convertFileSrc(path, protocol);

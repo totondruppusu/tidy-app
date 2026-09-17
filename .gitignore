@@ -10,3 +10,6 @@ test-results
 playwright-report
 *.tsbuildinfo
 /src-tauri/gen/android/
+keystore.properties
+*.keystore
+*.jks

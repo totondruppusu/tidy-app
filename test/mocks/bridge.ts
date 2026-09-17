@@ -18,6 +18,7 @@ export const createMockBridge = (): MockBridgeController => {
 
   const bridge: Partial<DesktopBridge> = {
     isTauri: () => true,
+    convertFileSrc: (path, protocol = "asset") => `${protocol}://localhost/${encodeURIComponent(path)}`,
     invoke: async <T>(command: string, args?: Record<string, unknown>) => {
       const handler = handlers.get(command);
       if (!handler) {

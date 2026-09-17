@@ -685,7 +685,7 @@ describe("App integration", () => {
       expect(desktopOpen).not.toHaveBeenCalled();
       await user.click(screen.getByRole("button", { name: "Scan folder" }));
 
-      await screen.findByText("/storage/emulated/0/Pictures/photo.jpg");
+      expect((await screen.findAllByText("photo.jpg")).length).toBeGreaterThan(0);
     });
   });
 

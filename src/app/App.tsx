@@ -30,7 +30,6 @@ import type {
   TrashBehavior,
   TrashResult,
   TreeNode,
-  UndoAction,
   ViewMode,
   PickedDirectory,
   LocalDirectoryEntry,
@@ -42,7 +41,6 @@ import {
   EVENT_LOOP_LAG_WARN_MS,
   EVENT_LOOP_POLL_MS,
   HEARTBEAT_INTERVAL_MS,
-  MAX_UNDO_STACK,
   SETTINGS_KEY,
   TREE_INDENT_PX,
 } from "../constants/appConstants";
@@ -77,8 +75,10 @@ import {
   isDesktopRuntime,
   listenEvent,
 } from "../lib/desktopBridge";
+import { useScanController } from "../hooks/useScanController";
+import { useMutationController } from "../hooks/useMutationController";
+import { useUndoHistory, useUndoAction } from "../hooks/useUndoController";
 import { usePreviewController } from "../hooks/usePreviewController";
-import { useAsyncWorkflow } from "../hooks/useAsyncWorkflow";
 import { useSuggestionsController } from "../hooks/useSuggestionsController";
 import { useSwipeGestureController } from "../hooks/useSwipeGestureController";
 import { getInitialTheme, getStoredSettings } from "../lib/settings";
@@ -278,34 +278,16 @@ export default function App() {
   const [currentFolderToken, setCurrentFolderToken] = useState<string | null>(
     initialFolder,
   );
-  const {
-    isLoading,
-    start: startScanWorkflow,
-    succeed: succeedScanWorkflow,
-    fail: failScanWorkflow,
-    reset: resetScanWorkflow,
-    run: runScanWorkflow,
-  } = useAsyncWorkflow();
+  const { isLoading, runScanWorkflow, activeScanId, scanProgress, setScanProgress,
+    isCancellingScan, resetCancelScanWorkflow, scan, cancel } = useScanController();
   const [scanCachePrompt, setScanCachePrompt] =
     useState<ScanCachePromptState | null>(null);
-  const [isMutating, setIsMutating] = useState(false);
   const [blockingOverlay, setBlockingOverlay] =
     useState<BlockingOverlayState | null>(null);
-  const [mutationSpinnerLabel, setMutationSpinnerLabel] = useState<
-    string | null
-  >(null);
-  const mutationSpinnerTimeoutRef = useRef<number | null>(null);
-  const isMutatingRef = useRef(false);
+  const { isMutating, mutationSpinnerLabel, runMutationWithSpinner } = useMutationController(setBlockingOverlay);
   const resetSelectionToFirstRef = useRef(false);
   const blockingOverlayShowFrameRef = useRef<number | null>(null);
   const blockingOverlayHideFrameRef = useRef<number | null>(null);
-  const {
-    isLoading: isCancellingScan,
-    start: startCancelScanWorkflow,
-    fail: failCancelScanWorkflow,
-    reset: resetCancelScanWorkflow,
-  } = useAsyncWorkflow();
-  const [scanProgress, setScanProgress] = useState<ScanProgress | null>(null);
   const [renderCount, setRenderCount] = useState(0);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const settingsBodyRef = useRef<HTMLDivElement | null>(null);
@@ -365,14 +347,13 @@ export default function App() {
   const [isWindowMaximized, setIsWindowMaximized] = useState(false);
   const [isExtensionsCollapsed, setIsExtensionsCollapsed] = useState(true);
   const [theme, setTheme] = useState<ThemeMode>(getInitialTheme);
-  const [undoStack, setUndoStack] = useState<UndoAction[]>([]);
+  const { undoStack, setUndoStack, pushUndo } = useUndoHistory();
   const [collapsedGroups, setCollapsedGroups] = useState<
     Record<string, boolean>
   >({});
   const [collapsedFolders, setCollapsedFolders] = useState<
     Record<string, boolean>
   >({});
-  const activeScanId = useRef<string | null>(null);
   const scanBatchBufferRef = useRef<FileEntry[]>([]);
   const scanBatchRafRef = useRef<number | null>(null);
   const hasAutoLoadedFolderRef = useRef(false);
@@ -657,24 +638,6 @@ export default function App() {
     if (!isDesktopRuntime()) {
       return;
     }
-    let isMounted = true;
-    invokeCommand<UndoAction[]>("get_recent_undo_actions")
-      .then((actions) => {
-        if (!isMounted) {
-          return;
-        }
-        setUndoStack(Array.isArray(actions) ? actions : []);
-      })
-      .catch(() => {});
-    return () => {
-      isMounted = false;
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!isDesktopRuntime()) {
-      return;
-    }
     let lastTick = performance.now();
     const interval = window.setInterval(() => {
       const now = performance.now();
@@ -854,15 +817,6 @@ export default function App() {
     void applyWindowTheme();
   }, [theme]);
 
-  useEffect(() => {
-    if (!isDesktopRuntime()) {
-      return;
-    }
-    void invokeCommand("store_recent_undo_actions", {
-      actions: undoStack,
-    }).catch(() => {});
-  }, [undoStack]);
-
   const updateStatus = useCallback((message: string) => {
     lastStatusRef.current = message;
     setStatus(message);
@@ -1017,48 +971,7 @@ export default function App() {
     [runBlockingUiTransition],
   );
 
-  const runMutationWithSpinner = useCallback(
-    async (spinnerLabel: string, operation: () => Promise<void>) => {
-      if (isMutatingRef.current) {
-        return;
-      }
-      isMutatingRef.current = true;
-      setIsMutating(true);
-      setBlockingOverlay({
-        title: spinnerLabel.replace(/…$/, ""),
-        subtitle: "This operation is in progress. Please wait...",
-      });
-      if (mutationSpinnerTimeoutRef.current) {
-        window.clearTimeout(mutationSpinnerTimeoutRef.current);
-      }
-      mutationSpinnerTimeoutRef.current = window.setTimeout(() => {
-        setMutationSpinnerLabel(spinnerLabel);
-      }, 250);
-      try {
-        await operation();
-      } finally {
-        isMutatingRef.current = false;
-        setIsMutating(false);
-        if (mutationSpinnerTimeoutRef.current) {
-          window.clearTimeout(mutationSpinnerTimeoutRef.current);
-          mutationSpinnerTimeoutRef.current = null;
-        }
-        setMutationSpinnerLabel(null);
-        setBlockingOverlay(null);
-      }
-    },
-    [],
-  );
-
-  useEffect(() => {
-    return () => {
-      if (mutationSpinnerTimeoutRef.current) {
-        window.clearTimeout(mutationSpinnerTimeoutRef.current);
-        mutationSpinnerTimeoutRef.current = null;
-      }
-      clearBlockingOverlayFrames();
-    };
-  }, [clearBlockingOverlayFrames]);
+  useEffect(() => () => clearBlockingOverlayFrames(), [clearBlockingOverlayFrames]);
 
   const sortFiles = useCallback(
     (list: FileEntry[]) => {
@@ -1334,7 +1247,6 @@ export default function App() {
     currentFileIdRef.current = null;
     setCurrentIndex(0);
     setRenderCount(0);
-    setUndoStack([]);
     resetSuggestionsState();
     setCollapsedGroups({});
     setCollapsedFolders({});
@@ -1361,11 +1273,10 @@ export default function App() {
         viewMode === "tree" && Object.keys(nextCollapsedFolders).length > 0;
       setCurrentIndex(0);
       setRenderCount(0);
-      setUndoStack([]);
-      resetSuggestionsState();
+        resetSuggestionsState();
       setCollapsedGroups(nextCollapsedGroups);
       setCollapsedFolders(nextCollapsedFolders);
-      updateStatus(`Loaded ${uniqueFiles.length} items from ${folderLabel}.`);
+      updateStatus(`Loaded ${uniqueFiles.length} items from ${folderLabel}.${result.issues?.length ? ` ${result.issues.length} scan issue(s): ${result.issues[0].message}` : ""}`);
     },
     [
       buildInitialCollapsedGroups,
@@ -1378,81 +1289,16 @@ export default function App() {
     ],
   );
 
-  const runFreshScan = useCallback(
-    async (request: ScanCacheRequest, folderLabel: string) => {
-      const { folderPath: folderToken } = request;
-      setLastScanFilterMode(request.filterMode);
-      const scanId =
-        typeof crypto?.randomUUID === "function"
-          ? crypto.randomUUID()
-          : `${Date.now()}`;
-      activeScanId.current = scanId;
-      setScanCachePrompt(null);
-      resetCancelScanWorkflow();
-      startScanWorkflow();
-      setScanProgress({
-        scanId,
-        scanned: 0,
-        matched: 0,
-        total: 0,
-        phase: "indexing",
-      });
-      resetScanViewState();
-      updateStatus(
-        request.includeSubfolders
-          ? "Scanning folders and subfolders..."
-          : "Scanning folder...",
-      );
-      try {
-        const result = await invokeCommand<ScanResult>("scan_folder", {
-          ...request,
-          folderLabel,
-          scanId,
-        });
-        if (activeScanId.current !== scanId) {
-          return;
-        }
-        applyScanResult(folderLabel, folderToken, result);
-        if (!isAndroidApp) {
-          try {
-            await invokeCommand("store_cached_scan_result", { request, result });
-          } catch (cacheError) {
-            console.warn("Failed to store cached scan.", cacheError);
-          }
-        }
-        succeedScanWorkflow();
-      } catch (error) {
-        if (activeScanId.current !== scanId) {
-          return;
-        }
-        const message = String(error);
-        if (message.toLowerCase().includes("scan cancelled")) {
-          resetScanWorkflow();
-          updateStatus("Scan cancelled.");
-          return;
-        }
-        failScanWorkflow(message);
-        updateStatus(`Scan failed: ${message}`);
-      } finally {
-        if (activeScanId.current === scanId) {
-          setScanProgress(null);
-          activeScanId.current = null;
-          resetCancelScanWorkflow();
-        }
-      }
-    },
-    [
-      applyScanResult,
-      failScanWorkflow,
-      isAndroidApp,
-      resetCancelScanWorkflow,
-      resetScanViewState,
-      resetScanWorkflow,
-      startScanWorkflow,
-      succeedScanWorkflow,
+  const runFreshScan = useCallback((request: ScanCacheRequest, folderLabel: string) => {
+    setLastScanFilterMode(request.filterMode);
+    setScanCachePrompt(null);
+    return scan(request, folderLabel, {
+      reset: resetScanViewState,
+      apply: applyScanResult,
       updateStatus,
-    ],
-  );
+      cache: !isAndroidApp,
+    });
+  }, [scan, resetScanViewState, applyScanResult, updateStatus, isAndroidApp]);
 
   const loadCachedScan = useCallback(
     async (cachedScan: CachedScan) => {
@@ -1525,26 +1371,7 @@ export default function App() {
     updateStatus("Scan cancelled.");
   }, [updateStatus]);
 
-  const cancelActiveScan = useCallback(async () => {
-    const scanId = activeScanId.current;
-    if (!scanId || isCancellingScan) {
-      return;
-    }
-    startCancelScanWorkflow();
-    updateStatus("Stopping scan...");
-    try {
-      await invokeCommand("cancel_scan", { scanId });
-    } catch (error) {
-      const message = String(error);
-      failCancelScanWorkflow(message);
-      updateStatus(`Failed to stop scan: ${message}`);
-    }
-  }, [
-    failCancelScanWorkflow,
-    isCancellingScan,
-    startCancelScanWorkflow,
-    updateStatus,
-  ]);
+  const cancelActiveScan = useCallback(() => cancel(updateStatus), [cancel, updateStatus]);
 
   const pickFolder = useCallback(async () => {
     try {
@@ -2022,15 +1849,6 @@ export default function App() {
     [selectedExtensionsSet, sortFiles],
   );
 
-  const pushUndo = useCallback((action: UndoAction) => {
-    setUndoStack((prev) => {
-      const next = [action, ...prev];
-      return next.length > MAX_UNDO_STACK
-        ? next.slice(0, MAX_UNDO_STACK)
-        : next;
-    });
-  }, []);
-
   const trashCurrent = useCallback(async () => {
     if (!currentFile) {
       updateStatus("No file selected.");
@@ -2378,56 +2196,7 @@ export default function App() {
     setCurrentIndex(prevIndex);
   }, [currentFile, sortedIndexById]);
 
-  const undoLastAction = useCallback(async () => {
-    const lastAction = undoStack[0];
-    if (!lastAction) {
-      updateStatus("Nothing to undo.");
-      return;
-    }
-    if (lastAction.kind === "trash-folder") {
-      await runMutationWithSpinner("Restoring…", async () => {
-        try {
-          await invokeCommand("restore_folder", {
-            source: lastAction.trashPath,
-            destination: lastAction.folderPath,
-            files: lastAction.items.map((item) => ({
-              id: item.file.id,
-              relativePath: item.relativePath,
-            })),
-          });
-          lastAction.items.forEach((item) => restoreFileEntry(item.file));
-          setUndoStack((prev) => prev.slice(1));
-          updateStatus(`Restored ${lastAction.items.length} items.`);
-        } catch (error) {
-          updateStatus(`Undo failed: ${String(error)}`);
-        }
-      });
-      return;
-    }
-    const sourcePath =
-      lastAction.sourceToken ??
-      (lastAction.kind === "move" ? lastAction.toPath : lastAction.trashPath);
-    const destinationPath = lastAction.destinationToken ?? lastAction.fromPath;
-    await runMutationWithSpinner("Restoring…", async () => {
-      try {
-        await invokeCommand("restore_file", {
-          id: lastAction.file.id,
-          source: sourcePath,
-          destination: destinationPath,
-          fileName: lastAction.file.name,
-          mimeType: lastAction.file.mime,
-          displayPath: lastAction.file.path,
-          sizeBytes: lastAction.file.sizeBytes,
-          modifiedMs: lastAction.file.modifiedMs,
-        });
-        restoreFileEntry(lastAction.file);
-        setUndoStack((prev) => prev.slice(1));
-        updateStatus(`Undid ${lastAction.kind}.`);
-      } catch (error) {
-        updateStatus(`Undo failed: ${String(error)}`);
-      }
-    });
-  }, [undoStack, restoreFileEntry, updateStatus, runMutationWithSpinner]);
+  const undoLastAction = useUndoAction({ undoStack, setUndoStack, restoreFileEntry, updateStatus, runMutationWithSpinner });
 
   const toggleVideoPlayback = useCallback(() => {
     const video = videoRef.current;

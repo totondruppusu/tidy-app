@@ -67,6 +67,8 @@ export type OfficeFallbackPreview = {
 };
 
 export type ScanResult = {
+  indexed?: number;
+  issues?: ScanIssue[];
   files: FileEntry[];
   total: number;
 };

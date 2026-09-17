@@ -3845,6 +3845,7 @@ dependencies = [
  "bzip2",
  "flate2",
  "image",
+ "libc",
  "mime_guess",
  "objc2-app-kit",
  "percent-encoding",

@@ -1,6 +1,21 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod android_files;
+mod file_operations;
+mod media_protocol;
+mod operations;
+mod persistence;
+mod platform_preview;
+mod previews;
+mod scanning;
+
+use file_operations::*;
+use media_protocol::protocol_response;
+use operations::*;
+use persistence::*;
+use platform_preview::*;
+use previews::*;
+use scanning::*;
 
 use image::ImageReader;
 use mime_guess::MimeGuess;
@@ -182,8 +197,10 @@ struct AppState {
   hash_cache: Mutex<HashCache>,
   hash_cache_path: PathBuf,
   preview_map: Mutex<HashMap<String, String>>,
+  preview_jobs: Arc<Mutex<()>>,
   destination: Mutex<Option<ManagedDirectory>>,
   scan_cancellations: Mutex<HashMap<String, Arc<AtomicBool>>>,
+  scan_jobs: Mutex<()>,
   trash_dir: PathBuf,
 }
 
@@ -236,7 +253,6 @@ struct CrashReport {
   last_heartbeat_ms: Option<u64>,
 }
 
-static TRASH_CLEANED: AtomicBool = AtomicBool::new(false);
 
 const MAX_ARCHIVE_ENTRIES: usize = 200;
 const MAX_RANGE_CHUNK_BYTES: u64 = 1_048_576;
@@ -323,7 +339,7 @@ struct PreviewCapabilities {
   notes: Vec<String>,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ScanIssue {
   code: String,
@@ -517,6 +533,10 @@ struct OfficeFallbackPreview {
 struct ScanResult {
   files: Vec<FileEntry>,
   total: usize,
+  #[serde(default)]
+  indexed: usize,
+  #[serde(default)]
+  issues: Vec<ScanIssue>,
 }
 
 #[derive(Serialize)]
@@ -911,217 +931,6 @@ fn now_ms() -> u64 {
     .as_millis() as u64
 }
 
-fn history_file_path(app_handle: &AppHandle) -> Result<PathBuf, String> {
-  app_handle
-    .path()
-    .app_data_dir()
-    .map_err(|error| error.to_string())
-    .map(|dir| dir.join(OPERATION_HISTORY_FILE))
-}
-
-fn undo_actions_file_path(app_handle: &AppHandle) -> Result<PathBuf, String> {
-  app_handle
-    .path()
-    .app_data_dir()
-    .map_err(|error| error.to_string())
-    .map(|dir| dir.join(UNDO_ACTIONS_FILE))
-}
-
-fn batch_record_dir(app_handle: &AppHandle) -> Result<PathBuf, String> {
-  app_handle
-    .path()
-    .app_data_dir()
-    .map_err(|error| error.to_string())
-    .map(|dir| dir.join(APPLIED_BATCHES_DIR))
-}
-
-fn hash_cache_file_path(app_data_dir: &Path) -> PathBuf {
-  app_data_dir.join(HASH_CACHE_FILE)
-}
-
-fn scan_cache_dir(app_data_dir: &Path) -> PathBuf {
-  app_data_dir.join(SCAN_CACHE_DIR)
-}
-
-fn scan_cache_key(request: &ScanCacheRequest) -> String {
-  let payload = format!(
-    "{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}",
-    request.folder_path,
-    request.filter_mode,
-    request.include_subfolders,
-    request.include_hidden,
-    request.use_hash_for_duplicates,
-    request.duplicate_min_size_bytes
-  );
-  let mut hasher = Sha256::new();
-  hasher.update(payload.as_bytes());
-  format!("{:x}", hasher.finalize())
-}
-
-fn scan_cache_file_path(app_data_dir: &Path, request: &ScanCacheRequest) -> PathBuf {
-  scan_cache_dir(app_data_dir).join(format!("{}.json", scan_cache_key(request)))
-}
-
-fn load_hash_cache(path: &Path) -> HashCache {
-  fs::read_to_string(path)
-    .ok()
-    .and_then(|data| serde_json::from_str(&data).ok())
-    .unwrap_or_default()
-}
-
-fn store_hash_cache(path: &Path, cache: &HashCache) -> Result<(), String> {
-  if let Some(parent) = path.parent() {
-    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-  }
-  let serialized = serde_json::to_string(cache).map_err(|error| error.to_string())?;
-  fs::write(path, serialized).map_err(|error| error.to_string())
-}
-
-fn load_cached_scan(path: &Path) -> Option<CachedScan> {
-  fs::read_to_string(path)
-    .ok()
-    .and_then(|contents| serde_json::from_str(&contents).ok())
-}
-
-fn store_cached_scan(path: &Path, cached_scan: &CachedScan) -> Result<(), String> {
-  if let Some(parent) = path.parent() {
-    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-  }
-  let serialized =
-    serde_json::to_string(cached_scan).map_err(|error| error.to_string())?;
-  fs::write(path, serialized).map_err(|error| error.to_string())
-}
-
-fn modified_ms_from_metadata(metadata: &fs::Metadata) -> Option<u64> {
-  metadata
-    .modified()
-    .ok()
-    .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-    .map(|duration| duration.as_millis() as u64)
-}
-
-fn hash_cache_key(path: &Path, size_bytes: u64, modified_ms: Option<u64>) -> String {
-  format!(
-    "{}|{}|{}",
-    path.to_string_lossy(),
-    size_bytes,
-    modified_ms.unwrap_or(0)
-  )
-}
-
-fn preview_cache_key(path: &Path, size_bytes: u64, modified_ms: Option<u64>) -> String {
-  let mut hasher = Sha256::new();
-  hasher.update(hash_cache_key(path, size_bytes, modified_ms).as_bytes());
-  format!("{:x}", hasher.finalize())
-}
-
-fn cached_full_hash(candidate: &DuplicateCandidate, cache: &HashCache) -> Option<String> {
-  let key = hash_cache_key(&candidate.path, candidate.size_bytes, candidate.modified_ms);
-  let entry = cache.entries.get(&key)?;
-  if entry.size_bytes == candidate.size_bytes && entry.modified_ms == candidate.modified_ms {
-    return Some(entry.hash.clone());
-  }
-  None
-}
-
-fn insert_cached_full_hash(candidate: &DuplicateCandidate, hash: String, cache: &mut HashCache) {
-  let key = hash_cache_key(&candidate.path, candidate.size_bytes, candidate.modified_ms);
-  cache.entries.insert(
-    key,
-    HashCacheEntry {
-      hash,
-      size_bytes: candidate.size_bytes,
-      modified_ms: candidate.modified_ms,
-      hashed_ms: now_ms(),
-    },
-  );
-}
-
-fn append_operation_journal(
-  app_handle: &AppHandle,
-  operation: &str,
-  status: &str,
-  mode: Option<String>,
-  source: Option<String>,
-  destination: Option<String>,
-  safety_level: Option<String>,
-  message: Option<String>,
-  rollback: Option<serde_json::Value>,
-) -> Result<String, String> {
-  let history_path = history_file_path(app_handle)?;
-  if let Some(parent) = history_path.parent() {
-    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-  }
-  let entry_id = Uuid::new_v4().to_string();
-  let entry = OperationJournalEntry {
-    id: entry_id.clone(),
-    timestamp_ms: now_ms(),
-    operation: operation.to_string(),
-    status: status.to_string(),
-    mode,
-    source,
-    destination,
-    safety_level,
-    message,
-    rollback,
-  };
-  let serialized = serde_json::to_string(&entry).map_err(|error| error.to_string())?;
-  let mut file = OpenOptions::new()
-    .create(true)
-    .append(true)
-    .open(&history_path)
-    .map_err(|error| error.to_string())?;
-  file
-    .write_all(serialized.as_bytes())
-    .map_err(|error| error.to_string())?;
-  file.write_all(b"\n").map_err(|error| error.to_string())?;
-  file.sync_all().ok();
-  Ok(entry_id)
-}
-
-fn load_operation_history(app_handle: &AppHandle) -> Result<Vec<OperationJournalEntry>, String> {
-  let history_path = history_file_path(app_handle)?;
-  if !history_path.exists() {
-    return Ok(Vec::new());
-  }
-  let contents = fs::read_to_string(history_path).map_err(|error| error.to_string())?;
-  let mut entries = Vec::new();
-  for line in contents.lines() {
-    if line.trim().is_empty() {
-      continue;
-    }
-    if let Ok(entry) = serde_json::from_str::<OperationJournalEntry>(line) {
-      entries.push(entry);
-    }
-  }
-  entries.reverse();
-  Ok(entries)
-}
-
-fn load_recent_undo_actions(app_handle: &AppHandle) -> Result<Vec<UndoActionPayload>, String> {
-  let path = undo_actions_file_path(app_handle)?;
-  if !path.exists() {
-    return Ok(Vec::new());
-  }
-  let contents = fs::read_to_string(path).map_err(|error| error.to_string())?;
-  serde_json::from_str(&contents).map_err(|error| error.to_string())
-}
-
-fn store_recent_undo_actions_internal(
-  app_handle: &AppHandle,
-  mut actions: Vec<UndoActionPayload>,
-) -> Result<(), String> {
-  if actions.len() > MAX_UNDO_STACK {
-    actions.truncate(MAX_UNDO_STACK);
-  }
-  let path = undo_actions_file_path(app_handle)?;
-  if let Some(parent) = path.parent() {
-    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-  }
-  let serialized = serde_json::to_string_pretty(&actions).map_err(|error| error.to_string())?;
-  fs::write(path, serialized).map_err(|error| error.to_string())
-}
-
 fn is_path_in_subtree(path: &Path, root: &Path) -> bool {
   let path = path.components().collect::<Vec<_>>();
   let root = root.components().collect::<Vec<_>>();
@@ -1369,33 +1178,6 @@ fn extract_office_fallback(path: &Path) -> Result<OfficeFallbackPreview, String>
     title,
     excerpt,
   })
-}
-
-fn clear_trash_dir(trash_dir: &Path) -> std::io::Result<()> {
-  if !trash_dir.exists() {
-    return Ok(());
-  }
-  for entry in fs::read_dir(trash_dir)? {
-    let entry = entry?;
-    let file_type = entry.file_type()?;
-    let entry_path = entry.path();
-    if file_type.is_dir() {
-      fs::remove_dir_all(entry_path)?;
-    } else {
-      fs::remove_file(entry_path)?;
-    }
-  }
-  Ok(())
-}
-
-fn clear_trash_dir_best_effort(trash_dir: &Path) {
-  if let Err(error) = clear_trash_dir(trash_dir) {
-    eprintln!(
-      "Failed to clear trash directory {}: {}",
-      trash_dir.display(),
-      error
-    );
-  }
 }
 
 fn crash_report_dir(app_handle: &AppHandle) -> Result<PathBuf, String> {
@@ -1867,427 +1649,6 @@ fn update_heartbeat(
 }
 
 #[tauri::command]
-fn cancel_scan(state: tauri::State<'_, AppState>, scan_id: String) -> Result<(), String> {
-  let cancellations = state
-    .scan_cancellations
-    .lock()
-    .expect("scan cancellations lock");
-  if let Some(flag) = cancellations.get(&scan_id) {
-    flag.store(true, Ordering::Relaxed);
-  }
-  Ok(())
-}
-
-struct ScanCancelGuard {
-  app_handle: AppHandle,
-  scan_id: String,
-}
-
-impl ScanCancelGuard {
-  fn new(app_handle: AppHandle, scan_id: String) -> Self {
-    Self { app_handle, scan_id }
-  }
-}
-
-impl Drop for ScanCancelGuard {
-  fn drop(&mut self) {
-    let state = self.app_handle.state::<AppState>();
-    if let Ok(mut cancellations) = state.scan_cancellations.lock() {
-      cancellations.remove(&self.scan_id);
-    };
-  }
-}
-
-#[tauri::command]
-async fn scan_folder(
-  window: tauri::Window,
-  folder_path: String,
-  folder_label: Option<String>,
-  filter_mode: String,
-  include_subfolders: bool,
-  include_hidden: bool,
-  use_hash_for_duplicates: bool,
-  duplicate_min_size_bytes: u64,
-  scan_id: String,
-) -> Result<ScanResult, String> {
-  #[cfg(not(target_os = "android"))]
-  let _ = &folder_label;
-  let app_handle = window.app_handle().clone();
-  let window = window.clone();
-  let cancel_flag = Arc::new(AtomicBool::new(false));
-  {
-    let state = app_handle.state::<AppState>();
-    let mut cancellations = state
-      .scan_cancellations
-      .lock()
-      .expect("scan cancellations lock");
-    cancellations.insert(scan_id.clone(), cancel_flag.clone());
-  }
-  tauri::async_runtime::spawn_blocking(move || {
-    let _cancel_guard = ScanCancelGuard::new(app_handle.clone(), scan_id.clone());
-    let state = app_handle.state::<AppState>();
-    let mut entries = Vec::new();
-    {
-      state.map.lock().expect("map lock").clear();
-      state.preview_map.lock().expect("preview map lock").clear();
-    }
-
-    #[cfg(target_os = "android")]
-    if is_android_content_uri(&folder_path) {
-      if filter_mode == "duplicates" {
-        return Err("Duplicate scan is not supported on Android yet.".into());
-      }
-
-      let folder_label = folder_label
-        .clone()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| "Selected folder".to_string());
-      let listed = android_files::list_directory(
-        &app_handle,
-        &folder_path,
-        include_subfolders,
-        include_hidden,
-      )?;
-      let total = listed.len();
-      emit_scan_progress(&window, &scan_id, 0, 0, total, "indexing");
-
-      let filter = filter_mode.as_str();
-      let mut next_map = HashMap::new();
-      let mut scanned = 0usize;
-      let mut matched = 0usize;
-      let mut batch = Vec::with_capacity(500);
-
-      for listed_entry in listed {
-        if cancel_flag.load(Ordering::Relaxed) {
-          return Err("Scan cancelled".into());
-        }
-
-        let source = android_document_from_entry(listed_entry);
-        let id = Uuid::new_v4().to_string();
-        let entry = file_entry_from_android_source(id.clone(), &folder_label, &source);
-        scanned += 1;
-        if matches_candidate_filter(
-          filter,
-          &IndexedCandidate {
-            path: PathBuf::from(&entry.name),
-            path_display: entry.path.clone(),
-            name: entry.name.clone(),
-            kind: entry.kind.clone(),
-            size_bytes: entry.size_bytes,
-            modified_ms: entry.modified_ms,
-            mime: Some(entry.mime.clone()),
-          },
-        ) {
-          matched += 1;
-          next_map.insert(id, ManagedFileSource::AndroidDocument(source));
-          entries.push(entry.clone());
-          batch.push(entry);
-          if batch.len() >= 500 {
-            let _ = window.emit(
-              "scan_batch",
-              ScanBatch {
-                scan_id: scan_id.clone(),
-                files: std::mem::take(&mut batch),
-              },
-            );
-          }
-        }
-
-        if scanned % 128 == 0 || scanned == total {
-          emit_scan_progress(&window, &scan_id, scanned, matched, total, "scanning");
-        }
-      }
-
-      entries.sort_by_cached_key(|entry| entry.name.to_lowercase());
-      {
-        let mut map = state.map.lock().expect("map lock");
-        *map = next_map;
-      }
-      {
-        let mut index = state.index.lock().expect("index lock");
-        index.replace(folder_label.clone(), entries.clone());
-      }
-      if !batch.is_empty() {
-        let _ = window.emit(
-          "scan_batch",
-          ScanBatch {
-            scan_id: scan_id.clone(),
-            files: batch,
-          },
-        );
-      }
-
-      return Ok(ScanResult {
-        total: entries.len(),
-        files: entries,
-      });
-    }
-
-    let folder = PathBuf::from(&folder_path);
-    if !folder.exists() {
-      return Err("Folder not found".into());
-    }
-
-    let filter = filter_mode.as_str();
-    let is_duplicate_scan = filter == "duplicates";
-    emit_scan_progress(&window, &scan_id, 0, 0, 0, "indexing");
-
-    let mut candidates: Vec<IndexedCandidate> = Vec::new();
-    let mut discovered = 0usize;
-    let mut indexed = 0usize;
-    let index_chunk_size = 1024usize;
-    let scan_chunk_size = 1024usize;
-    let mut scanned = 0usize;
-    let mut last_emit = 0usize;
-    let mut matched = 0usize;
-    let mut batch = Vec::with_capacity(500);
-    let mut next_map = HashMap::new();
-    let mut pending_paths = Vec::with_capacity(index_chunk_size);
-
-    let mut flush_index_chunk =
-      |pending_paths: &mut Vec<PathBuf>, discovered_total: usize| -> Result<(), String> {
-        if pending_paths.is_empty() {
-          return Ok(());
-        }
-        if cancel_flag.load(Ordering::Relaxed) {
-          return Err("Scan cancelled".into());
-        }
-
-        let chunk_paths = std::mem::take(pending_paths);
-        let chunk_len = chunk_paths.len();
-        let indexed_chunk: Vec<IndexedCandidate> =
-          chunk_paths.into_par_iter().map(index_scan_candidate).collect();
-        indexed += chunk_len;
-        emit_scan_progress(&window, &scan_id, indexed, 0, discovered_total, "indexing");
-
-        if is_duplicate_scan {
-          candidates.extend(indexed_chunk);
-          return Ok(());
-        }
-
-        let chunk_results = build_scan_entries_for_candidates(
-          &indexed_chunk,
-          filter,
-          None,
-          &cancel_flag,
-        );
-        if cancel_flag.load(Ordering::Relaxed) {
-          return Err("Scan cancelled".into());
-        }
-
-        scanned += indexed_chunk.len();
-        matched += chunk_results.len();
-        for (entry, path) in chunk_results {
-          next_map.insert(entry.id.clone(), ManagedFileSource::LocalPath(path));
-          entries.push(entry.clone());
-          batch.push(entry);
-          if batch.len() >= 500 {
-            let _ = window.emit(
-              "scan_batch",
-              ScanBatch {
-                scan_id: scan_id.clone(),
-                files: std::mem::take(&mut batch),
-              },
-            );
-          }
-        }
-
-        if scanned.saturating_sub(last_emit) >= scan_chunk_size {
-          emit_scan_progress(&window, &scan_id, scanned, matched, 0, "scanning");
-          last_emit = scanned;
-        }
-        Ok(())
-      };
-
-    if include_subfolders {
-      for entry in WalkDir::new(&folder)
-        .follow_links(false)
-        .into_iter()
-        .filter_entry(|entry| include_hidden || !is_hidden_entry(entry.path(), &folder))
-      {
-        if cancel_flag.load(Ordering::Relaxed) {
-          return Err("Scan cancelled".into());
-        }
-        let entry = match entry {
-          Ok(entry) => entry,
-          Err(_) => continue,
-        };
-        if !entry.file_type().is_file() {
-          continue;
-        }
-        pending_paths.push(entry.path().to_path_buf());
-        discovered += 1;
-        if pending_paths.len() >= index_chunk_size {
-          flush_index_chunk(&mut pending_paths, 0)?;
-        }
-      }
-    } else {
-      for entry in fs::read_dir(&folder).map_err(|error| error.to_string())? {
-        if cancel_flag.load(Ordering::Relaxed) {
-          return Err("Scan cancelled".into());
-        }
-        let entry = match entry {
-          Ok(entry) => entry,
-          Err(_) => continue,
-        };
-        let path = entry.path();
-        if !entry.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
-          continue;
-        }
-        if !include_hidden && is_hidden_entry(&path, &folder) {
-          continue;
-        }
-        pending_paths.push(path);
-        discovered += 1;
-        if pending_paths.len() >= index_chunk_size {
-          flush_index_chunk(&mut pending_paths, 0)?;
-        }
-      }
-    }
-    flush_index_chunk(&mut pending_paths, discovered)?;
-
-    let total = discovered;
-    if !is_duplicate_scan {
-      emit_scan_progress(&window, &scan_id, scanned, matched, total, "scanning");
-    }
-
-    let duplicate_groups = if is_duplicate_scan {
-      if cancel_flag.load(Ordering::Relaxed) {
-        return Err("Scan cancelled".into());
-      }
-      let duplicate_candidates: Vec<DuplicateCandidate> = candidates
-        .par_iter()
-        .map(|candidate| DuplicateCandidate {
-          path: candidate.path.clone(),
-          size_bytes: candidate.size_bytes,
-          modified_ms: candidate.modified_ms,
-        })
-        .collect();
-      let mut hash_cache = state.hash_cache.lock().expect("hash cache lock");
-      let groups = find_duplicate_groups_from_candidates_with_cache(
-        &duplicate_candidates,
-        use_hash_for_duplicates,
-        duplicate_min_size_bytes,
-        Some(&cancel_flag),
-        Some(&mut hash_cache),
-      )?;
-      let _ = store_hash_cache(&state.hash_cache_path, &hash_cache);
-      Some(groups)
-    } else {
-      None
-    };
-    if is_duplicate_scan {
-      scanned = 0;
-      last_emit = 0;
-      matched = 0;
-      for chunk in candidates.chunks(scan_chunk_size) {
-        if cancel_flag.load(Ordering::Relaxed) {
-          return Err("Scan cancelled".into());
-        }
-        let chunk_results = build_scan_entries_for_candidates(
-          chunk,
-          filter,
-          duplicate_groups.as_ref(),
-          &cancel_flag,
-        );
-        if cancel_flag.load(Ordering::Relaxed) {
-          return Err("Scan cancelled".into());
-        }
-
-        scanned += chunk.len();
-        matched += chunk_results.len();
-        for (entry, path) in chunk_results {
-          next_map.insert(entry.id.clone(), ManagedFileSource::LocalPath(path));
-          entries.push(entry.clone());
-          batch.push(entry);
-          if batch.len() >= 500 {
-            let _ = window.emit(
-              "scan_batch",
-              ScanBatch {
-                scan_id: scan_id.clone(),
-                files: std::mem::take(&mut batch),
-              },
-            );
-          }
-        }
-
-        if scanned.saturating_sub(last_emit) >= scan_chunk_size {
-          emit_scan_progress(&window, &scan_id, scanned, matched, total, "scanning");
-          last_emit = scanned;
-        }
-      }
-    }
-
-    entries.sort_by_cached_key(|entry| entry.name.to_lowercase());
-    {
-      let mut map = state.map.lock().expect("map lock");
-      *map = next_map;
-    }
-    {
-      let mut index = state.index.lock().expect("index lock");
-      index.replace(folder_path.clone(), entries.clone());
-    }
-
-    if scanned != last_emit || matched > 0 {
-      emit_scan_progress(&window, &scan_id, scanned, matched, total, "scanning");
-    }
-    if !batch.is_empty() {
-      let _ = window.emit(
-        "scan_batch",
-        ScanBatch {
-          scan_id: scan_id.clone(),
-          files: batch,
-        },
-      );
-    }
-    let total = entries.len();
-    Ok(ScanResult { files: entries, total })
-  })
-  .await
-  .map_err(|error| error.to_string())?
-}
-
-#[tauri::command]
-async fn scan_folder_v2(
-  window: tauri::Window,
-  request: ScanRequestV2,
-) -> Result<ScanResultV2, String> {
-  let started = Instant::now();
-  let scan_id = request
-    .scan_id
-    .unwrap_or_else(|| Uuid::new_v4().to_string());
-  let result = scan_folder(
-    window,
-    request.folder_path,
-    None,
-    request.filter_mode,
-    request.include_subfolders,
-    request.include_hidden,
-    request.use_hash_for_duplicates,
-    request.duplicate_min_size_bytes,
-    scan_id,
-  )
-  .await?;
-  let duplicate_groups = result
-    .files
-    .iter()
-    .filter_map(|entry| entry.duplicate_group.clone())
-    .collect::<std::collections::HashSet<_>>()
-    .len();
-  Ok(ScanResultV2 {
-    total: result.total,
-    stats: ScanStats {
-      indexed: result.total,
-      matched: result.files.len(),
-      duplicate_groups,
-      duration_ms: started.elapsed().as_millis() as u64,
-    },
-    files: result.files,
-    issues: Vec::new(),
-  })
-}
-
-#[tauri::command]
 fn query_index(
   state: tauri::State<'_, AppState>,
   request: QueryIndexRequest,
@@ -2340,539 +1701,6 @@ async fn read_text_preview(
   })
   .await
   .map_err(|error| error.to_string())?
-}
-
-#[tauri::command]
-fn trash_file(
-  app_handle: AppHandle,
-  state: tauri::State<'_, AppState>,
-  id: String,
-  trash_mode: String,
-  allow_unsafe: Option<bool>,
-) -> Result<TrashResult, String> {
-  let allow_unsafe = allow_unsafe.unwrap_or(false);
-  let mode = parse_trash_mode(&trash_mode);
-  let mut map = state.map.lock().expect("map lock");
-  let source = map.remove(&id).ok_or("File not found")?;
-  match source {
-    ManagedFileSource::LocalPath(path) => {
-      if let Err(error) = ensure_existing_path(&path, allow_unsafe) {
-        map.insert(id.clone(), ManagedFileSource::LocalPath(path.clone()));
-        let _ = append_operation_journal(
-          &app_handle,
-          "trash_file",
-          "blocked",
-          Some(trash_mode.clone()),
-          Some(path.to_string_lossy().to_string()),
-          None,
-          Some("safe".to_string()),
-          Some(error.clone()),
-          None,
-        );
-        return Err(error);
-      }
-      let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or("Invalid file name")?;
-      match mode {
-        TrashMode::System => {
-          fs::create_dir_all(&state.trash_dir).map_err(|error| error.to_string())?;
-          let target_path = unique_path(&state.trash_dir, file_name);
-          fs::copy(&path, &target_path).map_err(|error| error.to_string())?;
-          if let Err(error) = move_to_system_trash(&path) {
-            let _ = fs::remove_file(&target_path);
-            map.insert(id, ManagedFileSource::LocalPath(path.clone()));
-            let _ = append_operation_journal(
-              &app_handle,
-              "trash_file",
-              "error",
-              Some("system".to_string()),
-              Some(path.to_string_lossy().to_string()),
-              Some(target_path.to_string_lossy().to_string()),
-              Some("safe".to_string()),
-              Some(error.clone()),
-              None,
-            );
-            return Err(error);
-          }
-          let _ = append_operation_journal(
-            &app_handle,
-            "trash_file",
-            "success",
-            Some("system".to_string()),
-            Some(path.to_string_lossy().to_string()),
-            Some(target_path.to_string_lossy().to_string()),
-            Some("safe".to_string()),
-            None,
-            Some(serde_json::json!({
-              "rollbackSource": target_path.to_string_lossy().to_string(),
-              "rollbackDestination": path.to_string_lossy().to_string(),
-            })),
-          );
-          state.index.lock().expect("index lock").remove(&id);
-          Ok(TrashResult {
-            trash_path: Some(target_path.to_string_lossy().to_string()),
-            restore_destination: None,
-          })
-        }
-        TrashMode::Permanent => {
-          if !allow_unsafe {
-            map.insert(id, ManagedFileSource::LocalPath(path.clone()));
-            let message = "Permanent delete requires advanced override.";
-            let _ = append_operation_journal(
-              &app_handle,
-              "trash_file",
-              "blocked",
-              Some("permanent".to_string()),
-              Some(path.to_string_lossy().to_string()),
-              None,
-              Some("manual".to_string()),
-              Some(message.to_string()),
-              None,
-            );
-            return Err(message.into());
-          }
-          fs::remove_file(&path).map_err(|error| error.to_string())?;
-          let _ = append_operation_journal(
-            &app_handle,
-            "trash_file",
-            "success",
-            Some("permanent".to_string()),
-            Some(path.to_string_lossy().to_string()),
-            None,
-            Some("manual".to_string()),
-            None,
-            None,
-          );
-          state.index.lock().expect("index lock").remove(&id);
-          Ok(TrashResult {
-            trash_path: None,
-            restore_destination: None,
-          })
-        }
-      }
-    }
-    #[cfg(target_os = "android")]
-    ManagedFileSource::AndroidDocument(source) => {
-      let restore_destination = serialize_android_restore_target(&AndroidRestoreTarget {
-        tree_uri: source.tree_uri.clone(),
-        parent_relative_path: source.parent_relative_path.clone(),
-      });
-      match mode {
-        TrashMode::System => {
-          fs::create_dir_all(&state.trash_dir).map_err(|error| error.to_string())?;
-          let target_path = unique_path(&state.trash_dir, &source.name);
-          if let Err(error) = android_files::copy_document_to_path(
-            &app_handle,
-            &source.document_uri,
-            &target_path.to_string_lossy(),
-          ) {
-            map.insert(id, ManagedFileSource::AndroidDocument(source.clone()));
-            return Err(error);
-          }
-          if let Err(error) = android_files::delete_document(&app_handle, &source.document_uri) {
-            let _ = fs::remove_file(&target_path);
-            map.insert(id, ManagedFileSource::AndroidDocument(source.clone()));
-            return Err(error);
-          }
-          state.index.lock().expect("index lock").remove(&id);
-          Ok(TrashResult {
-            trash_path: Some(target_path.to_string_lossy().to_string()),
-            restore_destination: Some(restore_destination),
-          })
-        }
-        TrashMode::Permanent => {
-          if !allow_unsafe {
-            map.insert(id, ManagedFileSource::AndroidDocument(source.clone()));
-            return Err("Permanent delete requires advanced override.".into());
-          }
-          android_files::delete_document(&app_handle, &source.document_uri)?;
-          state.index.lock().expect("index lock").remove(&id);
-          Ok(TrashResult {
-            trash_path: None,
-            restore_destination: None,
-          })
-        }
-      }
-    }
-  }
-}
-
-#[tauri::command]
-fn trash_folder(
-  app_handle: AppHandle,
-  state: tauri::State<'_, AppState>,
-  folder_path: String,
-  files: Vec<FolderTrashEntry>,
-  trash_mode: String,
-  allow_unsafe: Option<bool>,
-) -> Result<TrashResult, String> {
-  let allow_unsafe = allow_unsafe.unwrap_or(false);
-  let mode = parse_trash_mode(&trash_mode);
-  let source_path = PathBuf::from(folder_path.clone());
-  if !source_path.exists() {
-    return Err("Folder not found".into());
-  }
-  if !source_path.is_dir() {
-    return Err("Target is not a folder".into());
-  }
-  ensure_safe_path(&source_path, allow_unsafe)?;
-  let folder_name = source_path
-    .file_name()
-    .and_then(|name| name.to_str())
-    .ok_or("Invalid folder name")?;
-  match mode {
-    TrashMode::System => {
-      fs::create_dir_all(&state.trash_dir).map_err(|error| error.to_string())?;
-      let target_path = unique_path(&state.trash_dir, folder_name);
-      copy_dir_recursive(&source_path, &target_path)?;
-      if let Err(error) = move_to_system_trash(&source_path) {
-        let _ = fs::remove_dir_all(&target_path);
-        let _ = append_operation_journal(
-          &app_handle,
-          "trash_folder",
-          "error",
-          Some("system".to_string()),
-          Some(folder_path.clone()),
-          Some(target_path.to_string_lossy().to_string()),
-          Some("safe".to_string()),
-          Some(error.clone()),
-          None,
-        );
-        return Err(error);
-      }
-      let mut map = state.map.lock().expect("map lock");
-      files.iter().for_each(|entry| {
-        map.remove(&entry.id);
-      });
-      state
-        .index
-        .lock()
-        .expect("index lock")
-        .remove_many(files.iter().map(|entry| entry.id.as_str()));
-      let _ = append_operation_journal(
-        &app_handle,
-        "trash_folder",
-        "success",
-        Some("system".to_string()),
-        Some(folder_path),
-        Some(target_path.to_string_lossy().to_string()),
-        Some("safe".to_string()),
-        None,
-        Some(serde_json::json!({
-          "rollbackSource": target_path.to_string_lossy().to_string(),
-          "rollbackDestination": source_path.to_string_lossy().to_string(),
-          "fileCount": files.len()
-        })),
-      );
-      Ok(TrashResult {
-        trash_path: Some(target_path.to_string_lossy().to_string()),
-        restore_destination: None,
-      })
-    }
-    TrashMode::Permanent => {
-      if !allow_unsafe {
-        let _ = append_operation_journal(
-          &app_handle,
-          "trash_folder",
-          "blocked",
-          Some("permanent".to_string()),
-          Some(folder_path),
-          None,
-          Some("manual".to_string()),
-          Some("Permanent delete requires advanced override.".to_string()),
-          None,
-        );
-        return Err("Permanent delete requires advanced override.".into());
-      }
-      fs::remove_dir_all(&source_path).map_err(|error| error.to_string())?;
-      let mut map = state.map.lock().expect("map lock");
-      files.iter().for_each(|entry| {
-        map.remove(&entry.id);
-      });
-      state
-        .index
-        .lock()
-        .expect("index lock")
-        .remove_many(files.iter().map(|entry| entry.id.as_str()));
-      let _ = append_operation_journal(
-        &app_handle,
-        "trash_folder",
-        "success",
-        Some("permanent".to_string()),
-        Some(source_path.to_string_lossy().to_string()),
-        None,
-        Some("manual".to_string()),
-        None,
-        None,
-      );
-      Ok(TrashResult {
-        trash_path: None,
-        restore_destination: None,
-      })
-    }
-  }
-}
-
-#[tauri::command]
-fn move_file(
-  app_handle: AppHandle,
-  state: tauri::State<'_, AppState>,
-  id: String,
-  allow_unsafe: Option<bool>,
-) -> Result<MoveResult, String> {
-  let allow_unsafe = allow_unsafe.unwrap_or(false);
-  let destination = state
-    .destination
-    .lock()
-    .expect("destination lock")
-    .clone()
-    .ok_or("Destination not set")?;
-
-  let mut map = state.map.lock().expect("map lock");
-  let source = map.remove(&id).ok_or("File not found")?;
-  match (source, destination) {
-    (ManagedFileSource::LocalPath(source), ManagedDirectory::LocalPath(destination)) => {
-      if let Err(error) = ensure_existing_path(&source, allow_unsafe) {
-        map.insert(id.clone(), ManagedFileSource::LocalPath(source));
-        return Err(error);
-      }
-      let file_name = source
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or("Invalid file name")?;
-
-      let target_path = unique_path(&destination, file_name);
-      if let Err(error) = ensure_destination_writable(&target_path, allow_unsafe) {
-        map.insert(id.clone(), ManagedFileSource::LocalPath(source));
-        return Err(error);
-      }
-
-      if let Err(error) = move_path(&source, &target_path) {
-        map.insert(id, ManagedFileSource::LocalPath(source));
-        return Err(error);
-      }
-
-      let new_name = target_path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or("Invalid target name")?
-        .to_string();
-
-      let _ = append_operation_journal(
-        &app_handle,
-        "move_file",
-        "success",
-        Some("move".to_string()),
-        Some(source.to_string_lossy().to_string()),
-        Some(target_path.to_string_lossy().to_string()),
-        Some("safe".to_string()),
-        None,
-        Some(serde_json::json!({
-          "rollbackSource": target_path.to_string_lossy().to_string(),
-          "rollbackDestination": source.to_string_lossy().to_string(),
-        })),
-      );
-
-      state.index.lock().expect("index lock").remove(&id);
-
-      Ok(MoveResult {
-        new_name,
-        target_path: target_path.to_string_lossy().to_string(),
-        restore_source: Some(target_path.to_string_lossy().to_string()),
-        restore_destination: Some(source.to_string_lossy().to_string()),
-      })
-    }
-    #[cfg(target_os = "android")]
-    (ManagedFileSource::AndroidDocument(source), ManagedDirectory::AndroidTree(destination)) => {
-      let moved = android_files::move_document(
-        &app_handle,
-        &source.document_uri,
-        &destination.tree_uri,
-        "",
-        &source.name,
-        &source.mime_type,
-      )?;
-      state.index.lock().expect("index lock").remove(&id);
-      Ok(MoveResult {
-        new_name: moved.new_name.clone(),
-        target_path: format!("{}/{}", destination.label, moved.new_name),
-        restore_source: Some(moved.document_uri),
-        restore_destination: Some(serialize_android_restore_target(&AndroidRestoreTarget {
-          tree_uri: source.tree_uri,
-          parent_relative_path: source.parent_relative_path,
-        })),
-      })
-    }
-    #[cfg(target_os = "android")]
-    (source, _) => {
-      map.insert(id, source);
-      Err("Moving between desktop and Android storage is not supported.".into())
-    }
-  }
-}
-
-#[tauri::command]
-fn restore_file(
-  app_handle: AppHandle,
-  state: tauri::State<'_, AppState>,
-  id: String,
-  source: String,
-  destination: String,
-  file_name: Option<String>,
-  mime_type: Option<String>,
-  display_path: Option<String>,
-  size_bytes: Option<u64>,
-  modified_ms: Option<u64>,
-  allow_unsafe: Option<bool>,
-) -> Result<(), String> {
-  let allow_unsafe = allow_unsafe.unwrap_or(false);
-  #[cfg(not(target_os = "android"))]
-  let _ = (&file_name, &mime_type, &display_path, &size_bytes, &modified_ms);
-  #[cfg(target_os = "android")]
-  if let Some(target) = parse_android_restore_target(&destination) {
-    let file_name = file_name.ok_or("Missing file name for Android restore.")?;
-    let mime_type = mime_type.unwrap_or_else(|| "application/octet-stream".to_string());
-    let restored = if is_android_content_uri(&source) {
-      android_files::restore_document(
-        &app_handle,
-        &source,
-        &target.tree_uri,
-        &target.parent_relative_path,
-        &file_name,
-        &mime_type,
-      )?
-    } else {
-      let source_path = PathBuf::from(&source);
-      ensure_existing_path(&source_path, allow_unsafe)?;
-      let restored = android_files::restore_cached_file(
-        &app_handle,
-        &source,
-        &target.tree_uri,
-        &target.parent_relative_path,
-        &file_name,
-        &mime_type,
-      )?;
-      let _ = fs::remove_file(&source_path);
-      restored
-    };
-    let relative_path = if target.parent_relative_path.is_empty() {
-      file_name.clone()
-    } else {
-      format!("{}/{}", target.parent_relative_path, file_name)
-    };
-    let restored_source = AndroidDocumentSource {
-      document_uri: restored.document_uri,
-      tree_uri: target.tree_uri.clone(),
-      relative_path,
-      parent_relative_path: target.parent_relative_path.clone(),
-      name: file_name.clone(),
-      mime_type: mime_type.clone(),
-      size_bytes: size_bytes.unwrap_or(0),
-      modified_ms,
-    };
-    let display_path = display_path.unwrap_or_else(|| file_name.clone());
-    let mut map = state.map.lock().expect("map lock");
-    map.insert(
-      id.clone(),
-      ManagedFileSource::AndroidDocument(restored_source.clone()),
-    );
-    state.index.lock().expect("index lock").upsert(FileEntry {
-      id,
-      name: file_name,
-      kind: classify_file(Path::new(&display_path)),
-      path: display_path.clone(),
-      size_bytes: size_bytes.unwrap_or(0),
-      modified_ms,
-      mime: mime_type,
-      duplicate_group: None,
-    });
-    let _ = append_operation_journal(
-      &app_handle,
-      "restore_file",
-      "success",
-      Some("restore".to_string()),
-      Some(source.clone()),
-      Some(display_path),
-      Some("safe".to_string()),
-      None,
-      None,
-    );
-    return Ok(());
-  }
-
-  let source_path = PathBuf::from(source);
-  ensure_existing_path(&source_path, allow_unsafe)?;
-  let destination_path = PathBuf::from(destination);
-  if destination_path.exists() {
-    return Err("Restore target already exists.".into());
-  }
-  ensure_destination_writable(&destination_path, allow_unsafe)?;
-  move_path(&source_path, &destination_path)?;
-  let destination_display = destination_path.to_string_lossy().to_string();
-  let mut map = state.map.lock().expect("map lock");
-  map.insert(id.clone(), ManagedFileSource::LocalPath(destination_path.clone()));
-  state
-    .index
-    .lock()
-    .expect("index lock")
-    .upsert(file_entry_from_path(id, &destination_path));
-  let _ = append_operation_journal(
-    &app_handle,
-    "restore_file",
-    "success",
-    Some("restore".to_string()),
-    Some(source_path.to_string_lossy().to_string()),
-    Some(destination_display),
-    Some("safe".to_string()),
-    None,
-    None,
-  );
-  Ok(())
-}
-
-#[tauri::command]
-fn restore_folder(
-  app_handle: AppHandle,
-  state: tauri::State<'_, AppState>,
-  source: String,
-  destination: String,
-  files: Vec<FolderTrashEntry>,
-  allow_unsafe: Option<bool>,
-) -> Result<(), String> {
-  let allow_unsafe = allow_unsafe.unwrap_or(false);
-  let source_path = PathBuf::from(source);
-  ensure_existing_path(&source_path, allow_unsafe)?;
-  let destination_path = PathBuf::from(destination);
-  if destination_path.exists() {
-    return Err("Restore target already exists.".into());
-  }
-  ensure_destination_writable(&destination_path, allow_unsafe)?;
-  move_dir(&source_path, &destination_path)?;
-  let mut map = state.map.lock().expect("map lock");
-  let mut restored_files = Vec::new();
-  files.iter().for_each(|entry| {
-    let path = destination_path.join(&entry.relative_path);
-    map.insert(entry.id.clone(), ManagedFileSource::LocalPath(path.clone()));
-    restored_files.push(file_entry_from_path(entry.id.clone(), &path));
-  });
-  {
-    let mut index = state.index.lock().expect("index lock");
-    restored_files.into_iter().for_each(|file| index.upsert(file));
-  }
-  let _ = append_operation_journal(
-    &app_handle,
-    "restore_folder",
-    "success",
-    Some("restore".to_string()),
-    Some(source_path.to_string_lossy().to_string()),
-    Some(destination_path.to_string_lossy().to_string()),
-    Some("safe".to_string()),
-    None,
-    None,
-  );
-  Ok(())
 }
 
 #[tauri::command]
@@ -2931,88 +1759,6 @@ async fn extract_office_fallback_preview(
   tauri::async_runtime::spawn_blocking(move || extract_office_fallback(&path))
     .await
     .map_err(|error| error.to_string())?
-}
-
-#[tauri::command]
-async fn generate_preview(
-  app: AppHandle,
-  state: tauri::State<'_, AppState>,
-  id: String,
-) -> Result<String, String> {
-  let source = {
-    let map = state.map.lock().expect("map lock");
-    map.get(&id).cloned().ok_or("File not found")?
-  };
-  let source_path = managed_source_to_local_path(&app, &source)?;
-  if !source_path.exists() {
-    return Err("File not found".into());
-  }
-
-  let existing_id = {
-    let preview_map = state.preview_map.lock().expect("preview map lock");
-    preview_map.get(&id).cloned()
-  };
-  if let Some(existing_id) = existing_id {
-    let map = state.map.lock().expect("map lock");
-    if let Some(existing_path) = map.get(&existing_id).and_then(local_source_path) {
-      if existing_path.exists() {
-        return Ok(existing_id);
-      }
-    }
-  }
-
-  let cache_dir = app.path().app_cache_dir().map_err(|error| error.to_string())?;
-  let preview_root = cache_dir.join("previews");
-  let metadata = fs::metadata(&source_path).map_err(|error| error.to_string())?;
-  let preview_cache_root = preview_root.join("office-cache");
-  let cached_preview_path = preview_cache_root.join(format!(
-    "{}.pdf",
-    preview_cache_key(
-      &source_path,
-      metadata.len(),
-      modified_ms_from_metadata(&metadata),
-    )
-  ));
-  if cached_preview_path.exists() {
-    let preview_id = format!("preview:{}.pdf", Uuid::new_v4());
-    {
-      let mut map = state.map.lock().expect("map lock");
-      map.insert(preview_id.clone(), ManagedFileSource::LocalPath(cached_preview_path));
-    }
-    state
-      .preview_map
-      .lock()
-      .expect("preview map lock")
-      .insert(id, preview_id.clone());
-    return Ok(preview_id);
-  }
-  let session_dir = preview_root.join(Uuid::new_v4().to_string());
-  let source_path_clone = source_path.clone();
-  let cached_preview_path_clone = cached_preview_path.clone();
-  let preview_path = tauri::async_runtime::spawn_blocking(move || {
-    fs::create_dir_all(&preview_root).map_err(|error| error.to_string())?;
-    fs::create_dir_all(&preview_cache_root).map_err(|error| error.to_string())?;
-    fs::create_dir_all(&session_dir).map_err(|error| error.to_string())?;
-    run_platform_preview(&session_dir, &source_path_clone, Some(&cached_preview_path_clone))
-  })
-  .await
-  .map_err(|error| error.to_string())??;
-
-  let preview_extension = preview_path
-    .extension()
-    .and_then(|ext| ext.to_str())
-    .unwrap_or("bin");
-  let preview_id = format!("preview:{}.{}", Uuid::new_v4(), preview_extension);
-  {
-    let mut map = state.map.lock().expect("map lock");
-    map.insert(preview_id.clone(), ManagedFileSource::LocalPath(preview_path));
-  }
-  state
-    .preview_map
-    .lock()
-    .expect("preview map lock")
-    .insert(id, preview_id.clone());
-  Ok(preview_id)
 }
 
 #[tauri::command]
@@ -3133,7 +1879,6 @@ fn build_cleanup_suggestions(request: SuggestionsRequest) -> Result<SuggestionSe
   }
 
   let mut suggestions = Vec::new();
-  let mut reclaimable = 0u64;
 
   for files in groups.values_mut() {
     if files.len() < 2 {
@@ -3152,7 +1897,6 @@ fn build_cleanup_suggestions(request: SuggestionsRequest) -> Result<SuggestionSe
     });
     for duplicate in files.iter().skip(1) {
       let bytes = fs::metadata(duplicate).map(|meta| meta.len()).unwrap_or(0);
-      reclaimable += bytes;
       suggestions.push(Suggestion {
         id: Uuid::new_v4().to_string(),
         action_type: "trash".to_string(),
@@ -3177,7 +1921,6 @@ fn build_cleanup_suggestions(request: SuggestionsRequest) -> Result<SuggestionSe
       continue;
     }
     if is_downloads_or_installer(path) && file_age_days(path).unwrap_or(0) >= stale_days {
-      reclaimable += metadata.len();
       suggestions.push(Suggestion {
         id: Uuid::new_v4().to_string(),
         action_type: "trash".to_string(),
@@ -3191,7 +1934,6 @@ fn build_cleanup_suggestions(request: SuggestionsRequest) -> Result<SuggestionSe
         },
       });
     } else if is_temp_or_cache_path(path) {
-      reclaimable += metadata.len();
       suggestions.push(Suggestion {
         id: Uuid::new_v4().to_string(),
         action_type: "trash".to_string(),
@@ -3209,7 +1951,9 @@ fn build_cleanup_suggestions(request: SuggestionsRequest) -> Result<SuggestionSe
 
   if request.include_subfolders {
     let root = PathBuf::from(&request.folder_path);
-    for entry in WalkDir::new(&root).into_iter().filter_map(|entry| entry.ok()) {
+    for entry in WalkDir::new(&root).into_iter()
+      .filter_entry(|entry| request.include_hidden || !is_hidden_entry(entry.path(), &root))
+      .filter_map(|entry| entry.ok()) {
       if !entry.file_type().is_dir() {
         continue;
       }
@@ -3238,6 +1982,8 @@ fn build_cleanup_suggestions(request: SuggestionsRequest) -> Result<SuggestionSe
     }
   }
 
+  let mut seen = std::collections::HashSet::new();
+  suggestions.retain(|suggestion| seen.insert(suggestion.source_path.clone()));
   if suggestions.len() > max_results {
     suggestions.truncate(max_results);
   }
@@ -3245,340 +1991,14 @@ fn build_cleanup_suggestions(request: SuggestionsRequest) -> Result<SuggestionSe
   Ok(SuggestionSet {
     generated_ms: now_ms(),
     folder_path: request.folder_path,
-    total_reclaimable_bytes: reclaimable,
+    total_reclaimable_bytes: suggestions.iter().map(|item| item.reclaimable_bytes).sum(),
     suggestions,
-  })
-}
-
-fn batch_record_file_path(app_handle: &AppHandle, batch_id: &str) -> Result<PathBuf, String> {
-  let directory = batch_record_dir(app_handle)?;
-  fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
-  Ok(directory.join(format!("{}.json", batch_id)))
-}
-
-fn store_batch_record(app_handle: &AppHandle, record: &UndoBatchRecord) -> Result<(), String> {
-  let path = batch_record_file_path(app_handle, &record.batch_id)?;
-  let serialized = serde_json::to_string_pretty(record).map_err(|error| error.to_string())?;
-  fs::write(path, serialized).map_err(|error| error.to_string())
-}
-
-fn load_batch_record(app_handle: &AppHandle, batch_id: &str) -> Result<UndoBatchRecord, String> {
-  let path = batch_record_file_path(app_handle, batch_id)?;
-  let contents = fs::read_to_string(path).map_err(|error| error.to_string())?;
-  serde_json::from_str(&contents).map_err(|error| error.to_string())
-}
-
-fn remove_batch_record(app_handle: &AppHandle, batch_id: &str) -> Result<(), String> {
-  let path = batch_record_file_path(app_handle, batch_id)?;
-  if path.exists() {
-    fs::remove_file(path).map_err(|error| error.to_string())?;
-  }
-  Ok(())
-}
-
-#[tauri::command]
-fn apply_action_batch(
-  app_handle: AppHandle,
-  state: tauri::State<'_, AppState>,
-  request: ActionBatchRequest,
-) -> Result<ActionBatchResult, String> {
-  let allow_unsafe = request.allow_unsafe.unwrap_or(false);
-  let allow_permanent_delete = request.allow_permanent_delete.unwrap_or(false);
-  let dry_run = request.dry_run.unwrap_or(true);
-  let batch_id = Uuid::new_v4().to_string();
-
-  let mut results = Vec::new();
-  let mut applied = 0usize;
-  let mut blocked = 0usize;
-  let mut failed = 0usize;
-  let mut undo_actions = Vec::new();
-
-  for action in request.actions {
-    let source = PathBuf::from(&action.source_path);
-    if let Err(error) = ensure_existing_path(&source, allow_unsafe) {
-      blocked += 1;
-      results.push(ActionResult {
-        id: action.id.clone(),
-        status: "blocked".to_string(),
-        message: error.clone(),
-        undoable: false,
-      });
-      let _ = append_operation_journal(
-        &app_handle,
-        "batch_action",
-        "blocked",
-        Some(action.action_type.clone()),
-        Some(action.source_path.clone()),
-        action.destination_path.clone(),
-        action.safety_level.clone(),
-        Some(error),
-        None,
-      );
-      continue;
-    }
-    if action.action_type == "delete" && !allow_permanent_delete {
-      blocked += 1;
-      let message = "Permanent delete is disabled for batch actions.";
-      results.push(ActionResult {
-        id: action.id.clone(),
-        status: "blocked".to_string(),
-        message: message.to_string(),
-        undoable: false,
-      });
-      continue;
-    }
-    if dry_run {
-      applied += 1;
-      results.push(ActionResult {
-        id: action.id.clone(),
-        status: "planned".to_string(),
-        message: "Dry run: action validated.".to_string(),
-        undoable: matches!(action.action_type.as_str(), "move" | "trash"),
-      });
-      continue;
-    }
-
-    let operation_outcome = (|| -> Result<(bool, String), String> {
-      match action.action_type.as_str() {
-        "move" => {
-          let destination = match action.destination_path.as_ref() {
-            Some(path) => PathBuf::from(path),
-            None => return Err("Move action requires destinationPath.".to_string()),
-          };
-          ensure_destination_writable(&destination, allow_unsafe)?;
-          move_path(&source, &destination)?;
-          undo_actions.push(UndoBatchAction {
-            action_type: "move".to_string(),
-            source_path: destination.to_string_lossy().to_string(),
-            rollback_source: Some(source.to_string_lossy().to_string()),
-          });
-          Ok((true, destination.to_string_lossy().to_string()))
-        }
-        "trash" => {
-          let file_name = source
-            .file_name()
-            .and_then(|value| value.to_str())
-            .ok_or_else(|| "Invalid source path".to_string())?;
-          fs::create_dir_all(&state.trash_dir).map_err(|error| error.to_string())?;
-          let backup_path = unique_path(&state.trash_dir, file_name);
-          if source.is_dir() {
-            copy_dir_recursive(&source, &backup_path)?;
-          } else {
-            fs::copy(&source, &backup_path).map_err(|error| error.to_string())?;
-          }
-          if let Err(error) = move_to_system_trash(&source) {
-            if backup_path.is_dir() {
-              let _ = fs::remove_dir_all(&backup_path);
-            } else {
-              let _ = fs::remove_file(&backup_path);
-            }
-            return Err(error);
-          }
-          undo_actions.push(UndoBatchAction {
-            action_type: "trash".to_string(),
-            source_path: source.to_string_lossy().to_string(),
-            rollback_source: Some(backup_path.to_string_lossy().to_string()),
-          });
-          Ok((true, backup_path.to_string_lossy().to_string()))
-        }
-        "remove-empty-folder" => {
-          if fs::read_dir(&source)
-            .map_err(|error| error.to_string())?
-            .next()
-            .is_some()
-          {
-            return Err("Folder is not empty.".to_string());
-          }
-          fs::remove_dir(&source).map_err(|error| error.to_string())?;
-          Ok((false, String::new()))
-        }
-        "delete" => {
-          if source.is_dir() {
-            fs::remove_dir_all(&source).map_err(|error| error.to_string())?;
-          } else {
-            fs::remove_file(&source).map_err(|error| error.to_string())?;
-          }
-          Ok((false, String::new()))
-        }
-        _ => Err("Unsupported action type.".to_string()),
-      }
-    })();
-
-    match operation_outcome {
-      Ok((undoable, destination)) => {
-        applied += 1;
-        {
-          let mut index = state.index.lock().expect("index lock");
-          match action.action_type.as_str() {
-            "move" | "trash" | "delete" => {
-              if source.is_dir() {
-                index.remove_subtree(&source);
-              } else {
-                index.remove_path(&source);
-              }
-            }
-            "remove-empty-folder" => index.remove_subtree(&source),
-            _ => {}
-          }
-        }
-        let message = if destination.is_empty() {
-          "Applied".to_string()
-        } else {
-          format!("Applied -> {}", destination)
-        };
-        let message = if let Some(reason) = action.reason.clone() {
-          format!("{} ({})", message, reason)
-        } else {
-          message
-        };
-        results.push(ActionResult {
-          id: action.id.clone(),
-          status: "applied".to_string(),
-          message: message.clone(),
-          undoable,
-        });
-        let _ = append_operation_journal(
-          &app_handle,
-          "batch_action",
-          "success",
-          Some(action.action_type.clone()),
-          Some(action.source_path),
-          action.destination_path.clone(),
-          action.safety_level,
-          Some(message),
-          None,
-        );
-      }
-      Err(error) => {
-        failed += 1;
-        results.push(ActionResult {
-          id: action.id.clone(),
-          status: "error".to_string(),
-          message: error.clone(),
-          undoable: false,
-        });
-        let _ = append_operation_journal(
-          &app_handle,
-          "batch_action",
-          "error",
-          Some(action.action_type.clone()),
-          Some(action.source_path),
-          action.destination_path.clone(),
-          action.safety_level,
-          Some(error),
-          None,
-        );
-      }
-    }
-  }
-
-  if !dry_run && !undo_actions.is_empty() {
-    let record = UndoBatchRecord {
-      batch_id: batch_id.clone(),
-      created_ms: now_ms(),
-      actions: undo_actions,
-    };
-    let _ = store_batch_record(&app_handle, &record);
-  }
-
-  Ok(ActionBatchResult {
-    batch_id,
-    dry_run,
-    applied,
-    blocked,
-    failed,
-    results,
-  })
-}
-
-#[tauri::command]
-fn undo_action_batch(
-  app_handle: AppHandle,
-  state: tauri::State<'_, AppState>,
-  batch_id: String,
-) -> Result<UndoBatchResult, String> {
-  let record = load_batch_record(&app_handle, &batch_id)?;
-  let mut restored = 0usize;
-  let mut failed = 0usize;
-  let mut messages = Vec::new();
-
-  for action in record.actions.iter().rev() {
-    let result = match action.action_type.as_str() {
-      "move" => {
-        let rollback_path = action
-          .rollback_source
-          .as_ref()
-          .ok_or("Missing rollback source for move action".to_string())?;
-        move_path(Path::new(&action.source_path), Path::new(rollback_path))
-      }
-      "trash" => {
-        let backup = action
-          .rollback_source
-          .as_ref()
-          .ok_or("Missing backup source for trash action".to_string())?;
-        let backup_path = PathBuf::from(backup);
-        let target = PathBuf::from(&action.source_path);
-        if backup_path.is_dir() {
-          move_dir(&backup_path, &target)
-        } else {
-          move_path(&backup_path, &target)
-        }
-      }
-      _ => Ok(()),
-    };
-    match result {
-      Ok(_) => {
-        restored += 1;
-        {
-          let restored_path = if action.action_type == "move" {
-            action.rollback_source.as_ref().map(PathBuf::from)
-          } else {
-            Some(PathBuf::from(&action.source_path))
-          };
-          if let Some(restored_path) = restored_path {
-            let mapped = {
-              let mut index = state.index.lock().expect("index lock");
-              upsert_index_path_or_tree(&mut index, &restored_path)
-            };
-            let mut map = state.map.lock().expect("map lock");
-            mapped.into_iter().for_each(|(id, path)| {
-              map.insert(id, ManagedFileSource::LocalPath(path));
-            });
-          }
-        }
-        messages.push(format!("Restored {}", action.source_path));
-      }
-      Err(error) => {
-        failed += 1;
-        messages.push(format!("Failed to restore {}: {}", action.source_path, error));
-      }
-    }
-  }
-  if failed == 0 {
-    let _ = remove_batch_record(&app_handle, &batch_id);
-  }
-  let _ = append_operation_journal(
-    &app_handle,
-    "undo_action_batch",
-    if failed == 0 { "success" } else { "error" },
-    Some("undo-batch".to_string()),
-    None,
-    None,
-    Some("safe".to_string()),
-    Some(format!("restored={}, failed={}", restored, failed)),
-    None,
-  );
-  Ok(UndoBatchResult {
-    batch_id,
-    restored,
-    failed,
-    messages,
   })
 }
 
 fn unique_path(destination: &Path, file_name: &str) -> PathBuf {
   let mut candidate = destination.join(file_name);
-  if !candidate.exists() {
+  if fs::symlink_metadata(&candidate).is_err() {
     return candidate;
   }
   let path = Path::new(file_name);
@@ -3594,7 +2014,7 @@ fn unique_path(destination: &Path, file_name: &str) -> PathBuf {
       format!("{} ({}).{}", stem, index, ext)
     };
     candidate = destination.join(name);
-    if !candidate.exists() {
+    if fs::symlink_metadata(&candidate).is_err() {
       return candidate;
     }
   }
@@ -3742,56 +2162,6 @@ fn parse_managed_directory(destination: String, label: Option<String>) -> Manage
   #[cfg(not(target_os = "android"))]
   let _ = label;
   ManagedDirectory::LocalPath(PathBuf::from(destination))
-}
-
-fn move_path(source: &Path, target: &Path) -> Result<(), String> {
-  match fs::rename(source, target) {
-    Ok(_) => Ok(()),
-    Err(error) => {
-      if error.raw_os_error() == Some(18) {
-        fs::copy(source, target).map_err(|error| error.to_string())?;
-        fs::remove_file(source).map_err(|error| error.to_string())?;
-        Ok(())
-      } else {
-        Err(error.to_string())
-      }
-    }
-  }
-}
-
-fn copy_dir_recursive(source: &Path, target: &Path) -> Result<(), String> {
-  for entry in WalkDir::new(source) {
-    let entry = entry.map_err(|error| error.to_string())?;
-    let relative = entry
-      .path()
-      .strip_prefix(source)
-      .map_err(|error| error.to_string())?;
-    let destination = target.join(relative);
-    if entry.file_type().is_dir() {
-      fs::create_dir_all(&destination).map_err(|error| error.to_string())?;
-    } else {
-      if let Some(parent) = destination.parent() {
-        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-      }
-      fs::copy(entry.path(), &destination).map_err(|error| error.to_string())?;
-    }
-  }
-  Ok(())
-}
-
-fn move_dir(source: &Path, target: &Path) -> Result<(), String> {
-  match fs::rename(source, target) {
-    Ok(_) => Ok(()),
-    Err(error) => {
-      if error.raw_os_error() == Some(18) {
-        copy_dir_recursive(source, target)?;
-        fs::remove_dir_all(source).map_err(|error| error.to_string())?;
-        Ok(())
-      } else {
-        Err(error.to_string())
-      }
-    }
-  }
 }
 
 fn index_scan_candidate(path: PathBuf) -> IndexedCandidate {
@@ -4859,207 +3229,6 @@ fn detect_archive_kind(path: &Path) -> Option<ArchiveKind> {
   None
 }
 
-fn wait_for_child(child: &mut Child, timeout_secs: u64) -> Result<(), String> {
-  let timeout = Duration::from_secs(timeout_secs);
-  let start = Instant::now();
-  loop {
-    if let Some(status) = child.try_wait().map_err(|error| error.to_string())? {
-      if !status.success() {
-        return Err("Preview generation failed.".into());
-      }
-      return Ok(());
-    }
-    if start.elapsed() >= timeout {
-      let _ = child.kill();
-      let _ = child.wait();
-      return Err("Preview generation timed out.".into());
-    }
-    std::thread::sleep(Duration::from_millis(QLMANAGE_POLL_MS));
-  }
-}
-
-fn run_qlmanage_preview(session_dir: &Path, source_path: &Path) -> Result<PathBuf, String> {
-  let mut child = Command::new("qlmanage")
-    .arg("-t")
-    .arg("-s")
-    .arg("1400")
-    .arg("-o")
-    .arg(session_dir)
-    .arg(source_path)
-    .spawn()
-    .map_err(|error| error.to_string())?;
-
-  wait_for_child(&mut child, QLMANAGE_TIMEOUT_SECS)?;
-
-  fs::read_dir(session_dir)
-    .map_err(|error| error.to_string())?
-    .filter_map(|entry| entry.ok())
-    .map(|entry| entry.path())
-    .find(|path| {
-      path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .map(|ext| matches!(ext.to_ascii_lowercase().as_str(), "png" | "jpg" | "jpeg"))
-        .unwrap_or(false)
-    })
-    .ok_or("Preview file not found".into())
-}
-
-fn file_url_from_path(path: &Path) -> String {
-  let normalized = path.to_string_lossy().replace('\\', "/");
-  format!("file:///{}", normalized)
-}
-
-fn detect_windows_libreoffice() -> Option<PathBuf> {
-  let mut candidates = Vec::new();
-  if let Some(program_files) = std::env::var_os("ProgramFiles") {
-    candidates.push(
-      PathBuf::from(&program_files)
-        .join("LibreOffice")
-        .join("program")
-        .join("soffice.exe"),
-    );
-    candidates.push(
-      PathBuf::from(&program_files)
-        .join("LibreOffice")
-        .join("program")
-        .join("soffice.com"),
-    );
-  }
-  if let Some(program_files_x86) = std::env::var_os("ProgramFiles(x86)") {
-    candidates.push(
-      PathBuf::from(&program_files_x86)
-        .join("LibreOffice")
-        .join("program")
-        .join("soffice.exe"),
-    );
-    candidates.push(
-      PathBuf::from(&program_files_x86)
-        .join("LibreOffice")
-        .join("program")
-        .join("soffice.com"),
-    );
-  }
-  if let Some(candidate) = candidates.into_iter().find(|candidate| candidate.exists()) {
-    return Some(candidate);
-  }
-
-  let discovered = Command::new("where")
-    .arg("soffice.exe")
-    .output()
-    .ok()
-    .filter(|output| output.status.success())
-    .and_then(|output| {
-      let stdout = String::from_utf8_lossy(&output.stdout);
-      stdout
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty())
-        .map(PathBuf::from)
-    });
-  if discovered.is_some() {
-    return discovered;
-  }
-
-  Command::new("where")
-    .arg("soffice.com")
-    .output()
-    .ok()
-    .filter(|output| output.status.success())
-    .and_then(|output| {
-      let stdout = String::from_utf8_lossy(&output.stdout);
-      stdout
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty())
-        .map(PathBuf::from)
-    })
-}
-
-fn run_windows_libreoffice_preview(
-  session_dir: &Path,
-  source_path: &Path,
-  cached_preview_path: &Path,
-) -> Result<PathBuf, String> {
-  let soffice_path = detect_windows_libreoffice()
-    .ok_or("LibreOffice not found. Install LibreOffice to enable Office previews.".to_string())?;
-  let profile_dir = session_dir
-    .parent()
-    .unwrap_or(session_dir)
-    .join("lo-profile");
-  fs::create_dir_all(&profile_dir).map_err(|error| error.to_string())?;
-  let user_installation = file_url_from_path(&profile_dir);
-
-  let mut command = Command::new(&soffice_path);
-  command
-    .arg("--headless")
-    .arg("--nologo")
-    .arg("--nodefault")
-    .arg("--norestore")
-    .arg("--nolockcheck")
-    .arg(format!("-env:UserInstallation={}", user_installation))
-    .arg("--convert-to")
-    .arg("pdf")
-    .arg("--outdir")
-    .arg(session_dir)
-    .arg(source_path)
-    .stdin(Stdio::null())
-    .stdout(Stdio::null())
-    .stderr(Stdio::null());
-  #[cfg(target_os = "windows")]
-  command.creation_flags(CREATE_NO_WINDOW);
-  let mut child = command.spawn().map_err(|error| {
-    if soffice_path.as_os_str().to_string_lossy().contains("soffice.") {
-      format!("Failed to start LibreOffice: {}. Install LibreOffice or add it to PATH.", error)
-    } else {
-      error.to_string()
-    }
-  })?;
-
-  wait_for_child(&mut child, WINDOWS_OFFICE_PREVIEW_TIMEOUT_SECS)?;
-
-  let source_stem = source_path
-    .file_stem()
-    .and_then(|value| value.to_str())
-    .ok_or("Preview file name is invalid".to_string())?;
-  let converted_preview = session_dir.join(format!("{}.pdf", source_stem));
-  let preview_path = if converted_preview.exists() {
-    converted_preview
-  } else {
-    fs::read_dir(session_dir)
-      .map_err(|error| error.to_string())?
-      .filter_map(|entry| entry.ok())
-      .map(|entry| entry.path())
-      .find(|path| {
-        path
-          .extension()
-          .and_then(|ext| ext.to_str())
-          .map(|ext| ext.eq_ignore_ascii_case("pdf"))
-          .unwrap_or(false)
-      })
-      .ok_or("Preview file not found".to_string())?
-  };
-
-  fs::copy(&preview_path, cached_preview_path).map_err(|error| error.to_string())?;
-  Ok(cached_preview_path.to_path_buf())
-}
-
-fn run_platform_preview(
-  session_dir: &Path,
-  source_path: &Path,
-  cached_preview_path: Option<&Path>,
-) -> Result<PathBuf, String> {
-  if cfg!(target_os = "macos") {
-    return run_qlmanage_preview(session_dir, source_path);
-  }
-  if cfg!(target_os = "windows") {
-    let cached_preview_path =
-      cached_preview_path.ok_or("Preview cache path missing".to_string())?;
-    return run_windows_libreoffice_preview(session_dir, source_path, cached_preview_path);
-  }
-  Err("Preview generation is not supported on this platform.".into())
-}
-
 fn list_zip_entries(path: &Path) -> Result<ArchivePreview, String> {
   let file = File::open(path).map_err(|error| error.to_string())?;
   let mut archive = ZipArchive::new(file).map_err(|error| error.to_string())?;
@@ -5095,147 +3264,6 @@ fn list_tar_entries<R: Read>(reader: R) -> Result<ArchivePreview, String> {
   Ok(ArchivePreview { entries, truncated })
 }
 
-fn parse_range(range: &str, size: u64, max_length: Option<u64>) -> Option<(u64, u64)> {
-  if !range.starts_with("bytes=") {
-    return None;
-  }
-  let range = range.trim_start_matches("bytes=");
-  let mut parts = range.split('-');
-  let start_part = parts.next()?.trim();
-  let end_part = parts.next().map(|value| value.trim());
-  let (start, end) = if start_part.is_empty() {
-    let suffix_length = end_part?.parse::<u64>().ok()?;
-    if suffix_length == 0 || size == 0 {
-      return None;
-    }
-    let mut length = suffix_length.min(size);
-    if let Some(max_length) = max_length {
-      length = length.min(max_length);
-    }
-    let start = size.saturating_sub(length);
-    (start, size.saturating_sub(1))
-  } else {
-    let start = start_part.parse::<u64>().ok()?;
-    let end = match end_part {
-      Some("") | None => {
-        let mut end = size.saturating_sub(1);
-        if let Some(max_length) = max_length {
-          let capped = start.saturating_add(max_length.saturating_sub(1));
-          end = std::cmp::min(capped, end);
-        }
-        end
-      }
-      Some(value) => value.parse::<u64>().ok()?,
-    };
-    (start, end)
-  };
-  if start > end || start >= size {
-    return None;
-  }
-  let end = std::cmp::min(end, size.saturating_sub(1));
-  Some((start, end))
-}
-
-fn should_cap_range_requests(content_type: &str) -> bool {
-  !(content_type.starts_with("image/") || content_type == "application/pdf")
-}
-
-fn build_response(
-  status: StatusCode,
-  headers: HeaderMap,
-  body: Vec<u8>,
-) -> Result<Response<Vec<u8>>, Box<dyn std::error::Error + Send + Sync>> {
-  let mut builder = Response::builder().status(status);
-  for (name, value) in headers {
-    if let Some(name) = name {
-      builder = builder.header(name, value);
-    }
-  }
-  Ok(builder.body(body)?)
-}
-
-fn protocol_response(
-  app: &AppHandle,
-  request: tauri::http::Request<Vec<u8>>,
-) -> Result<Response<Vec<u8>>, Box<dyn std::error::Error + Send + Sync>> {
-  let raw_id = request
-    .uri()
-    .path()
-    .trim_start_matches('/')
-    .to_string();
-  let id = percent_decode_str(&raw_id).decode_utf8_lossy().to_string();
-  if id.is_empty() {
-    return build_response(StatusCode::NOT_FOUND, HeaderMap::new(), Vec::new());
-  }
-
-  let state = app.state::<AppState>();
-  let map = state.map.lock().expect("map lock");
-  let source = match map.get(&id) {
-    Some(source) => source.clone(),
-    None => {
-      return build_response(StatusCode::NOT_FOUND, HeaderMap::new(), Vec::new());
-    }
-  };
-  drop(map);
-  let path = managed_source_to_local_path(app, &source).map_err(|error| {
-    Box::new(std::io::Error::new(std::io::ErrorKind::NotFound, error))
-      as Box<dyn std::error::Error + Send + Sync>
-  })?;
-
-  let mut file = File::open(&path)?;
-  let metadata = file.metadata()?;
-  let size = metadata.len();
-
-  let content_type = MimeGuess::from_path(&path)
-    .first_or_octet_stream()
-    .essence_str()
-    .to_string();
-
-  let mut headers = HeaderMap::new();
-  headers.insert(
-    HeaderName::from_static("content-type"),
-    HeaderValue::from_str(&content_type).unwrap_or(HeaderValue::from_static("application/octet-stream")),
-  );
-  headers.insert(
-    HeaderName::from_static("accept-ranges"),
-    HeaderValue::from_static("bytes"),
-  );
-
-  if let Some(range_value) = request.headers().get("range") {
-    if let Ok(range_str) = range_value.to_str() {
-      let max_range_length = if should_cap_range_requests(&content_type) {
-        Some(MAX_RANGE_CHUNK_BYTES)
-      } else {
-        None
-      };
-      if let Some((start, end)) = parse_range(range_str, size, max_range_length) {
-        let length = end - start + 1;
-        file.seek(SeekFrom::Start(start))?;
-        let mut buffer = vec![0u8; length as usize];
-        file.read_exact(&mut buffer)?;
-        headers.insert(
-          HeaderName::from_static("content-range"),
-          HeaderValue::from_str(&format!("bytes {}-{}/{}", start, end, size))
-            .unwrap_or(HeaderValue::from_static("bytes 0-0/0")),
-        );
-        headers.insert(
-          HeaderName::from_static("content-length"),
-          HeaderValue::from_str(&length.to_string()).unwrap_or(HeaderValue::from_static("0")),
-        );
-        return build_response(StatusCode::PARTIAL_CONTENT, headers, buffer);
-      }
-    }
-  }
-
-  let mut buffer = Vec::with_capacity(size as usize);
-  file.read_to_end(&mut buffer)?;
-  headers.insert(
-    HeaderName::from_static("content-length"),
-    HeaderValue::from_str(&buffer.len().to_string()).unwrap_or(HeaderValue::from_static("0")),
-  );
-  build_response(StatusCode::OK, headers, buffer)
-}
-
 #[cfg(target_os = "macos")]
 fn configure_macos_window_dragging(app: &tauri::AppHandle) -> Result<(), String> {
   let window = app
@@ -5266,6 +3294,9 @@ pub fn run() {
       fs::create_dir_all(&crash_dir).map_err(|error| error.to_string())?;
       fs::create_dir_all(&batches_dir).map_err(|error| error.to_string())?;
       let hash_cache = load_hash_cache(&hash_cache_path);
+      if let Ok(cache) = app.path().app_cache_dir() {
+        if let Err(error) = cleanup_preview_sessions(&cache.join("previews")) { eprintln!("Preview cleanup: {}", error); }
+      }
       if let Some(previous_session) = load_session_info(&crash_dir) {
         if !previous_session.clean_shutdown {
           let skip_report = load_last_crash_report(&crash_dir)
@@ -5300,15 +3331,17 @@ pub fn run() {
         app.package_info().name.to_string(),
         app.package_info().version.to_string(),
       );
-      clear_trash_dir_best_effort(&trash_dir);
+      cleanup_unreferenced_backups(app.handle(), &trash_dir)?;
       app.manage(AppState {
         map: Mutex::new(HashMap::new()),
         index: Mutex::new(IndexStore::default()),
         hash_cache: Mutex::new(hash_cache),
         hash_cache_path,
         preview_map: Mutex::new(HashMap::new()),
+        preview_jobs: Arc::new(Mutex::new(())),
         destination: Mutex::new(None),
         scan_cancellations: Mutex::new(HashMap::new()),
+        scan_jobs: Mutex::new(()),
         trash_dir,
       });
       #[cfg(target_os = "macos")]
@@ -5367,13 +3400,6 @@ pub fn run() {
       match event {
         tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
           mark_session_clean_best_effort(&app_handle);
-          let already_cleaned =
-            TRASH_CLEANED.swap(true, Ordering::Relaxed);
-          if already_cleaned {
-            return;
-          }
-          let trash_dir = app_handle.state::<AppState>().trash_dir.clone();
-          clear_trash_dir_best_effort(&trash_dir);
         }
         _ => {}
       }
@@ -5395,25 +3421,6 @@ mod tests {
       mime: "application/octet-stream".to_string(),
       duplicate_group: duplicate_group.map(|value| value.to_string()),
     }
-  }
-
-  #[test]
-  fn clear_trash_dir_removes_contents() {
-    let base = std::env::temp_dir().join(format!("tidy-trash-test-{}", Uuid::new_v4()));
-    fs::create_dir_all(base.join("nested")).unwrap();
-    fs::write(base.join("a.txt"), b"hi").unwrap();
-    fs::write(base.join("nested").join("b.txt"), b"hi").unwrap();
-
-    clear_trash_dir(&base).unwrap();
-
-    assert!(fs::read_dir(&base).unwrap().next().is_none());
-    let _ = fs::remove_dir_all(&base);
-  }
-
-  #[test]
-  fn clear_trash_dir_missing_is_ok() {
-    let base = std::env::temp_dir().join(format!("tidy-trash-test-missing-{}", Uuid::new_v4()));
-    clear_trash_dir(&base).unwrap();
   }
 
   #[test]
@@ -5658,24 +3665,6 @@ mod tests {
   }
 
   #[test]
-  fn parse_range_handles_standard_and_capped_ranges() {
-    assert_eq!(parse_range("bytes=0-9", 100, None), Some((0, 9)));
-    assert_eq!(parse_range("bytes=10-", 100, Some(5)), Some((10, 14)));
-    assert_eq!(parse_range("bytes=-10", 100, None), Some((90, 99)));
-    assert_eq!(parse_range("bytes=-10", 100, Some(4)), Some((96, 99)));
-    assert_eq!(parse_range("bytes=90-200", 100, None), Some((90, 99)));
-    assert_eq!(parse_range("bytes=101-200", 100, None), None);
-    assert_eq!(parse_range("items=0-9", 100, None), None);
-  }
-
-  #[test]
-  fn range_capping_skips_images_and_pdfs() {
-    assert!(!should_cap_range_requests("image/png"));
-    assert!(!should_cap_range_requests("application/pdf"));
-    assert!(should_cap_range_requests("text/plain"));
-  }
-
-  #[test]
   fn duplicate_grouping_detects_same_content_files() {
     let base = PathBuf::from(format!("/tmp/tidy-duplicates-{}", Uuid::new_v4()));
     fs::create_dir_all(&base).unwrap();
@@ -5804,6 +3793,21 @@ mod tests {
     assert!(cached_full_hash(&changed_candidate, &cache).is_none());
 
     let _ = fs::remove_dir_all(base);
+  }
+
+  #[test]
+  fn empty_folder_suggestions_respect_hidden_exclusion() {
+    let root = std::env::temp_dir().join(Uuid::new_v4().to_string());
+    fs::create_dir_all(root.join(".hidden/empty")).unwrap(); fs::create_dir(root.join("visible")).unwrap();
+    for hidden in [false, true] {
+      let result = build_cleanup_suggestions(SuggestionsRequest {
+        folder_path: root.to_string_lossy().into_owned(), include_subfolders: true, include_hidden: hidden,
+        stale_days: None, min_large_file_bytes: None, max_results: None,
+      }).unwrap();
+      assert_eq!(result.suggestions.len(), if hidden { 2 } else { 1 });
+      if !hidden { assert!(result.suggestions.iter().all(|entry| !entry.source_path.contains(".hidden"))); }
+    }
+    fs::remove_dir_all(root).unwrap();
   }
 
   #[test]

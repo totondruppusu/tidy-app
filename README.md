@@ -261,6 +261,28 @@ Build Android APK/AAB artifacts:
 npm run android:build
 ```
 
+To make `npm run android:build` produce a signed release APK, add Android signing credentials either in a root-level `keystore.properties` file or via environment variables.
+
+Example `keystore.properties`:
+
+```properties
+storeFile=/absolute/path/to/tidy-app-upload.keystore
+storePassword=your-keystore-password
+keyAlias=tidy-app
+keyPassword=your-key-password
+```
+
+Equivalent environment variables:
+
+```bash
+export ANDROID_KEYSTORE_PATH="/absolute/path/to/tidy-app-upload.keystore"
+export ANDROID_KEYSTORE_PASSWORD="your-keystore-password"
+export ANDROID_KEY_ALIAS="tidy-app"
+export ANDROID_KEY_PASSWORD="your-key-password"
+```
+
+When release signing is configured, `npm run android:build` will fail fast if any required signing value is missing instead of emitting an unsigned release APK.
+
 If you run `tauri android ...` directly instead of the npm scripts, make sure `JAVA_HOME` points to a Java 17-21 JDK first. Android Studio's bundled JDK is a good default on macOS:
 
 ```bash

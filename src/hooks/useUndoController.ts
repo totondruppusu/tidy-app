@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type Dispatch,
+  type SetStateAction,
+} from "react";
 import { invokeCommand, isDesktopRuntime } from "../lib/desktopBridge";
 import { MAX_UNDO_STACK } from "../constants/appConstants";
 import type { FileEntry, UndoAction } from "../types";
@@ -10,31 +17,75 @@ export function useUndoHistory() {
   useEffect(() => {
     if (!isDesktopRuntime()) return;
     let active = true;
-    invokeCommand<UndoAction[]>("get_recent_undo_actions").then(actions => {
-      if (active) {
-        setUndoStack(previous => [...previous, ...(Array.isArray(actions) ? actions : [])].slice(0, MAX_UNDO_STACK));
-        setHydrated(true);
-      }
-    }).catch(error => console.warn("Unable to load undo history; preserving saved records.", error));
-    return () => { active = false; };
+    invokeCommand<UndoAction[]>("get_recent_undo_actions")
+      .then((actions) => {
+        if (active) {
+          setUndoStack((previous) =>
+            [...previous, ...(Array.isArray(actions) ? actions : [])].slice(
+              0,
+              MAX_UNDO_STACK,
+            ),
+          );
+          setHydrated(true);
+        }
+      })
+      .catch((error) =>
+        console.warn(
+          "Unable to load undo history; preserving saved records.",
+          error,
+        ),
+      );
+    return () => {
+      active = false;
+    };
   }, []);
   useEffect(() => {
     if (!hydrated || !isDesktopRuntime()) return;
-    writes.current = writes.current.then(() => invokeCommand<void>("store_recent_undo_actions", { actions: undoStack }))
-      .catch(error => console.warn("Unable to save undo history.", error));
+    writes.current = writes.current
+      .then(() =>
+        invokeCommand<void>("store_recent_undo_actions", {
+          actions: undoStack,
+        }),
+      )
+      .catch((error) => console.warn("Unable to save undo history.", error));
   }, [hydrated, undoStack]);
-  const pushUndo = useCallback((action: UndoAction) => setUndoStack(previous => [action, ...previous].slice(0, MAX_UNDO_STACK)), []);
+  const pushUndo = useCallback(
+    (action: UndoAction) =>
+      setUndoStack((previous) =>
+        [action, ...previous].slice(0, MAX_UNDO_STACK),
+      ),
+    [],
+  );
   return { undoStack, setUndoStack, pushUndo };
 }
 
+export type UndoFailure = {
+  message: string;
+  sourcePath: string;
+  destinationPath: string;
+};
+
 type UndoOptions = {
+  onFailure?: (failure: UndoFailure) => void;
   undoStack: UndoAction[];
   setUndoStack: Dispatch<SetStateAction<UndoAction[]>>;
   restoreFileEntry: (file: FileEntry) => void;
+  restoreFileEntries?: (files: FileEntry[]) => void;
   updateStatus: (message: string) => void;
-  runMutationWithSpinner: (label: string, operation: () => Promise<void>) => Promise<void>;
+  runMutationWithSpinner: (
+    label: string,
+    operation: () => Promise<void>,
+  ) => Promise<void>;
 };
-export function useUndoAction({ undoStack, setUndoStack, restoreFileEntry, updateStatus, runMutationWithSpinner }: UndoOptions) {
+export function useUndoAction({
+  undoStack,
+  setUndoStack,
+  restoreFileEntry,
+  restoreFileEntries,
+  updateStatus,
+  runMutationWithSpinner,
+  onFailure,
+}: UndoOptions) {
   const undoLastAction = useCallback(async () => {
     const lastAction = undoStack[0];
     if (!lastAction) {
@@ -47,16 +98,24 @@ export function useUndoAction({ undoStack, setUndoStack, restoreFileEntry, updat
           await invokeCommand("restore_folder", {
             source: lastAction.trashPath,
             destination: lastAction.folderPath,
+            allowUnsafe: lastAction.allowUnsafe ?? false,
             files: lastAction.items.map((item) => ({
               id: item.file.id,
               relativePath: item.relativePath,
             })),
           });
-          lastAction.items.forEach((item) => restoreFileEntry(item.file));
+          const restored = lastAction.items.map((item) => item.file);
+          if (restoreFileEntries) restoreFileEntries(restored);
+          else restored.forEach(restoreFileEntry);
           setUndoStack((prev) => prev.slice(1));
           updateStatus(`Restored ${lastAction.items.length} items.`);
         } catch (error) {
           updateStatus(`Undo failed: ${String(error)}`);
+          onFailure?.({
+            message: String(error),
+            sourcePath: lastAction.trashPath,
+            destinationPath: lastAction.folderPath,
+          });
         }
       });
       return;
@@ -74,6 +133,7 @@ export function useUndoAction({ undoStack, setUndoStack, restoreFileEntry, updat
           fileName: lastAction.file.name,
           mimeType: lastAction.file.mime,
           displayPath: lastAction.file.path,
+          allowUnsafe: lastAction.allowUnsafe ?? false,
           sizeBytes: lastAction.file.sizeBytes,
           modifiedMs: lastAction.file.modifiedMs,
         });
@@ -82,9 +142,18 @@ export function useUndoAction({ undoStack, setUndoStack, restoreFileEntry, updat
         updateStatus(`Undid ${lastAction.kind}.`);
       } catch (error) {
         updateStatus(`Undo failed: ${String(error)}`);
+        onFailure?.({ message: String(error), sourcePath, destinationPath });
       }
     });
-  }, [undoStack, restoreFileEntry, updateStatus, runMutationWithSpinner]);
+  }, [
+    undoStack,
+    setUndoStack,
+    restoreFileEntry,
+    restoreFileEntries,
+    updateStatus,
+    runMutationWithSpinner,
+    onFailure,
+  ]);
 
   return undoLastAction;
 }

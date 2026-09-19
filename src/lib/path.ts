@@ -1,19 +1,36 @@
-export const splitPathSegments = (path: string) => path.split(/[\\/]+/).filter(Boolean);
+const normalizePath = (path: string) =>
+  path.replace(/^\\\\\?\\UNC\\/i, "//").replace(/^\\\\\?\\/, "");
+export const splitPathSegments = (path: string) =>
+  normalizePath(path)
+    .split(/[\\/]+/)
+    .filter(Boolean);
 
-export const getRelativeSegments = (fullPath: string, basePath: string | null) => {
+export const getRelativeSegments = (
+  fullPath: string,
+  basePath: string | null,
+) => {
   const fullSegments = splitPathSegments(fullPath);
   if (!basePath) {
     return fullSegments;
   }
   const baseSegments = splitPathSegments(basePath);
+  const windowsPath = /^[a-z]:[\\/]|^[\\/]{2}/i.test(normalizePath(basePath));
   let index = 0;
-  while (index < baseSegments.length && fullSegments[index] === baseSegments[index]) {
+  while (
+    index < baseSegments.length &&
+    (windowsPath
+      ? fullSegments[index]?.toLowerCase() === baseSegments[index].toLowerCase()
+      : fullSegments[index] === baseSegments[index])
+  ) {
     index += 1;
   }
   return fullSegments.slice(index);
 };
 
-export const formatRelativeFolder = (fullPath: string, basePath: string | null) => {
+export const formatRelativeFolder = (
+  fullPath: string,
+  basePath: string | null,
+) => {
   const segments = getRelativeSegments(fullPath, basePath);
   if (segments.length <= 1) {
     return "Root folder";

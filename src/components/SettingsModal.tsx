@@ -1,4 +1,12 @@
-import { useState, type Dispatch, type ReactNode, type RefObject, type SetStateAction } from "react";
+import { Modal } from "./Modal";
+import { useScrollHints } from "../hooks/useScrollHints";
+import {
+  useRef,
+  useState,
+  type Dispatch,
+  type ReactNode,
+  type SetStateAction,
+} from "react";
 import type {
   DensityMode,
   ExtensionFilterMode,
@@ -8,7 +16,10 @@ import type {
   TrashBehavior,
   ViewMode,
 } from "../types";
-import { DUPLICATE_MIN_SIZE_OPTIONS, LARGE_PREVIEW_SIZE_BYTES } from "../constants/appConstants";
+import {
+  DUPLICATE_MIN_SIZE_OPTIONS,
+  LARGE_PREVIEW_SIZE_BYTES,
+} from "../constants/appConstants";
 import { formatBytes } from "../lib/format";
 
 type SettingsModalProps = {
@@ -59,8 +70,6 @@ type SettingsModalProps = {
   };
   onClose: () => void;
   onOpenHelp: () => void;
-  settingsFrameRef: RefObject<HTMLDivElement>;
-  settingsBodyRef: RefObject<HTMLDivElement>;
 };
 
 export const SettingsModal = ({
@@ -73,19 +82,19 @@ export const SettingsModal = ({
   appearance,
   onClose,
   onOpenHelp,
-  settingsFrameRef,
-  settingsBodyRef,
 }: SettingsModalProps) => {
-  if (!isOpen) {
-    return null;
-  }
-
   const [openSections, setOpenSections] = useState({
     layout: false,
     scanning: false,
     cleanup: false,
     playback: false,
   });
+
+  const settingsBodyRef = useRef<HTMLDivElement>(null);
+  const settingsFrameRef = useRef<HTMLDivElement>(null);
+  useScrollHints(settingsBodyRef, settingsFrameRef, isOpen);
+
+  if (!isOpen) return null;
 
   const toggleSection = (section: keyof typeof openSections) => {
     setOpenSections((current) => ({
@@ -104,7 +113,9 @@ export const SettingsModal = ({
     const isExpanded = openSections[section];
 
     return (
-      <section className={`settings-section${isExpanded ? " is-expanded" : ""}`}>
+      <section
+        className={`settings-section${isExpanded ? " is-expanded" : ""}`}
+      >
         <button
           type="button"
           className="settings-section-header"
@@ -132,43 +143,43 @@ export const SettingsModal = ({
   };
 
   return (
-    <div
-      className="modal-backdrop"
-      role="presentation"
-      onClick={(event) => {
-        if (event.target === event.currentTarget) {
-          onClose();
-        }
-      }}
+    <Modal
+      className="settings-modal"
+      labelledBy="settings-title"
+      onClose={onClose}
     >
+      <div className="modal-header">
+        <h2 id="settings-title" className="modal-title">
+          Settings
+        </h2>
+        <button
+          type="button"
+          className="icon-button"
+          onClick={onClose}
+          aria-label="Close settings"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M18.3 5.7a1 1 0 0 0-1.4 0L12 10.6 7.1 5.7a1 1 0 1 0-1.4 1.4L10.6 12l-4.9 4.9a1 1 0 1 0 1.4 1.4L12 13.4l4.9 4.9a1 1 0 0 0 1.4-1.4L13.4 12l4.9-4.9a1 1 0 0 0 0-1.4Z" />
+          </svg>
+        </button>
+      </div>
       <div
-        className="modal-panel settings-modal"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="settings-title"
+        className="settings-scroll-frame scroll-hints"
+        ref={settingsFrameRef}
       >
-        <div className="modal-header">
-          <h2 id="settings-title" className="modal-title">
-            Settings
-          </h2>
-          <button type="button" className="icon-button" onClick={onClose} aria-label="Close settings">
-            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-              <path d="M18.3 5.7a1 1 0 0 0-1.4 0L12 10.6 7.1 5.7a1 1 0 1 0-1.4 1.4L10.6 12l-4.9 4.9a1 1 0 1 0 1.4 1.4L12 13.4l4.9 4.9a1 1 0 0 0 1.4-1.4L13.4 12l4.9-4.9a1 1 0 0 0 0-1.4Z" />
-            </svg>
-          </button>
-        </div>
-        <div className="settings-scroll-frame scroll-hints" ref={settingsFrameRef}>
-          <div className="modal-body" ref={settingsBodyRef}>
-            <div className="settings-grid">
-              {renderSection(
-                "layout",
-                "Layout and defaults",
-                "Define how the list starts and appears.",
-                <>
+        <div className="modal-body" ref={settingsBodyRef}>
+          <div className="settings-grid">
+            {renderSection(
+              "layout",
+              "Layout and defaults",
+              "Define how the list starts and appears.",
+              <>
                 <div className="settings-row">
                   <div className="setting-info">
                     <div className="setting-title">Start view</div>
-                    <div className="setting-subtitle">Choose the default file list layout.</div>
+                    <div className="setting-subtitle">
+                      Choose the default file list layout.
+                    </div>
                   </div>
                   <select
                     value={layout.viewMode}
@@ -184,7 +195,9 @@ export const SettingsModal = ({
                 <div className="settings-row">
                   <div className="setting-info">
                     <div className="setting-title">Default sort</div>
-                    <div className="setting-subtitle">Set the initial sort order.</div>
+                    <div className="setting-subtitle">
+                      Set the initial sort order.
+                    </div>
                   </div>
                   <select
                     value={layout.sortMode}
@@ -209,12 +222,16 @@ export const SettingsModal = ({
                 <div className="settings-row">
                   <div className="setting-info">
                     <div className="setting-title">Default grouping</div>
-                    <div className="setting-subtitle">Choose how files are grouped on load.</div>
+                    <div className="setting-subtitle">
+                      Choose how files are grouped on load.
+                    </div>
                   </div>
                   <select
                     value={layout.displayGroupMode}
                     onChange={(event) =>
-                      layout.handleGroupModeChange(event.target.value as GroupMode)
+                      layout.handleGroupModeChange(
+                        event.target.value as GroupMode,
+                      )
                     }
                     disabled={isLoading || layout.shouldGroupDuplicates}
                   >
@@ -229,7 +246,9 @@ export const SettingsModal = ({
                 <div className="settings-row">
                   <div className="setting-info">
                     <div className="setting-title">Extension defaults</div>
-                    <div className="setting-subtitle">Set the initial extension filter selection.</div>
+                    <div className="setting-subtitle">
+                      Set the initial extension filter selection.
+                    </div>
                   </div>
                   <select
                     value={layout.extensionFilterMode}
@@ -248,7 +267,9 @@ export const SettingsModal = ({
                 <div className="settings-row">
                   <div className="setting-info">
                     <div className="setting-title">List density</div>
-                    <div className="setting-subtitle">Control how compact the file list appears.</div>
+                    <div className="setting-subtitle">
+                      Control how compact the file list appears.
+                    </div>
                   </div>
                   <select
                     value={layout.listDensity}
@@ -261,17 +282,19 @@ export const SettingsModal = ({
                     <option value="compact">Compact</option>
                   </select>
                 </div>
-                </>,
-              )}
-              {renderSection(
-                "scanning",
-                "Scanning",
-                "Control what gets picked up on import.",
-                <>
+              </>,
+            )}
+            {renderSection(
+              "scanning",
+              "Scanning",
+              "Control what gets picked up on import.",
+              <>
                 <div className="settings-row">
                   <div className="setting-info">
                     <div className="setting-title">Auto-scan on pick</div>
-                    <div className="setting-subtitle">Start scanning as soon as a folder is chosen.</div>
+                    <div className="setting-subtitle">
+                      Start scanning as soon as a folder is chosen.
+                    </div>
                   </div>
                   <label className="setting-toggle">
                     <input
@@ -288,7 +311,9 @@ export const SettingsModal = ({
                 <div className="settings-row">
                   <div className="setting-info">
                     <div className="setting-title">Remember last folder</div>
-                    <div className="setting-subtitle">Reopen the most recent folder at launch.</div>
+                    <div className="setting-subtitle">
+                      Reopen the most recent folder at launch.
+                    </div>
                   </div>
                   <label className="setting-toggle">
                     <input
@@ -305,7 +330,9 @@ export const SettingsModal = ({
                 <div className="settings-row">
                   <div className="setting-info">
                     <div className="setting-title">Include subfolders</div>
-                    <div className="setting-subtitle">Scan nested directories when choosing a folder.</div>
+                    <div className="setting-subtitle">
+                      Scan nested directories when choosing a folder.
+                    </div>
                   </div>
                   <label className="setting-toggle">
                     <input
@@ -322,7 +349,9 @@ export const SettingsModal = ({
                 <div className="settings-row">
                   <div className="setting-info">
                     <div className="setting-title">Include hidden items</div>
-                    <div className="setting-subtitle">Show dotfiles and hidden folders in scans.</div>
+                    <div className="setting-subtitle">
+                      Show dotfiles and hidden folders in scans.
+                    </div>
                   </div>
                   <label className="setting-toggle">
                     <input
@@ -336,17 +365,19 @@ export const SettingsModal = ({
                     <span>{scanning.includeHidden ? "On" : "Off"}</span>
                   </label>
                 </div>
-                </>,
-              )}
-              {renderSection(
-                "cleanup",
-                "Duplicates and cleanup",
-                "Tune accuracy and deletion behavior.",
-                <>
+              </>,
+            )}
+            {renderSection(
+              "cleanup",
+              "Duplicates and cleanup",
+              "Tune accuracy and deletion behavior.",
+              <>
                 <div className="settings-row">
                   <div className="setting-info">
                     <div className="setting-title">Duplicate matching</div>
-                    <div className="setting-subtitle">Use hashes for accurate duplicate detection.</div>
+                    <div className="setting-subtitle">
+                      Use hashes for accurate duplicate detection.
+                    </div>
                   </div>
                   <label className="setting-toggle">
                     <input
@@ -362,8 +393,12 @@ export const SettingsModal = ({
                 </div>
                 <div className="settings-row">
                   <div className="setting-info">
-                    <div className="setting-title">Duplicate size threshold</div>
-                    <div className="setting-subtitle">Ignore files smaller than this size.</div>
+                    <div className="setting-title">
+                      Duplicate size threshold
+                    </div>
+                    <div className="setting-subtitle">
+                      Ignore files smaller than this size.
+                    </div>
                   </div>
                   <select
                     value={cleanup.duplicateMinSizeBytes}
@@ -384,7 +419,9 @@ export const SettingsModal = ({
                 <div className="settings-row">
                   <div className="setting-info">
                     <div className="setting-title">Trash behavior</div>
-                    <div className="setting-subtitle">System trash supports up to 20 undo actions.</div>
+                    <div className="setting-subtitle">
+                      System trash supports up to 20 undo actions.
+                    </div>
                   </div>
                   <select
                     value={cleanup.trashBehavior}
@@ -424,17 +461,19 @@ export const SettingsModal = ({
                     <span>{cleanup.confirmTrash ? "On" : "Off"}</span>
                   </label>
                 </div>
-                </>,
-              )}
-              {renderSection(
-                "playback",
-                "Playback and appearance",
-                "Media behavior and theme preferences.",
-                <>
+              </>,
+            )}
+            {renderSection(
+              "playback",
+              "Playback and appearance",
+              "Media behavior and theme preferences.",
+              <>
                 <div className="settings-row">
                   <div className="setting-info">
                     <div className="setting-title">Auto-play media</div>
-                    <div className="setting-subtitle">Start videos and audio automatically.</div>
+                    <div className="setting-subtitle">
+                      Start videos and audio automatically.
+                    </div>
                   </div>
                   <label className="setting-toggle">
                     <input
@@ -452,7 +491,8 @@ export const SettingsModal = ({
                   <div className="setting-info">
                     <div className="setting-title">Skip large previews</div>
                     <div className="setting-subtitle">
-                      Disable previews over {formatBytes(LARGE_PREVIEW_SIZE_BYTES)}.
+                      Disable previews over{" "}
+                      {formatBytes(LARGE_PREVIEW_SIZE_BYTES)}.
                     </div>
                   </div>
                   <label className="setting-toggle">
@@ -470,7 +510,9 @@ export const SettingsModal = ({
                 <div className="settings-row">
                   <div className="setting-info">
                     <div className="setting-title">Dark mode</div>
-                    <div className="setting-subtitle">Switch to a darker color palette.</div>
+                    <div className="setting-subtitle">
+                      Switch to a darker color palette.
+                    </div>
                   </div>
                   <label className="setting-toggle">
                     <input
@@ -486,17 +528,16 @@ export const SettingsModal = ({
                     <span>{appearance.theme === "dark" ? "On" : "Off"}</span>
                   </label>
                 </div>
-                </>,
-              )}
-            </div>
+              </>,
+            )}
           </div>
         </div>
-        <div className="modal-footer modal-footer-settings">
-          <button type="button" className="help-button" onClick={onOpenHelp}>
-            Help & Shortcuts
-          </button>
-        </div>
       </div>
-    </div>
+      <div className="modal-footer modal-footer-settings">
+        <button type="button" className="help-button" onClick={onOpenHelp}>
+          Help & Shortcuts
+        </button>
+      </div>
+    </Modal>
   );
 };

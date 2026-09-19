@@ -36,12 +36,14 @@ type UsePreviewControllerOptions = {
   sortedFiles: FileEntry[];
   currentIndex: number;
   skipLargePreviews: boolean;
+  enabled?: boolean;
 };
 
 export const usePreviewController = ({
   sortedFiles,
   currentIndex,
   skipLargePreviews,
+  enabled = true,
 }: UsePreviewControllerOptions) => {
   const [previewIndex, setPreviewIndex] = useState(0);
   const [previewZoom, setPreviewZoom] = useState(1);
@@ -95,11 +97,12 @@ export const usePreviewController = ({
     };
   }, []);
 
-  const previewFile = sortedFiles[previewIndex];
+  // Streamed file IDs are registered by the backend only when a scan completes.
+  const previewFile = enabled ? sortedFiles[previewIndex] : undefined;
   const previewExtension = previewFile ? getExtension(previewFile.name) : "none";
   const officePreviewExtension = officePreviewId ? getExtension(officePreviewId) : "none";
   const isLargePreview =
-    Boolean(previewFile) && previewFile.sizeBytes >= LARGE_PREVIEW_SIZE_BYTES;
+    Boolean(previewFile && previewFile.sizeBytes >= LARGE_PREVIEW_SIZE_BYTES);
   const isPreviewSuppressed =
     Boolean(previewFile) &&
     skipLargePreviews &&
@@ -110,16 +113,11 @@ export const usePreviewController = ({
     canRenderPreview &&
     (previewFile?.kind === "image" || previewFile?.kind === "video");
   const isAudioPreview = canRenderPreview && previewFile?.kind === "audio";
-  const isMarkdownPreview =
-    canRenderPreview &&
-    Boolean(previewFile) &&
-    (previewFile.kind === "text" || isSupportedTextPreviewFile(previewFile.name)) &&
-    isMarkdownExtension(previewExtension);
-  const isTextPreview =
-    canRenderPreview &&
-    Boolean(previewFile) &&
-    (previewFile.kind === "text" || isSupportedTextPreviewFile(previewFile.name)) &&
-    !isMarkdownPreview;
+  const isReadableText = Boolean(
+    previewFile && (previewFile.kind === "text" || isSupportedTextPreviewFile(previewFile.name)),
+  );
+  const isMarkdownPreview = canRenderPreview && isReadableText && isMarkdownExtension(previewExtension);
+  const isTextPreview = canRenderPreview && isReadableText && !isMarkdownPreview;
   const isPdfPreview =
     canRenderPreview &&
     previewFile?.kind === "docs" &&

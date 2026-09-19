@@ -274,3 +274,14 @@ test("suggestions entrypoint remains hidden for now", async ({
     }),
   ).toHaveCount(0);
 });
+
+test("deferred settings retain section state across reopen", async ({ page }) => {
+  await page.getByRole("button", { name: "Open settings" }).click();
+  const section = page.locator(".settings-section-header").first();
+  await expect(section).toBeVisible();
+  await section.click();
+  await expect(section).toHaveAttribute("aria-expanded", "true");
+  await page.getByRole("button", { name: "Close settings" }).click();
+  await page.getByRole("button", { name: "Open settings" }).click();
+  await expect(section).toHaveAttribute("aria-expanded", "true");
+});

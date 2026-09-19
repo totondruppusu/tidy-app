@@ -2,24 +2,70 @@
 use super::*;
 
 pub(super) fn atomic_write(path: &Path, contents: &[u8]) -> Result<(), String> {
+  atomic_write_with(path, |file| {
+    file.write_all(contents).map_err(|error| error.to_string())
+  })
+}
+
+fn atomic_write_with(
+  path: &Path,
+  write: impl FnOnce(&mut File) -> Result<(), String>,
+) -> Result<(), String> {
   let parent = path.parent().ok_or("Record has no parent directory")?;
   fs::create_dir_all(parent).map_err(|error| error.to_string())?;
   let temporary = parent.join(format!(".tidy-record-{}", Uuid::new_v4()));
-  let result = (|| -> std::io::Result<()> {
+  let result = (|| -> Result<(), String> {
     let mut file = OpenOptions::new()
       .write(true)
       .create_new(true)
-      .open(&temporary)?;
-    file.write_all(contents)?;
-    file.sync_all()?;
+      .open(&temporary)
+      .map_err(|error| error.to_string())?;
+    write(&mut file)?;
+    file.sync_all().map_err(|error| error.to_string())?;
     drop(file);
-    fs::rename(&temporary, path)?;
-    Ok(())
+    fs::rename(&temporary, path).map_err(|error| error.to_string())
   })();
   if result.is_err() {
     let _ = fs::remove_file(temporary);
   }
-  result.map_err(|error| error.to_string())
+  result
+}
+
+// Check cancellation at buffered disk writes, rather than for every JSON token.
+struct CancellableWriter<'a> {
+  file: &'a mut File,
+  cancelled: Option<&'a AtomicBool>,
+}
+impl Write for CancellableWriter<'_> {
+  fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+    if self
+      .cancelled
+      .is_some_and(|flag| flag.load(Ordering::Relaxed))
+    {
+      return Err(std::io::Error::other("Scan cancelled"));
+    }
+    self.file.write(bytes)
+  }
+  fn flush(&mut self) -> std::io::Result<()> {
+    self.file.flush()
+  }
+}
+
+fn atomic_write_json(
+  path: &Path,
+  value: &impl Serialize,
+  cancelled: Option<&AtomicBool>,
+) -> Result<(), String> {
+  atomic_write_with(path, |file| {
+    let mut writer =
+      std::io::BufWriter::with_capacity(64 * 1024, CancellableWriter { file, cancelled });
+    serde_json::to_writer(&mut writer, value).map_err(|error| error.to_string())?;
+    writer.flush().map_err(|error| error.to_string())?;
+    if cancelled.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+      return Err("Scan cancelled".into());
+    }
+    Ok(())
+  })
 }
 
 pub(super) fn cleanup_unreferenced_backups(
@@ -191,12 +237,13 @@ pub(super) fn load_hash_cache(path: &Path) -> HashCache {
     .unwrap_or_default()
 }
 
-pub(super) fn store_hash_cache(path: &Path, cache: &HashCache) -> Result<(), String> {
-  if let Some(parent) = path.parent() {
-    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+pub(super) fn store_hash_cache(path: &Path, cache: &mut HashCache) -> Result<(), String> {
+  if !cache.dirty {
+    return Ok(());
   }
-  let serialized = serde_json::to_string(cache).map_err(|error| error.to_string())?;
-  atomic_write(&path, serialized.as_bytes())
+  atomic_write_json(path, cache, None)?;
+  cache.dirty = false;
+  Ok(())
 }
 
 pub(super) fn load_cached_scan(path: &Path) -> Option<CachedScan> {
@@ -205,12 +252,32 @@ pub(super) fn load_cached_scan(path: &Path) -> Option<CachedScan> {
     .and_then(|contents| serde_json::from_str(&contents).ok())
 }
 
-pub(super) fn store_cached_scan(path: &Path, cached_scan: &CachedScan) -> Result<(), String> {
-  if let Some(parent) = path.parent() {
-    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+pub(super) fn persist_scan_result(
+  app_data_dir: &Path,
+  request: ScanCacheRequest,
+  result: &ScanResult,
+  cancelled: Option<&AtomicBool>,
+) -> Result<(), String> {
+  // A partial or cancelled scan must never replace the last complete cache.
+  if !result.issues.is_empty() {
+    return Ok(());
   }
-  let serialized = serde_json::to_string(cached_scan).map_err(|error| error.to_string())?;
-  atomic_write(&path, serialized.as_bytes())
+  if cancelled.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+    return Err("Scan cancelled".into());
+  }
+  let path = scan_cache_file_path(app_data_dir, &request);
+  let cached = CachedScan {
+    folder_path: request.folder_path,
+    filter_mode: request.filter_mode,
+    include_subfolders: request.include_subfolders,
+    include_hidden: request.include_hidden,
+    use_hash_for_duplicates: request.use_hash_for_duplicates,
+    duplicate_min_size_bytes: request.duplicate_min_size_bytes,
+    cached_at_ms: now_ms(),
+    files: &result.files,
+    total: result.total,
+  };
+  atomic_write_json(&path, &cached, cancelled)
 }
 
 pub(super) fn modified_ms_from_metadata(metadata: &fs::Metadata) -> Option<u64> {
@@ -254,6 +321,7 @@ pub(super) fn insert_cached_full_hash(
   cache: &mut HashCache,
 ) {
   let key = hash_cache_key(&candidate.path, candidate.size_bytes, candidate.modified_ms);
+  cache.dirty = true;
   cache.entries.insert(
     key,
     HashCacheEntry {
@@ -265,6 +333,8 @@ pub(super) fn insert_cached_full_hash(
   );
 }
 
+// Journal fields intentionally match the persisted audit record.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn append_operation_journal(
   app_handle: &AppHandle,
   operation: &str,
@@ -352,4 +422,131 @@ pub(super) fn store_recent_undo_actions_internal(
   }
   let serialized = serde_json::to_string_pretty(&actions).map_err(|error| error.to_string())?;
   atomic_write(&path, serialized.as_bytes())
+}
+
+#[cfg(test)]
+mod scan_cache_tests {
+  use super::*;
+
+  #[test]
+  fn streamed_cache_preserves_schema_and_never_replaces_good_data_with_partial_scans() {
+    let root = std::env::temp_dir().join(Uuid::new_v4().to_string());
+    let request = ScanCacheRequest {
+      folder_path: "/root".into(),
+      filter_mode: "all".into(),
+      include_subfolders: true,
+      include_hidden: false,
+      use_hash_for_duplicates: false,
+      duplicate_min_size_bytes: 0,
+    };
+    let mut result = ScanResult {
+      files: vec![FileEntry {
+        id: "id".into(),
+        path: "/root/a.txt".into(),
+        name: "a.txt".into(),
+        kind: FileKind::Text,
+        size_bytes: 42,
+        modified_ms: None,
+        mime: "text/plain".into(),
+        duplicate_group: None,
+      }],
+      total: 1,
+      indexed: 1,
+      issues: Vec::new(),
+    };
+    let cancelled = AtomicBool::new(false);
+    persist_scan_result(&root, request.clone(), &result, Some(&cancelled)).unwrap();
+    let path = scan_cache_file_path(&root, &request);
+    let original = fs::read(&path).unwrap();
+    let loaded = load_cached_scan(&path).unwrap();
+    assert_eq!(loaded.files[0].name, "a.txt");
+    assert_eq!(loaded.total, 1);
+    assert_eq!(loaded.folder_path, "/root");
+    result.issues.push(ScanIssue {
+      code: "unreadable-entry".into(),
+      path: None,
+      message: "Denied".into(),
+    });
+    persist_scan_result(&root, request.clone(), &result, Some(&cancelled)).unwrap();
+    assert_eq!(fs::read(&path).unwrap(), original);
+    result.issues.clear();
+    cancelled.store(true, Ordering::Relaxed);
+    assert!(persist_scan_result(&root, request, &result, Some(&cancelled)).is_err());
+    assert_eq!(fs::read(&path).unwrap(), original);
+    fs::remove_dir_all(root).unwrap();
+  }
+
+  #[test]
+  fn cancellation_during_json_serialization_preserves_record_and_removes_temporary_file() {
+    struct CancelDuringSerialize<'a>(&'a AtomicBool);
+    impl Serialize for CancelDuringSerialize<'_> {
+      fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.store(true, Ordering::Relaxed);
+        serializer.serialize_bytes(&vec![1; 128 * 1024])
+      }
+    }
+    let root = std::env::temp_dir().join(Uuid::new_v4().to_string());
+    let path = root.join("cache.json");
+    atomic_write(&path, b"previous").unwrap();
+    let cancelled = AtomicBool::new(false);
+    assert!(
+      atomic_write_json(&path, &CancelDuringSerialize(&cancelled), Some(&cancelled)).is_err()
+    );
+    assert_eq!(fs::read(&path).unwrap(), b"previous");
+    assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+    fs::remove_dir_all(root).unwrap();
+  }
+}
+
+#[cfg(test)]
+mod hash_cache_tests {
+  use super::*;
+
+  #[test]
+  fn unchanged_caches_do_not_write_and_failed_saves_remain_retryable() {
+    let root = std::env::temp_dir().join(Uuid::new_v4().to_string());
+    let path = root.join("hashes.json");
+    let mut cache = HashCache::default();
+    store_hash_cache(&path, &mut cache).unwrap();
+    assert!(!path.exists());
+    let candidate = DuplicateCandidate {
+      path: "/root/a".into(),
+      size_bytes: 3,
+      modified_ms: Some(10),
+    };
+    insert_cached_full_hash(&candidate, "abc".into(), &mut cache);
+    fs::write(&root, b"blocks parent directory").unwrap();
+    assert!(store_hash_cache(&path, &mut cache).is_err());
+    assert!(cache.dirty);
+    fs::remove_file(&root).unwrap();
+    store_hash_cache(&path, &mut cache).unwrap();
+    assert!(!cache.dirty);
+    let contents = fs::read_to_string(&path).unwrap();
+    assert!(!contents.contains("dirty"));
+    let mut loaded = load_hash_cache(&path);
+    assert!(!loaded.dirty);
+    assert_eq!(
+      cached_full_hash(&candidate, &loaded).as_deref(),
+      Some("abc")
+    );
+    fs::remove_file(&path).unwrap();
+    store_hash_cache(&path, &mut loaded).unwrap();
+    assert!(!path.exists(), "cache hits must not rewrite the hash cache");
+    fs::remove_dir_all(root).unwrap();
+  }
+}
+
+#[cfg(test)]
+mod undo_policy_tests {
+  use super::*;
+  #[test]
+  fn undo_history_preserves_protected_path_approval_and_loads_old_records() {
+    let old = serde_json::json!({"kind": "trash-folder", "folderPath": "/Library/example", "trashPath": "/backup/example", "items": []});
+    let action: UndoActionPayload = serde_json::from_value(old.clone()).unwrap();
+    assert_eq!(serde_json::to_value(action).unwrap()["allowUnsafe"], false);
+    let mut approved = old;
+    approved["allowUnsafe"] = serde_json::Value::Bool(true);
+    let action: UndoActionPayload = serde_json::from_value(approved).unwrap();
+    assert_eq!(serde_json::to_value(action).unwrap()["allowUnsafe"], true);
+  }
 }

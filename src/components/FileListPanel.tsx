@@ -27,7 +27,6 @@ type ListControls = {
   hasFolders: boolean;
   hasCollapsedFolders: boolean;
   onToggleAllFolders: () => void;
-  isRenderingList: boolean;
   sortMode: SortMode;
   onSortModeChange: (value: SortMode) => void;
   displayGroupMode: GroupMode;
@@ -38,8 +37,6 @@ type ListControls = {
   listDensity: DensityMode;
   hasFiles: boolean;
   listItems: ReactNode;
-  renderCount: number;
-  filteredCount: number;
 };
 
 type ExtensionControls = {
@@ -158,9 +155,6 @@ export const FileListPanel = ({
               {list.hasCollapsedFolders ? "Unfold all" : "Fold all"}
             </button>
           )}
-          {list.isRenderingList && (
-            <span className="rendering">Rendering list...</span>
-          )}
         </div>
       </div>
       <div className="list-header-controls">
@@ -240,11 +234,6 @@ export const FileListPanel = ({
             {list.totalFiles === 0
               ? "No files loaded."
               : "No files match the selected extensions."}
-          </div>
-        )}
-        {list.isRenderingList && (
-          <div className="list-progress">
-            Showing {list.renderCount} of {list.filteredCount}
           </div>
         )}
       </div>

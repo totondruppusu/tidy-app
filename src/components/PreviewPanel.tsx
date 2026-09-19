@@ -1,3 +1,4 @@
+import { Modal } from "./Modal";
 import {
   useEffect,
   useState,
@@ -43,7 +44,9 @@ export const PreviewGestureLegend = ({
   return (
     <div className="preview-gesture-shell" aria-live="polite">
       <div id="preview-gesture-map" className="preview-gesture-map">
-        <span className={!gesture.canPrev ? "is-disabled" : ""}>← Previous</span>
+        <span className={!gesture.canPrev ? "is-disabled" : ""}>
+          ← Previous
+        </span>
         <span className={!gesture.canNext ? "is-disabled" : ""}>→ Next</span>
         <span className={!gesture.canTrash ? "is-disabled" : ""}>↑ Trash</span>
         <span className={!gesture.canUndo ? "is-disabled" : ""}>↓ Undo</span>
@@ -141,9 +144,7 @@ export const PreviewPanel = ({
           <div
             className={`preview-message${
               gesture.enabled ? " preview-media-swipeable" : ""
-            }${
-              gesture.isDragging ? " is-dragging" : ""
-            }${
+            }${gesture.isDragging ? " is-dragging" : ""}${
               gesture.activeAction && gesture.activeActionAvailable
                 ? ` is-${gesture.activeAction}`
                 : ""
@@ -198,9 +199,7 @@ export const PreviewPanel = ({
             <div
               className={`preview-media${
                 gesture.enabled ? " preview-media-swipeable" : ""
-              }${
-                gesture.isDragging ? " is-dragging" : ""
-              }${
+              }${gesture.isDragging ? " is-dragging" : ""}${
                 gesture.activeAction && gesture.activeActionAvailable
                   ? ` is-${gesture.activeAction}`
                   : ""
@@ -218,7 +217,9 @@ export const PreviewPanel = ({
                     }
                   : undefined
               }
-              onWheel={preview.handlePreviewWheel as WheelEventHandler<HTMLDivElement>}
+              onWheel={
+                preview.handlePreviewWheel as WheelEventHandler<HTMLDivElement>
+              }
               onPointerDown={
                 gesture.enabled
                   ? (gesture.handlePointerDown as PointerEventHandler<HTMLDivElement>)
@@ -316,12 +317,18 @@ export const PreviewPanel = ({
               )}
               {preview.isMarkdownPreview && (
                 <div className="preview-markdown-shell">
-                  <MarkdownPreview fileId={previewFile.id} fileName={previewFile.name} />
+                  <MarkdownPreview
+                    fileId={previewFile.id}
+                    fileName={previewFile.name}
+                  />
                 </div>
               )}
               {preview.isTextPreview && (
                 <div className="preview-text-shell">
-                  <TextPreview fileId={previewFile.id} fileName={previewFile.name} />
+                  <TextPreview
+                    fileId={previewFile.id}
+                    fileName={previewFile.name}
+                  />
                 </div>
               )}
               {preview.isDocumentPreview && (
@@ -336,14 +343,20 @@ export const PreviewPanel = ({
                 <div className="preview-office">
                   <div className="preview-office-preview">
                     {preview.officePreviewStatus === "loading" && (
-                      <div className="preview-office-status">Generating preview...</div>
+                      <div className="preview-office-status">
+                        Generating preview...
+                      </div>
                     )}
                     {preview.officePreviewStatus === "error" && (
                       <div className="preview-office-status">
                         Preview unavailable.
                         {preview.previewCapabilities &&
                           !preview.previewCapabilities.officeRichPreview && (
-                            <> Rich Office rendering is not available on this platform.</>
+                            <>
+                              {" "}
+                              Rich Office rendering is not available on this
+                              platform.
+                            </>
                           )}
                       </div>
                     )}
@@ -381,14 +394,17 @@ export const PreviewPanel = ({
               {preview.isArchivePreview && (
                 <div className="preview-archive">
                   <div className="preview-archive-header">
-                    <div className="preview-archive-title">Archive contents</div>
+                    <div className="preview-archive-title">
+                      Archive contents
+                    </div>
                     {preview.archiveStatus === "loading" && (
                       <div className="preview-archive-status">Loading...</div>
                     )}
                   </div>
                   {preview.archiveStatus === "error" && (
                     <div className="preview-archive-status">
-                      {preview.archiveError ?? "Preview unavailable for this archive."}
+                      {preview.archiveError ??
+                        "Preview unavailable for this archive."}
                     </div>
                   )}
                   {preview.archiveStatus === "idle" && (
@@ -405,7 +421,9 @@ export const PreviewPanel = ({
                           ))}
                         </ul>
                       ) : (
-                        <div className="preview-archive-empty">No entries found.</div>
+                        <div className="preview-archive-empty">
+                          No entries found.
+                        </div>
                       )}
                       {preview.archiveTruncated && (
                         <div className="preview-archive-note">
@@ -426,7 +444,9 @@ export const PreviewPanel = ({
                   <div className="preview-fallback-label">
                     {formatKindLabel(previewFile.kind)}
                   </div>
-                  <div className="preview-fallback-hint">No rich preview available.</div>
+                  <div className="preview-fallback-hint">
+                    No rich preview available.
+                  </div>
                 </div>
               )}
               {!isAndroidApp && <PreviewGestureLegend gesture={gesture} />}
@@ -450,13 +470,21 @@ export const PreviewPanel = ({
                   <button
                     type="button"
                     className="icon-button preview-bar-button"
-                    aria-label={isInfoOpen ? "Hide file details" : "Show file details"}
+                    aria-label={
+                      isInfoOpen ? "Hide file details" : "Show file details"
+                    }
                     aria-expanded={isInfoOpen}
                     aria-controls="preview-details-sheet"
                     onClick={() => setIsInfoOpen((current) => !current)}
-                    title={isInfoOpen ? "Hide file details" : "Show file details"}
+                    title={
+                      isInfoOpen ? "Hide file details" : "Show file details"
+                    }
                   >
-                    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                    <svg
+                      viewBox="0 0 24 24"
+                      aria-hidden="true"
+                      focusable="false"
+                    >
                       <path d="M12 2.75A9.25 9.25 0 1 0 21.25 12 9.26 9.26 0 0 0 12 2.75Zm0 3.5a1.2 1.2 0 1 1-1.2 1.2 1.2 1.2 0 0 1 1.2-1.2Zm1.5 11h-3v-1.5h.75v-4h-.75v-1.5H12.75v5.5h.75Z" />
                     </svg>
                   </button>
@@ -469,7 +497,11 @@ export const PreviewPanel = ({
                     aria-expanded={isSettingsOpen}
                     title="Open settings"
                   >
-                    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                    <svg
+                      viewBox="0 0 24 24"
+                      aria-hidden="true"
+                      focusable="false"
+                    >
                       <path d="M19.14 12.94c.04-.31.06-.63.06-.94s-.02-.63-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.02 7.02 0 0 0-1.62-.94l-.36-2.54a.5.5 0 0 0-.5-.42h-3.84a.5.5 0 0 0-.5.42l-.36 2.54c-.57.23-1.12.54-1.62.94l-2.39-.96a.5.5 0 0 0-.6.22L2.61 7.86a.5.5 0 0 0 .12.64l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58a.5.5 0 0 0-.12.64l1.92 3.32c.13.22.39.3.6.22l2.39-.96c.5.4 1.05.71 1.62.94l.36 2.54c.05.24.26.42.5.42h3.84c.25 0 .46-.18.5-.42l.36-2.54c.57-.23 1.12-.54 1.62-.94l2.39.96c.22.08.47 0 .6-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58ZM12 15.5A3.5 3.5 0 1 1 12 8a3.5 3.5 0 0 1 0 7.5Z" />
                     </svg>
                   </button>
@@ -524,38 +556,34 @@ export const PreviewPanel = ({
         </div>
       </section>
       {shouldUseAndroidFloatingInfo && isInfoOpen && (
-        <div
-          className="modal-backdrop"
-          role="presentation"
-          onClick={(event) => {
-            if (event.target === event.currentTarget) {
-              setIsInfoOpen(false);
-            }
-          }}
+        <Modal
+          className="preview-info-modal"
+          labelledBy="preview-info-title"
+          onClose={() => setIsInfoOpen(false)}
         >
-          <section
+          <div
             id="preview-details-sheet"
-            className="modal-panel preview-info-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-label="File details"
+            className="preview-details-sheet-header"
           >
-            <div className="preview-details-sheet-header">
-              <div className="preview-details-sheet-title">File details</div>
-              <button
-                type="button"
-                className="icon-button"
-                onClick={() => setIsInfoOpen(false)}
-                aria-label="Close file details"
-              >
-                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                  <path d="M18.3 5.7a1 1 0 0 0-1.4 0L12 10.6 7.1 5.7a1 1 0 1 0-1.4 1.4L10.6 12l-4.9 4.9a1 1 0 1 0 1.4 1.4L12 13.4l4.9 4.9a1 1 0 0 0 1.4-1.4L13.4 12l4.9-4.9a1 1 0 0 0 0-1.4Z" />
-                </svg>
-              </button>
+            <div
+              id="preview-info-title"
+              className="preview-details-sheet-title"
+            >
+              File details
             </div>
-            <div className="preview-info-modal-body">{detailsContent}</div>
-          </section>
-        </div>
+            <button
+              type="button"
+              className="icon-button"
+              onClick={() => setIsInfoOpen(false)}
+              aria-label="Close file details"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M18.3 5.7a1 1 0 0 0-1.4 0L12 10.6 7.1 5.7a1 1 0 1 0-1.4 1.4L10.6 12l-4.9 4.9a1 1 0 1 0 1.4 1.4L12 13.4l4.9 4.9a1 1 0 0 0 1.4-1.4L13.4 12l4.9-4.9a1 1 0 0 0 0-1.4Z" />
+              </svg>
+            </button>
+          </div>
+          <div className="preview-info-modal-body">{detailsContent}</div>
+        </Modal>
       )}
     </div>
   );

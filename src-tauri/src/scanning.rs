@@ -39,6 +39,8 @@ impl Drop for ScanCancelGuard {
   }
 }
 
+// Preserve the existing flat IPC argument contract.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub(crate) async fn scan_folder(
   window: tauri::Window,
@@ -50,6 +52,7 @@ pub(crate) async fn scan_folder(
   use_hash_for_duplicates: bool,
   duplicate_min_size_bytes: u64,
   scan_id: String,
+  cache_result: Option<bool>,
 ) -> Result<ScanResult, String> {
   #[cfg(not(target_os = "android"))]
   let _ = &folder_label;
@@ -67,6 +70,14 @@ pub(crate) async fn scan_folder(
   tauri::async_runtime::spawn_blocking(move || {
     let _cancel_guard = ScanCancelGuard::new(app_handle.clone(), scan_id.clone());
     let state = app_handle.state::<AppState>();
+    let cache_request = cache_result.unwrap_or(false).then(|| ScanCacheRequest {
+      folder_path: folder_path.clone(),
+      filter_mode: filter_mode.clone(),
+      include_subfolders,
+      include_hidden,
+      use_hash_for_duplicates,
+      duplicate_min_size_bytes,
+    });
     let mut entries = Vec::new();
     let _scan_job = state.scan_jobs.lock().map_err(|error| error.to_string())?;
     if cancel_flag.load(Ordering::Relaxed) {
@@ -139,6 +150,7 @@ pub(crate) async fn scan_folder(
         }
       }
 
+      emit_scan_progress(&window, &scan_id, scanned, matched, total, "finalizing");
       entries.sort_by_cached_key(|entry| entry.name.to_lowercase());
       {
         let mut map = state.map.lock().expect("map lock");
@@ -158,12 +170,17 @@ pub(crate) async fn scan_folder(
         );
       }
 
-      return Ok(ScanResult {
-        total: entries.len(),
-        files: entries,
-        indexed: scanned,
-        issues: Vec::new(),
-      });
+      return finish_scan(
+        &app_handle,
+        cache_request,
+        &cancel_flag,
+        ScanResult {
+          total: entries.len(),
+          files: entries,
+          indexed: scanned,
+          issues: Vec::new(),
+        },
+      );
     }
 
     let folder = PathBuf::from(&folder_path);
@@ -204,7 +221,9 @@ pub(crate) async fn scan_folder(
           .map(index_scan_candidate)
           .collect();
         indexed += chunk_len;
-        emit_scan_progress(&window, &scan_id, indexed, 0, discovered_total, "indexing");
+        if is_duplicate_scan {
+          emit_scan_progress(&window, &scan_id, indexed, 0, discovered_total, "indexing");
+        }
 
         if is_duplicate_scan {
           candidates.extend(indexed_chunk);
@@ -263,6 +282,7 @@ pub(crate) async fn scan_folder(
     }
 
     let duplicate_groups = if is_duplicate_scan {
+      emit_scan_progress(&window, &scan_id, scanned, matched, total, "duplicates");
       if cancel_flag.load(Ordering::Relaxed) {
         return Err("Scan cancelled".into());
       }
@@ -274,22 +294,36 @@ pub(crate) async fn scan_folder(
           modified_ms: candidate.modified_ms,
         })
         .collect();
-      let mut hash_cache = state.hash_cache.lock().expect("hash cache lock");
-      let groups = find_duplicate_groups_from_candidates_with_cache(
-        &duplicate_candidates,
-        use_hash_for_duplicates,
-        duplicate_min_size_bytes,
-        Some(&cancel_flag),
-        Some(&mut hash_cache),
-      )?;
-      let _ = store_hash_cache(&state.hash_cache_path, &hash_cache);
+      let groups = if use_hash_for_duplicates {
+        let mut cache_slot = state.hash_cache.lock().expect("hash cache lock");
+        // Most launches never request duplicate verification. Load only on first use.
+        let hash_cache = cache_slot.get_or_insert_with(|| load_hash_cache(&state.hash_cache_path));
+        let groups = find_duplicate_groups_from_candidates_with_cache(
+          &duplicate_candidates,
+          true,
+          duplicate_min_size_bytes,
+          Some(&cancel_flag),
+          Some(hash_cache),
+        )?;
+        if let Err(error) = store_hash_cache(&state.hash_cache_path, hash_cache) {
+          eprintln!("Failed to store hash cache: {}", error);
+        }
+        groups
+      } else {
+        find_duplicate_groups_from_candidates(
+          &duplicate_candidates,
+          false,
+          duplicate_min_size_bytes,
+          Some(&cancel_flag),
+        )?
+      };
       Some(groups)
     } else {
       None
     };
     if is_duplicate_scan {
+      emit_scan_progress(&window, &scan_id, scanned, matched, total, "finalizing");
       scanned = 0;
-      last_emit = 0;
       matched = 0;
       for chunk in candidates.chunks(scan_chunk_size) {
         if cancel_flag.load(Ordering::Relaxed) {
@@ -317,17 +351,13 @@ pub(crate) async fn scan_folder(
             );
           }
         }
-
-        if scanned.saturating_sub(last_emit) >= scan_chunk_size {
-          emit_scan_progress(&window, &scan_id, scanned, matched, total, "scanning");
-          last_emit = scanned;
-        }
       }
     }
 
     if cancel_flag.load(Ordering::Relaxed) {
       return Err("Scan cancelled".into());
     }
+    emit_scan_progress(&window, &scan_id, scanned, matched, total, "finalizing");
     entries.sort_by_cached_key(|entry| entry.name.to_lowercase());
     state.preview_map.lock().expect("preview map lock").clear();
     {
@@ -339,9 +369,6 @@ pub(crate) async fn scan_folder(
       index.replace(folder_path.clone(), entries.clone());
     }
 
-    if scanned != last_emit || matched > 0 {
-      emit_scan_progress(&window, &scan_id, scanned, matched, total, "scanning");
-    }
     if !batch.is_empty() {
       let _ = window.emit(
         "scan_batch",
@@ -352,15 +379,42 @@ pub(crate) async fn scan_folder(
       );
     }
     let total = entries.len();
-    Ok(ScanResult {
-      files: entries,
-      total,
-      indexed,
-      issues,
-    })
+    finish_scan(
+      &app_handle,
+      cache_request,
+      &cancel_flag,
+      ScanResult {
+        files: entries,
+        total,
+        indexed,
+        issues,
+      },
+    )
   })
   .await
   .map_err(|error| error.to_string())?
+}
+
+fn finish_scan(
+  app: &AppHandle,
+  cache_request: Option<ScanCacheRequest>,
+  cancelled: &AtomicBool,
+  result: ScanResult,
+) -> Result<ScanResult, String> {
+  if let Some(request) = cache_request {
+    let cached = app
+      .path()
+      .app_data_dir()
+      .map_err(|error| error.to_string())
+      .and_then(|directory| persist_scan_result(&directory, request, &result, Some(cancelled)));
+    if let Err(error) = cached {
+      eprintln!("Failed to store cached scan: {}", error);
+    }
+  }
+  if cancelled.load(Ordering::Relaxed) {
+    return Err("Scan cancelled".into());
+  }
+  Ok(result)
 }
 
 #[tauri::command]
@@ -382,6 +436,7 @@ pub(crate) async fn scan_folder_v2(
     request.use_hash_for_duplicates,
     request.duplicate_min_size_bytes,
     scan_id,
+    None,
   )
   .await?;
   let duplicate_groups = result

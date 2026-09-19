@@ -1,5 +1,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod hashing;
+use hashing::*;
+
+mod index;
+use index::IndexStore;
+
 mod android_files;
 mod file_operations;
 mod media_protocol;
@@ -169,17 +175,11 @@ struct TextBandStats {
   max_active_cells: usize,
 }
 
-#[derive(Default)]
-struct IndexStore {
-  folder_path: Option<String>,
-  files: Vec<FileEntry>,
-  by_id: HashMap<String, FileEntry>,
-  sorted_ids_by_mode: HashMap<String, Vec<String>>,
-}
-
 #[derive(Default, Serialize, Deserialize)]
 struct HashCache {
   entries: HashMap<String, HashCacheEntry>,
+  #[serde(skip)]
+  dirty: bool,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -194,13 +194,14 @@ struct HashCacheEntry {
 struct AppState {
   map: Mutex<HashMap<String, ManagedFileSource>>,
   index: Mutex<IndexStore>,
-  hash_cache: Mutex<HashCache>,
+  hash_cache: Mutex<Option<HashCache>>,
   hash_cache_path: PathBuf,
   preview_map: Mutex<HashMap<String, String>>,
-  preview_jobs: Arc<Mutex<()>>,
+  preview_jobs: Mutex<()>,
   destination: Mutex<Option<ManagedDirectory>>,
   scan_cancellations: Mutex<HashMap<String, Arc<AtomicBool>>>,
   scan_jobs: Mutex<()>,
+  mutation_jobs: Mutex<()>,
   trash_dir: PathBuf,
 }
 
@@ -280,6 +281,8 @@ struct FolderTrashItemPayload {
 enum UndoActionPayload {
   #[serde(rename = "move")]
   Move {
+    #[serde(default, rename = "allowUnsafe")]
+    allow_unsafe: bool,
     file: FileEntry,
     #[serde(rename = "fromPath")]
     from_path: String,
@@ -288,6 +291,8 @@ enum UndoActionPayload {
   },
   #[serde(rename = "trash")]
   Trash {
+    #[serde(default, rename = "allowUnsafe")]
+    allow_unsafe: bool,
     file: FileEntry,
     #[serde(rename = "fromPath")]
     from_path: String,
@@ -300,6 +305,8 @@ enum UndoActionPayload {
     folder_path: String,
     #[serde(rename = "trashPath")]
     trash_path: String,
+    #[serde(default, rename = "allowUnsafe")]
+    allow_unsafe: bool,
     items: Vec<FolderTrashItemPayload>,
   },
 }
@@ -390,7 +397,7 @@ struct ScanCacheRequest {
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct CachedScan {
+struct CachedScan<Files = Vec<FileEntry>> {
   folder_path: String,
   filter_mode: String,
   include_subfolders: bool,
@@ -398,7 +405,7 @@ struct CachedScan {
   use_hash_for_duplicates: bool,
   duplicate_min_size_bytes: u64,
   cached_at_ms: u64,
-  files: Vec<FileEntry>,
+  files: Files,
   total: usize,
 }
 
@@ -769,160 +776,6 @@ fn index_group_key(mode: &str, file: &FileEntry) -> String {
   }
 }
 
-impl IndexStore {
-  fn replace(&mut self, folder_path: String, files: Vec<FileEntry>) {
-    self.folder_path = Some(folder_path);
-    self.by_id = files
-      .iter()
-      .map(|file| (file.id.clone(), file.clone()))
-      .collect();
-    self.files = files;
-    self.rebuild_sorted_indexes();
-  }
-
-  fn remove(&mut self, id: &str) {
-    self.by_id.remove(id);
-    self.files.retain(|file| file.id != id);
-    self.sorted_ids_by_mode
-      .values_mut()
-      .for_each(|ids| ids.retain(|value| value != id));
-  }
-
-  fn remove_path(&mut self, path: &Path) {
-    let path = path.to_string_lossy().to_string();
-    let removed_ids = self
-      .files
-      .iter()
-      .filter(|file| file.path == path)
-      .map(|file| file.id.clone())
-      .collect::<Vec<_>>();
-    self.remove_many(removed_ids.iter().map(|id| id.as_str()));
-  }
-
-  fn remove_subtree(&mut self, path: &Path) {
-    let prefix = path.to_string_lossy().to_string();
-    let nested_prefix = format!("{}/", prefix);
-    let removed_ids = self
-      .files
-      .iter()
-      .filter(|file| file.path == prefix || file.path.starts_with(&nested_prefix))
-      .map(|file| file.id.clone())
-      .collect::<Vec<_>>();
-    self.remove_many(removed_ids.iter().map(|id| id.as_str()));
-  }
-
-  fn remove_many<'a>(&mut self, ids: impl Iterator<Item = &'a str>) {
-    let removed = ids.map(|id| id.to_string()).collect::<std::collections::HashSet<_>>();
-    if removed.is_empty() {
-      return;
-    }
-    removed.iter().for_each(|id| {
-      self.by_id.remove(id);
-    });
-    self.files.retain(|file| !removed.contains(file.id.as_str()));
-    self.sorted_ids_by_mode
-      .values_mut()
-      .for_each(|sorted_ids| sorted_ids.retain(|id| !removed.contains(id)));
-  }
-
-  fn upsert(&mut self, file: FileEntry) {
-    self.by_id.insert(file.id.clone(), file);
-    self.files = self.by_id.values().cloned().collect();
-    self.rebuild_sorted_indexes();
-  }
-
-  fn rebuild_sorted_indexes(&mut self) {
-    self.sorted_ids_by_mode.clear();
-    for mode in [
-      "none",
-      "name_asc",
-      "name_desc",
-      "size_desc",
-      "size_asc",
-      "date_desc",
-      "date_asc",
-      "type_asc",
-      "type_desc",
-      "extension_asc",
-      "extension_desc",
-    ] {
-      let mut list = self.files.clone();
-      list.sort_by(|a, b| compare_file_entries(a, b, mode));
-      self.sorted_ids_by_mode.insert(mode.to_string(), list.into_iter().map(|file| file.id).collect());
-    }
-  }
-
-  fn query(&self, request: QueryIndexRequest) -> QueryIndexResult {
-    let filter = request.filter_mode.unwrap_or_else(|| "all".to_string());
-    let sort = request.sort_mode.unwrap_or_else(|| "name_asc".to_string());
-    let group = request.group_mode.unwrap_or_else(|| "none".to_string());
-    let offset = request.offset.unwrap_or(0);
-    let limit = request.limit.unwrap_or(200).clamp(1, 2_000);
-    let selected_extensions = request
-      .selected_extensions
-      .map(|extensions| extensions.into_iter().collect::<std::collections::HashSet<_>>());
-    let ids = self
-      .sorted_ids_by_mode
-      .get(&sort)
-      .or_else(|| self.sorted_ids_by_mode.get("name_asc"));
-    let mut matched = Vec::new();
-    let mut groups = HashMap::<String, usize>::new();
-    for id in ids.into_iter().flatten() {
-      let Some(file) = self.by_id.get(id) else {
-        continue;
-      };
-      if filter == "duplicates" && file.duplicate_group.is_none() {
-        continue;
-      }
-      if !matches_file_filter(&filter, &file.name, &file.path, &file.kind) {
-        continue;
-      }
-      if let Some(extensions) = selected_extensions.as_ref() {
-        if !extensions.contains(&get_extension(&file.name)) {
-          continue;
-        }
-      }
-      *groups.entry(index_group_key(&group, file)).or_insert(0) += 1;
-      matched.push(file.clone());
-    }
-    let total = matched.len();
-    let files = matched.into_iter().skip(offset).take(limit).collect();
-    let mut groups = groups
-      .into_iter()
-      .map(|(key, count)| GroupCount { key, count })
-      .collect::<Vec<_>>();
-    groups.sort_by(|a, b| a.key.cmp(&b.key));
-    QueryIndexResult {
-      files,
-      total,
-      offset,
-      limit,
-      groups,
-    }
-  }
-
-  fn stats(&self) -> IndexStats {
-    let mut extensions = HashMap::<String, usize>::new();
-    let mut duplicate_groups = std::collections::HashSet::<String>::new();
-    for file in &self.files {
-      *extensions.entry(get_extension(&file.name)).or_insert(0) += 1;
-      if let Some(group) = file.duplicate_group.as_ref() {
-        duplicate_groups.insert(group.clone());
-      }
-    }
-    let mut extensions = extensions
-      .into_iter()
-      .map(|(key, count)| GroupCount { key, count })
-      .collect::<Vec<_>>();
-    extensions.sort_by(|a, b| a.key.cmp(&b.key));
-    IndexStats {
-      folder_path: self.folder_path.clone(),
-      total: self.files.len(),
-      extensions,
-      duplicate_groups: duplicate_groups.len(),
-    }
-  }
-}
 
 fn now_ms() -> u64 {
   SystemTime::now()
@@ -1005,28 +858,6 @@ fn ensure_destination_writable(destination: &Path, allow_unsafe: bool) -> Result
   Ok(())
 }
 
-fn partial_hash_file(path: &Path) -> Result<String, String> {
-  let mut file = File::open(path).map_err(|error| error.to_string())?;
-  let metadata = file.metadata().map_err(|error| error.to_string())?;
-  let size = metadata.len() as usize;
-  let mut hasher = Sha256::new();
-
-  let mut start_buf = vec![0u8; std::cmp::min(PARTIAL_HASH_BYTES, size)];
-  if !start_buf.is_empty() {
-    file.read_exact(&mut start_buf).map_err(|error| error.to_string())?;
-    hasher.update(&start_buf);
-  }
-  if size > PARTIAL_HASH_BYTES {
-    let end_len = std::cmp::min(PARTIAL_HASH_BYTES, size - PARTIAL_HASH_BYTES);
-    file
-      .seek(SeekFrom::End(-(end_len as i64)))
-      .map_err(|error| error.to_string())?;
-    let mut end_buf = vec![0u8; end_len];
-    file.read_exact(&mut end_buf).map_err(|error| error.to_string())?;
-    hasher.update(&end_buf);
-  }
-  Ok(format!("{:x}", hasher.finalize()))
-}
 
 fn decode_xml_entities(value: &str) -> String {
   value
@@ -1554,76 +1385,67 @@ fn get_preview_capabilities() -> PreviewCapabilities {
 }
 
 #[tauri::command]
-fn get_cached_scan(
+async fn get_cached_scan(
   app_handle: AppHandle,
   request: ScanCacheRequest,
 ) -> Result<Option<CachedScan>, String> {
-  let app_data_dir = app_handle
-    .path()
-    .app_data_dir()
-    .map_err(|error| error.to_string())?;
-  let path = scan_cache_file_path(&app_data_dir, &request);
-  Ok(load_cached_scan(&path))
+  tauri::async_runtime::spawn_blocking(move || {
+    let app_data_dir = app_handle
+      .path()
+      .app_data_dir()
+      .map_err(|error| error.to_string())?;
+    let path = scan_cache_file_path(&app_data_dir, &request);
+    Ok(load_cached_scan(&path))
+  })
+  .await
+  .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-fn store_cached_scan_result(
+async fn store_cached_scan_result(
   app_handle: AppHandle,
   request: ScanCacheRequest,
   result: ScanResult,
 ) -> Result<(), String> {
-  let app_data_dir = app_handle
-    .path()
-    .app_data_dir()
-    .map_err(|error| error.to_string())?;
-  let path = scan_cache_file_path(&app_data_dir, &request);
-  let cached_at_ms = SystemTime::now()
-    .duration_since(UNIX_EPOCH)
-    .unwrap_or_default()
-    .as_millis() as u64;
-  let cached_scan = CachedScan {
-    folder_path: request.folder_path,
-    filter_mode: request.filter_mode,
-    include_subfolders: request.include_subfolders,
-    include_hidden: request.include_hidden,
-    use_hash_for_duplicates: request.use_hash_for_duplicates,
-    duplicate_min_size_bytes: request.duplicate_min_size_bytes,
-    cached_at_ms,
-    files: result.files,
-    total: result.total,
-  };
-  store_cached_scan(&path, &cached_scan)
+  tauri::async_runtime::spawn_blocking(move || {
+    let app_data_dir = app_handle.path().app_data_dir().map_err(|error| error.to_string())?;
+    persist_scan_result(&app_data_dir, request, &result, None)
+
+  })
+  .await
+  .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-fn hydrate_cached_scan(
-  state: tauri::State<'_, AppState>,
+async fn hydrate_cached_scan(
+  app_handle: AppHandle,
   request: HydrateCachedScanRequest,
 ) -> Result<(), String> {
-  let next_map = request
-    .files
-    .iter()
-    .map(|file| {
-      (
-        file.id.clone(),
-        ManagedFileSource::LocalPath(PathBuf::from(&file.path)),
-      )
-    })
-    .collect::<HashMap<_, _>>();
-  {
-    let mut map = state.map.lock().expect("map lock");
-    *map = next_map;
-  }
-  {
-    let mut index = state.index.lock().expect("index lock");
-    index.replace(request.folder_path, request.files);
-  }
-  state
-    .preview_map
-    .lock()
-    .expect("preview map lock")
-    .clear();
-  Ok(())
+  tauri::async_runtime::spawn_blocking(move || {
+    let state = app_handle.state::<AppState>();
+    let next_map = request
+      .files
+      .iter()
+      .map(|file| {
+        (
+          file.id.clone(),
+          ManagedFileSource::LocalPath(PathBuf::from(&file.path)),
+        )
+      })
+      .collect::<HashMap<_, _>>();
+    {
+      let mut map = state.map.lock().expect("map lock");
+      *map = next_map;
+    }
+    {
+      let mut index = state.index.lock().expect("index lock");
+      index.replace(request.folder_path, request.files);
+    }
+    state.preview_map.lock().expect("preview map lock").clear();
+    Ok(())
+  })
+  .await
+  .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -1649,12 +1471,17 @@ fn update_heartbeat(
 }
 
 #[tauri::command]
-fn query_index(
-  state: tauri::State<'_, AppState>,
+async fn query_index(
+  app_handle: AppHandle,
   request: QueryIndexRequest,
 ) -> Result<QueryIndexResult, String> {
-  let index = state.index.lock().expect("index lock");
-  Ok(index.query(request))
+  tauri::async_runtime::spawn_blocking(move || {
+    let state = app_handle.state::<AppState>();
+    let mut index = state.index.lock().expect("index lock");
+    Ok(index.query(request))
+  })
+  .await
+  .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -1669,24 +1496,21 @@ fn get_file_by_id(
   id: String,
 ) -> Result<Option<FileEntry>, String> {
   let index = state.index.lock().expect("index lock");
-  Ok(index.by_id.get(&id).cloned())
+  Ok(index.get(&id).cloned())
 }
 
 #[tauri::command]
-async fn read_text_preview(
-  app_handle: AppHandle,
-  state: tauri::State<'_, AppState>,
-  id: String,
-) -> Result<String, String> {
-  let source = {
-    let map = state.map.lock().expect("map lock");
-    map.get(&id).cloned().ok_or("File not found")?
-  };
-  let path = managed_source_to_local_path(&app_handle, &source)?;
-  if !path.exists() {
-    return Err("File not found".into());
-  }
+async fn read_text_preview(app_handle: AppHandle, id: String) -> Result<String, String> {
   tauri::async_runtime::spawn_blocking(move || {
+    let state = app_handle.state::<AppState>();
+    let source = {
+      let map = state.map.lock().expect("map lock");
+      map.get(&id).cloned().ok_or("File not found")?
+    };
+    let path = managed_source_to_local_path(&app_handle, &source)?;
+    if !path.exists() {
+      return Err("File not found".into());
+    }
     let metadata = fs::metadata(&path).map_err(|error| error.to_string())?;
     let max_len = usize::try_from(MAX_TEXT_PREVIEW_BYTES).unwrap_or(usize::MAX);
     let file = File::open(&path).map_err(|error| error.to_string())?;
@@ -1704,39 +1528,38 @@ async fn read_text_preview(
 }
 
 #[tauri::command]
-async fn list_archive_entries(
-  app_handle: AppHandle,
-  state: tauri::State<'_, AppState>,
-  id: String,
-) -> Result<ArchivePreview, String> {
-  let source = {
-    let map = state.map.lock().expect("map lock");
-    map.get(&id).cloned().ok_or("File not found")?
-  };
-  let path = managed_source_to_local_path(&app_handle, &source)?;
-  if !path.exists() {
-    return Err("File not found".into());
-  }
+async fn list_archive_entries(app_handle: AppHandle, id: String) -> Result<ArchivePreview, String> {
+  tauri::async_runtime::spawn_blocking(move || {
+    let state = app_handle.state::<AppState>();
+    let source = {
+      let map = state.map.lock().expect("map lock");
+      map.get(&id).cloned().ok_or("File not found")?
+    };
+    let path = managed_source_to_local_path(&app_handle, &source)?;
+    if !path.exists() {
+      return Err("File not found".into());
+    }
 
-  tauri::async_runtime::spawn_blocking(move || match detect_archive_kind(&path) {
-    Some(ArchiveKind::Zip) => list_zip_entries(&path),
-    Some(ArchiveKind::Tar) => {
-      let file = File::open(&path).map_err(|error| error.to_string())?;
-      list_tar_entries(BufReader::new(file))
+    match detect_archive_kind(&path) {
+      Some(ArchiveKind::Zip) => list_zip_entries(&path),
+      Some(ArchiveKind::Tar) => {
+        let file = File::open(&path).map_err(|error| error.to_string())?;
+        list_tar_entries(BufReader::new(file))
+      }
+      Some(ArchiveKind::TarGz) => {
+        let file = File::open(&path).map_err(|error| error.to_string())?;
+        list_tar_entries(GzDecoder::new(BufReader::new(file)))
+      }
+      Some(ArchiveKind::TarBz2) => {
+        let file = File::open(&path).map_err(|error| error.to_string())?;
+        list_tar_entries(BzDecoder::new(BufReader::new(file)))
+      }
+      Some(ArchiveKind::TarXz) => {
+        let file = File::open(&path).map_err(|error| error.to_string())?;
+        list_tar_entries(XzDecoder::new(BufReader::new(file)))
+      }
+      None => Err("Preview not available for this archive format.".into()),
     }
-    Some(ArchiveKind::TarGz) => {
-      let file = File::open(&path).map_err(|error| error.to_string())?;
-      list_tar_entries(GzDecoder::new(BufReader::new(file)))
-    }
-    Some(ArchiveKind::TarBz2) => {
-      let file = File::open(&path).map_err(|error| error.to_string())?;
-      list_tar_entries(BzDecoder::new(BufReader::new(file)))
-    }
-    Some(ArchiveKind::TarXz) => {
-      let file = File::open(&path).map_err(|error| error.to_string())?;
-      list_tar_entries(XzDecoder::new(BufReader::new(file)))
-    }
-    None => Err("Preview not available for this archive format.".into()),
   })
   .await
   .map_err(|error| error.to_string())?
@@ -1745,20 +1568,22 @@ async fn list_archive_entries(
 #[tauri::command]
 async fn extract_office_fallback_preview(
   app_handle: AppHandle,
-  state: tauri::State<'_, AppState>,
   id: String,
 ) -> Result<OfficeFallbackPreview, String> {
-  let source = {
-    let map = state.map.lock().expect("map lock");
-    map.get(&id).cloned().ok_or("File not found")?
-  };
-  let path = managed_source_to_local_path(&app_handle, &source)?;
-  if !path.exists() {
-    return Err("File not found".into());
-  }
-  tauri::async_runtime::spawn_blocking(move || extract_office_fallback(&path))
-    .await
-    .map_err(|error| error.to_string())?
+  tauri::async_runtime::spawn_blocking(move || {
+    let state = app_handle.state::<AppState>();
+    let source = {
+      let map = state.map.lock().expect("map lock");
+      map.get(&id).cloned().ok_or("File not found")?
+    };
+    let path = managed_source_to_local_path(&app_handle, &source)?;
+    if !path.exists() {
+      return Err("File not found".into());
+    }
+    extract_office_fallback(&path)
+  })
+  .await
+  .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -1822,8 +1647,8 @@ fn is_downloads_or_installer(path: &Path) -> bool {
   matches!(extension.as_str(), "exe" | "msi" | "dmg" | "pkg" | "zip" | "rar" | "7z")
 }
 
-fn file_age_days(path: &Path) -> Option<u64> {
-  let modified = fs::metadata(path).ok()?.modified().ok()?;
+fn file_age_days(metadata: &fs::Metadata) -> Option<u64> {
+  let modified = metadata.modified().ok()?;
   let elapsed = SystemTime::now().duration_since(modified).ok()?;
   Some(elapsed.as_secs() / 86_400)
 }
@@ -1862,7 +1687,13 @@ fn collect_scan_paths(
 }
 
 #[tauri::command]
-fn build_cleanup_suggestions(request: SuggestionsRequest) -> Result<SuggestionSet, String> {
+async fn build_cleanup_suggestions(request: SuggestionsRequest) -> Result<SuggestionSet, String> {
+  tauri::async_runtime::spawn_blocking(move || collect_cleanup_suggestions(request))
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+fn collect_cleanup_suggestions(request: SuggestionsRequest) -> Result<SuggestionSet, String> {
   let max_results = request.max_results.unwrap_or(200).clamp(1, 2000);
   let min_large_file_bytes = request.min_large_file_bytes.unwrap_or(250 * 1024 * 1024);
   let stale_days = request.stale_days.unwrap_or(30);
@@ -1884,16 +1715,8 @@ fn build_cleanup_suggestions(request: SuggestionsRequest) -> Result<SuggestionSe
     if files.len() < 2 {
       continue;
     }
-    files.sort_by(|a, b| {
-      let a_time = fs::metadata(a)
-        .ok()
-        .and_then(|meta| meta.modified().ok())
-        .unwrap_or(UNIX_EPOCH);
-      let b_time = fs::metadata(b)
-        .ok()
-        .and_then(|meta| meta.modified().ok())
-        .unwrap_or(UNIX_EPOCH);
-      b_time.cmp(&a_time)
+    files.sort_by_cached_key(|path| {
+      std::cmp::Reverse(fs::metadata(path).ok().and_then(|meta| meta.modified().ok()).unwrap_or(UNIX_EPOCH))
     });
     for duplicate in files.iter().skip(1) {
       let bytes = fs::metadata(duplicate).map(|meta| meta.len()).unwrap_or(0);
@@ -1920,7 +1743,7 @@ fn build_cleanup_suggestions(request: SuggestionsRequest) -> Result<SuggestionSe
     if metadata.len() < min_large_file_bytes {
       continue;
     }
-    if is_downloads_or_installer(path) && file_age_days(path).unwrap_or(0) >= stale_days {
+    if is_downloads_or_installer(path) && file_age_days(&metadata).unwrap_or(0) >= stale_days {
       suggestions.push(Suggestion {
         id: Uuid::new_v4().to_string(),
         action_type: "trash".to_string(),
@@ -2311,7 +2134,7 @@ fn is_screenshot_file(name: &str, path: &str, kind: &FileKind) -> bool {
   }
 
   path
-    .split(|character| character == '/' || character == '\\')
+    .split(['/', '\\'])
     .any(|segment| {
       let normalized_segment = normalize_screenshot_match_text(segment);
       normalized_segment == "screenshots" || normalized_segment == "screen shots"
@@ -2804,183 +2627,6 @@ fn is_high_contrast_pixel(image: &DecodedImage, x: usize, y: usize) -> bool {
   })
 }
 
-fn hash_file(path: &Path) -> Result<String, String> {
-  let file = File::open(path).map_err(|error| error.to_string())?;
-  let mut reader = BufReader::new(file);
-  let mut hasher = Sha256::new();
-  let mut buffer = [0u8; 8192];
-  loop {
-    let read = reader.read(&mut buffer).map_err(|error| error.to_string())?;
-    if read == 0 {
-      break;
-    }
-    hasher.update(&buffer[..read]);
-  }
-  Ok(format!("{:x}", hasher.finalize()))
-}
-
-fn find_duplicate_groups(
-  paths: &[PathBuf],
-  use_hash: bool,
-  min_size_bytes: u64,
-  cancel_flag: Option<&Arc<AtomicBool>>,
-) -> Result<HashMap<PathBuf, String>, String> {
-  let candidates = paths
-    .iter()
-    .filter_map(|path| {
-      if let Some(flag) = cancel_flag {
-        if flag.load(Ordering::Relaxed) {
-          return None;
-        }
-      }
-      fs::metadata(path).ok().map(|metadata| DuplicateCandidate {
-        path: path.clone(),
-        size_bytes: metadata.len(),
-        modified_ms: modified_ms_from_metadata(&metadata),
-      })
-    })
-    .collect::<Vec<_>>();
-  if let Some(flag) = cancel_flag {
-    if flag.load(Ordering::Relaxed) {
-      return Err("Scan cancelled".into());
-    }
-  }
-  find_duplicate_groups_from_candidates(&candidates, use_hash, min_size_bytes, cancel_flag)
-}
-
-fn find_duplicate_groups_from_candidates(
-  candidates: &[DuplicateCandidate],
-  use_hash: bool,
-  min_size_bytes: u64,
-  cancel_flag: Option<&Arc<AtomicBool>>,
-) -> Result<HashMap<PathBuf, String>, String> {
-  find_duplicate_groups_from_candidates_with_cache(candidates, use_hash, min_size_bytes, cancel_flag, None)
-}
-
-fn find_duplicate_groups_from_candidates_with_cache(
-  candidates: &[DuplicateCandidate],
-  use_hash: bool,
-  min_size_bytes: u64,
-  cancel_flag: Option<&Arc<AtomicBool>>,
-  mut hash_cache: Option<&mut HashCache>,
-) -> Result<HashMap<PathBuf, String>, String> {
-  let mut size_map: HashMap<u64, Vec<DuplicateCandidate>> = HashMap::new();
-  for candidate in candidates {
-    if let Some(flag) = cancel_flag {
-      if flag.load(Ordering::Relaxed) {
-        return Err("Scan cancelled".into());
-      }
-    }
-    if candidate.size_bytes < min_size_bytes {
-      continue;
-    }
-    size_map
-      .entry(candidate.size_bytes)
-      .or_default()
-      .push(candidate.clone());
-  }
-
-  let mut duplicates = HashMap::new();
-  for (size, group) in size_map.into_iter() {
-    if let Some(flag) = cancel_flag {
-      if flag.load(Ordering::Relaxed) {
-        return Err("Scan cancelled".into());
-      }
-    }
-    if group.len() < 2 {
-      continue;
-    }
-    if use_hash {
-      // Stage 2: partial hash (first/last chunks) to reduce full-hash work.
-      let mut partial_map: HashMap<String, Vec<DuplicateCandidate>> = HashMap::new();
-      let partial_hashes = group
-        .par_iter()
-        .filter_map(|candidate| {
-          if cancel_flag
-            .map(|flag| flag.load(Ordering::Relaxed))
-            .unwrap_or(false)
-          {
-            return None;
-          }
-          partial_hash_file(&candidate.path)
-            .ok()
-            .map(|hash| (hash, candidate.clone()))
-        })
-        .collect::<Vec<_>>();
-      if let Some(flag) = cancel_flag {
-        if flag.load(Ordering::Relaxed) {
-          return Err("Scan cancelled".into());
-        }
-      }
-      for (hash, path) in partial_hashes {
-        partial_map.entry(hash).or_default().push(path);
-      }
-
-      // Stage 3: full hash only for remaining candidate groups with early termination.
-      for partial_group in partial_map.into_values() {
-        if partial_group.len() < 2 {
-          continue;
-        }
-        if partial_group.len() < 2 {
-          continue;
-        }
-        let mut full_hash_map: HashMap<String, Vec<PathBuf>> = HashMap::new();
-        let mut missing = Vec::new();
-        if let Some(cache) = hash_cache.as_deref() {
-          for candidate in &partial_group {
-            if let Some(hash) = cached_full_hash(candidate, cache) {
-              full_hash_map.entry(hash).or_default().push(candidate.path.clone());
-            } else {
-              missing.push(candidate.clone());
-            }
-          }
-        } else {
-          missing = partial_group.clone();
-        }
-        
-        if !missing.is_empty() {
-          let full_hashes = missing
-            .par_iter()
-            .filter_map(|candidate| {
-              if cancel_flag
-                .map(|flag| flag.load(Ordering::Relaxed))
-                .unwrap_or(false)
-              {
-                return None;
-              }
-              hash_file(&candidate.path).ok().map(|hash| (hash, candidate.clone()))
-            })
-            .collect::<Vec<_>>();
-          if let Some(flag) = cancel_flag {
-            if flag.load(Ordering::Relaxed) {
-              return Err("Scan cancelled".into());
-            }
-          }
-          for (hash, candidate) in full_hashes {
-            if let Some(cache) = hash_cache.as_deref_mut() {
-              insert_cached_full_hash(&candidate, hash.clone(), cache);
-            }
-            full_hash_map.entry(hash).or_default().push(candidate.path);
-          }
-        }
-        
-        for (hash, files) in full_hash_map.into_iter() {
-          if files.len() > 1 {
-            for path in files {
-              duplicates.insert(path.clone(), hash.clone());
-            }
-          }
-        }
-      }
-    } else {
-      let group_key = format!("size-{}", size);
-      for candidate in group {
-        duplicates.insert(candidate.path.clone(), group_key.clone());
-      }
-    }
-  }
-  Ok(duplicates)
-}
 
 fn is_hidden_entry(path: &Path, root: &Path) -> bool {
   if path == root {
@@ -3293,10 +2939,6 @@ pub fn run() {
       fs::create_dir_all(&trash_dir).map_err(|error| error.to_string())?;
       fs::create_dir_all(&crash_dir).map_err(|error| error.to_string())?;
       fs::create_dir_all(&batches_dir).map_err(|error| error.to_string())?;
-      let hash_cache = load_hash_cache(&hash_cache_path);
-      if let Ok(cache) = app.path().app_cache_dir() {
-        if let Err(error) = cleanup_preview_sessions(&cache.join("previews")) { eprintln!("Preview cleanup: {}", error); }
-      }
       if let Some(previous_session) = load_session_info(&crash_dir) {
         if !previous_session.clean_shutdown {
           let skip_report = load_last_crash_report(&crash_dir)
@@ -3331,18 +2973,32 @@ pub fn run() {
         app.package_info().name.to_string(),
         app.package_info().version.to_string(),
       );
-      cleanup_unreferenced_backups(app.handle(), &trash_dir)?;
       app.manage(AppState {
         map: Mutex::new(HashMap::new()),
         index: Mutex::new(IndexStore::default()),
-        hash_cache: Mutex::new(hash_cache),
+        hash_cache: Mutex::new(None),
         hash_cache_path,
         preview_map: Mutex::new(HashMap::new()),
-        preview_jobs: Arc::new(Mutex::new(())),
+        preview_jobs: Mutex::new(()),
         destination: Mutex::new(None),
         scan_cancellations: Mutex::new(HashMap::new()),
         scan_jobs: Mutex::new(()),
+        mutation_jobs: Mutex::new(()),
         trash_dir,
+      });
+      let maintenance_app = app.handle().clone();
+      tauri::async_runtime::spawn_blocking(move || {
+        let state = maintenance_app.state::<AppState>();
+        {
+          let _job = state.preview_jobs.lock().expect("preview jobs lock");
+          if let Ok(cache) = maintenance_app.path().app_cache_dir() {
+            if let Err(error) = cleanup_preview_sessions(&cache.join("previews")) {
+              eprintln!("Preview cleanup: {}", error);
+            }
+          }
+        }
+        let _job = state.mutation_jobs.lock().expect("mutation jobs lock");
+        let _ = cleanup_unreferenced_backups(&maintenance_app, &state.trash_dir);
       });
       #[cfg(target_os = "macos")]
       configure_macos_window_dragging(app.handle())?;
@@ -3351,13 +3007,16 @@ pub fn run() {
     .plugin(android_files::init())
     .plugin(tauri_plugin_dialog::init())
     .register_asynchronous_uri_scheme_protocol("media", |context, request, responder| {
-      let response = protocol_response(context.app_handle(), request).unwrap_or_else(|_| {
-        Response::builder()
-          .status(StatusCode::INTERNAL_SERVER_ERROR)
-          .body(Vec::new())
-          .expect("response")
+      let app = context.app_handle().clone();
+      tauri::async_runtime::spawn_blocking(move || {
+        let response = protocol_response(&app, request).unwrap_or_else(|_| {
+          Response::builder()
+            .status(StatusCode::INTERNAL_SERVER_ERROR)
+            .body(Vec::new())
+            .expect("response")
+        });
+        responder.respond(response);
       });
-      responder.respond(response);
     })
     .invoke_handler(tauri::generate_handler![
       get_crash_report,
@@ -3381,6 +3040,7 @@ pub fn run() {
       build_cleanup_suggestions,
       apply_action_batch,
       undo_action_batch,
+      deletion_path_warning,
       trash_file,
       trash_folder,
       move_file,
@@ -3399,7 +3059,7 @@ pub fn run() {
     .run(|app_handle, event| {
       match event {
         tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
-          mark_session_clean_best_effort(&app_handle);
+          mark_session_clean_best_effort(app_handle);
         }
         _ => {}
       }
@@ -3440,6 +3100,50 @@ mod tests {
     let text = extract_text_from_binary_office(&data);
     assert!(text.contains("plain text section"));
     assert!(text.contains("Hello from UTF16"));
+  }
+
+  #[test]
+  #[ignore = "manual performance measurement"]
+  fn benchmark_index_large_folder() {
+    let files = (0..10_000)
+      .map(|n| {
+        test_entry(
+          &format!("id{n}"),
+          &format!("file{n}.txt"),
+          FileKind::Text,
+          n,
+          None,
+        )
+      })
+      .collect();
+    let mut index = IndexStore::default();
+    let started = Instant::now();
+    index.replace("/bench".into(), files);
+    println!("index replace 10000: {:?}", started.elapsed());
+    let started = Instant::now();
+    for n in 10_000..10_100 {
+      index.upsert(test_entry(
+        &format!("id{n}"),
+        &format!("file{n}.txt"),
+        FileKind::Text,
+        n,
+        None,
+      ));
+    }
+    println!("index upsert 100: {:?}", started.elapsed());
+    for label in ["cold", "cached"] {
+      let started = Instant::now();
+      let result = index.query(QueryIndexRequest {
+        filter_mode: None,
+        selected_extensions: None,
+        sort_mode: Some("name_asc".into()),
+        group_mode: None,
+        offset: Some(0),
+        limit: Some(200),
+      });
+      assert_eq!(result.files.len(), 200);
+      println!("index query {}: {:?}", label, started.elapsed());
+    }
   }
 
   #[test]
@@ -3800,7 +3504,7 @@ mod tests {
     let root = std::env::temp_dir().join(Uuid::new_v4().to_string());
     fs::create_dir_all(root.join(".hidden/empty")).unwrap(); fs::create_dir(root.join("visible")).unwrap();
     for hidden in [false, true] {
-      let result = build_cleanup_suggestions(SuggestionsRequest {
+      let result = collect_cleanup_suggestions(SuggestionsRequest {
         folder_path: root.to_string_lossy().into_owned(), include_subfolders: true, include_hidden: hidden,
         stale_days: None, min_large_file_bytes: None, max_results: None,
       }).unwrap();
@@ -3824,7 +3528,7 @@ mod tests {
     fs::write(&review_zip, vec![6u8; 2_000]).unwrap();
     fs::write(&manual_cache, vec![9u8; 2_000]).unwrap();
 
-    let result = build_cleanup_suggestions(SuggestionsRequest {
+    let result = collect_cleanup_suggestions(SuggestionsRequest {
       folder_path: root.to_string_lossy().to_string(),
       include_subfolders: true,
       include_hidden: true,

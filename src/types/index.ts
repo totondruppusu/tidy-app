@@ -110,7 +110,7 @@ export type ScanProgress = {
   scanned: number;
   matched: number;
   total: number;
-  phase: "indexing" | "scanning";
+  phase: "indexing" | "scanning" | "duplicates" | "finalizing";
 };
 
 export type ScanBatch = {
@@ -230,6 +230,7 @@ export type FolderTrashItem = {
 
 export type UndoAction =
   | {
+      allowUnsafe?: boolean;
       kind: "move";
       file: FileEntry;
       fromPath: string;
@@ -238,6 +239,7 @@ export type UndoAction =
       destinationToken?: string | null;
     }
   | {
+      allowUnsafe?: boolean;
       kind: "trash";
       file: FileEntry;
       fromPath: string;
@@ -246,6 +248,7 @@ export type UndoAction =
       destinationToken?: string | null;
     }
   | {
+      allowUnsafe?: boolean;
       kind: "trash-folder";
       folderPath: string;
       trashPath: string;

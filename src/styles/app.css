@@ -689,7 +689,10 @@ optgroup {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  animation: panel-in 0.6s ease both;
+  /* Reopening a virtual list must not replay a faded/scaled entrance. */
+  animation: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
   position: relative;
   margin-top: calc(-1 * (var(--layout-pad) + var(--titlebar-offset)));
   margin-left: calc(-1 * var(--layout-pad));
@@ -2629,8 +2632,16 @@ optgroup {
 
 .preview-text-panel.is-code {
   background:
-    radial-gradient(circle at top right, rgba(56, 189, 248, 0.12), transparent 28%),
-    linear-gradient(180deg, var(--color-code-bg-alt) 0%, var(--color-code-bg) 100%);
+    radial-gradient(
+      circle at top right,
+      rgba(56, 189, 248, 0.12),
+      transparent 28%
+    ),
+    linear-gradient(
+      180deg,
+      var(--color-code-bg-alt) 0%,
+      var(--color-code-bg) 100%
+    );
   color: var(--color-code-text);
   font-family:
     "SFMono-Regular", "Menlo", "Consolas", "Liberation Mono", monospace;
@@ -3230,31 +3241,7 @@ optgroup {
 }
 
 .blocking-overlay {
-  position: fixed;
-  inset: 0;
   z-index: 40;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: var(--space-6);
-  background: linear-gradient(
-    180deg,
-    rgba(11, 12, 16, 0.18),
-    rgba(11, 12, 16, 0.42)
-  );
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-}
-
-:root[data-theme="dark"] .blocking-overlay {
-  background: linear-gradient(180deg, rgba(2, 4, 8, 0.62), rgba(2, 4, 8, 0.82));
-}
-
-.blocking-overlay-card {
-  position: relative;
-  min-width: min(360px, calc(100vw - (var(--space-6) * 2)));
-  box-shadow: var(--shadow-modal);
-  pointer-events: auto;
 }
 
 .blocking-overlay-close {
@@ -3337,7 +3324,9 @@ optgroup {
   color: var(--color-text-secondary);
   background: var(--glass-fill-soft);
   border: 1px solid var(--color-border-card);
-  transition: transform 140ms ease, color 140ms ease;
+  transition:
+    transform 140ms ease,
+    color 140ms ease;
 }
 
 .settings-section-chevron svg {
@@ -3998,4 +3987,143 @@ optgroup {
     flex: 1 1 0;
     min-width: 0;
   }
+}
+
+/* A single scroll surface, with only the viewport's rows mounted. */
+.virtual-file-list {
+  position: relative;
+  flex: 0 0 auto;
+  min-width: 100%;
+}
+.virtual-file-list .file-item,
+.virtual-file-list .folder-item {
+  box-sizing: border-box;
+  margin-inline: 0;
+  width: 100%;
+  min-width: 0;
+  content-visibility: visible;
+}
+
+/* Modal surfaces share sizing, spacing, focus treatment and scrolling. */
+.modal-panel {
+  max-height: calc(100dvh - 2 * var(--space-6));
+  min-height: 0;
+}
+.modal-body {
+  min-height: 0;
+  overflow-y: auto;
+}
+.modal-backdrop {
+  background: rgba(11, 12, 16, 0.48);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+.confirmation-backdrop {
+  z-index: 50;
+}
+.confirmation-modal,
+.progress-modal {
+  width: min(460px, 100%);
+  background: var(--color-menu-surface);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+.progress-modal {
+  align-items: stretch;
+}
+.progress-modal .spinner {
+  align-self: center;
+}
+.dialog-message {
+  margin: 0;
+  white-space: pre-line;
+  line-height: 1.5;
+  color: var(--color-text-secondary);
+}
+.dialog-path {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--color-surface-muted);
+  color: var(--color-text-muted);
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  max-height: 120px;
+  overflow-y: auto;
+}
+.confirmation-modal .modal-body {
+  display: grid;
+  gap: var(--space-3);
+}
+.modal-panel button.dialog-danger {
+  background: #b42332;
+  border-color: #b42332;
+  color: white;
+}
+.modal-panel button.dialog-primary {
+  background: var(--color-accent-soft);
+}
+.modal-panel button:focus-visible {
+  outline: 2px solid var(--color-accent-strong);
+  outline-offset: 2px;
+}
+
+/* Avoid scroll anchoring and layer heuristics fighting explicitly positioned rows
+   in Chromium/WebView2. Row geometry must match the virtual layout at every DPI. */
+.file-list {
+  overflow-x: hidden;
+  overflow-anchor: none;
+  will-change: auto;
+}
+.virtual-file-list {
+  width: 100%;
+  min-width: 0;
+  overflow-anchor: none;
+}
+.virtual-file-list > * {
+  box-sizing: border-box;
+}
+.virtual-file-list .file-item {
+  line-height: 18px;
+  contain: layout style;
+}
+.virtual-file-list .file-location {
+  line-height: 16px;
+}
+.virtual-file-list .folder-item {
+  padding-block: 4px;
+  overflow: hidden;
+}
+.virtual-file-list .folder-item-toggle {
+  min-width: 0;
+  overflow: hidden;
+}
+.virtual-file-list .folder-label {
+  flex: 1;
+  line-height: 16px;
+  overflow: hidden;
+}
+.virtual-file-list .folder-size {
+  line-height: 14px;
+}
+.virtual-file-list .folder-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.virtual-file-list
+  :is(
+    .folder-caret,
+    .folder-count,
+    .folder-trash-button,
+    .badge,
+    .list-section-caret
+  ) {
+  flex-shrink: 0;
+}
+.virtual-file-list .tree-item {
+  padding-left: min(calc(var(--tree-base-pad) + var(--tree-indent, 0px)), 40%);
+}
+.virtual-file-list .file-item:focus-visible {
+  outline: 2px solid var(--color-accent-strong);
+  outline-offset: -2px;
 }

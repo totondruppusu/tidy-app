@@ -105,7 +105,7 @@ fn file_response(
   let metadata = file.metadata()?;
   let size = metadata.len();
 
-  let content_type = MimeGuess::from_path(&path)
+  let content_type = MimeGuess::from_path(path)
     .first_or_octet_stream()
     .essence_str()
     .to_string();

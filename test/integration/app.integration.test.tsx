@@ -18,6 +18,7 @@ const previewCapabilities: PreviewCapabilities = {
 };
 
 const installBaseHandlers = (controller: ReturnType<typeof createMockBridge>) => {
+  controller.onInvoke("deletion_path_warning", () => null);
   controller.onInvoke("get_crash_report", () => null);
   controller.onInvoke("get_preview_capabilities", () => previewCapabilities);
   controller.onInvoke("get_cached_scan", () => null);
@@ -470,6 +471,80 @@ describe("App integration", () => {
     ).toHaveAttribute("aria-expanded", "false");
   });
 
+  it("requires a protected-path decision even with trash confirmations disabled", async () => {
+    const controller = createMockBridge();
+    installBaseHandlers(controller);
+    window.__TIDY_DESKTOP_BRIDGE__ = controller.bridge;
+    const file = createFile({ id: "protected", name: "config.txt", path: "C:\\Windows\\config.txt" });
+    controller.bridge.open = async () => "C:\\Windows";
+    controller.onInvoke("scan_folder", () => ({ files: [file], total: 1 }));
+    controller.onInvoke("deletion_path_warning", () => "Windows system path is protected by safety policy");
+    const remove = vi.fn(() => ({ trashPath: "/trash/config.txt" }));
+    controller.onInvoke("trash_file", remove);
+    const restore = vi.fn(() => null);
+    controller.onInvoke("restore_file", restore);
+    const user = userEvent.setup();
+    render(<App />);
+    await clickFolderPicker(user);
+    await user.click(screen.getByRole("button", { name: "Scan folder" }));
+    await user.click(await screen.findByRole("button", { name: "Trash ↑" }));
+    expect(await screen.findByRole("alertdialog", { name: "Delete from a protected location?" })).toHaveTextContent("C:\\Windows\\config.txt");
+    expect(remove).not.toHaveBeenCalled();
+    await user.keyboard("{ArrowUp}{Escape}");
+    expect(remove).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Trash ↑" }));
+    await user.click(await screen.findByRole("button", { name: "Move to trash", exact: true }));
+    await waitFor(() => expect(remove).toHaveBeenCalledWith(expect.objectContaining({ id: "protected", allowUnsafe: true, allowPermanentDelete: false })));
+    await user.click(screen.getByRole("button", { name: "Undo ↓" }));
+    await waitFor(() => expect(restore).toHaveBeenCalledWith(expect.objectContaining({ allowUnsafe: true })));
+  });
+
+  it("permanent deletion always asks and authorizes only permanent deletion", async () => {
+    const controller = createMockBridge();
+    installBaseHandlers(controller);
+    window.__TIDY_DESKTOP_BRIDGE__ = controller.bridge;
+    const file = createFile({ id: "f1", name: "doc.txt", path: "/mock/doc.txt" });
+    controller.bridge.open = async () => "/mock";
+    controller.onInvoke("scan_folder", () => ({ files: [file], total: 1 }));
+    const remove = vi.fn(() => ({ trashPath: null }));
+    controller.onInvoke("trash_file", remove);
+    const user = userEvent.setup();
+    render(<App />);
+    await clickFolderPicker(user);
+    await user.click(screen.getByRole("button", { name: "Scan folder" }));
+    await user.keyboard("{Shift>}{ArrowUp}{/Shift}");
+    await screen.findByRole("alertdialog", { name: "Permanently delete?" });
+    expect(remove).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Delete permanently" }));
+    await waitFor(() => expect(remove).toHaveBeenCalledWith(expect.objectContaining({ allowUnsafe: false, allowPermanentDelete: true })));
+  });
+
+  it("shows a retryable undo error without losing the saved recovery action", async () => {
+    const controller = createMockBridge();
+    installBaseHandlers(controller);
+    window.__TIDY_DESKTOP_BRIDGE__ = controller.bridge;
+    const file = createFile({ id: "nas", name: "doc.txt", path: "/Volumes/NAS/doc.txt" });
+    controller.bridge.open = async () => "/Volumes/NAS";
+    controller.onInvoke("scan_folder", () => ({ files: [file], total: 1 }));
+    controller.onInvoke("trash_file", () => ({ trashPath: "/local-backup/doc.txt" }));
+    const restore = vi.fn().mockRejectedValueOnce(new Error("Original folder unavailable. Reconnect the NAS.")).mockResolvedValue(null);
+    controller.onInvoke("restore_file", restore);
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+    await clickFolderPicker(user);
+    await user.click(screen.getByRole("button", { name: "Scan folder" }));
+    await user.click(screen.getByRole("button", { name: "Trash ↑" }));
+    await user.click(screen.getByRole("button", { name: "Undo ↓" }));
+    const error = await screen.findByRole("alertdialog", { name: "Couldn’t complete undo" });
+    expect(error).toHaveTextContent("Reconnect the NAS");
+    expect(error).toHaveTextContent("/local-backup/doc.txt");
+    expect(container.querySelector(".file-list")?.textContent).not.toContain("doc.txt");
+    await user.click(screen.getByRole("button", { name: "Retry undo" }));
+    await waitFor(() => expect(container.querySelector(".file-list")?.textContent).toContain("doc.txt"));
+    expect(restore).toHaveBeenCalledTimes(2);
+    expect(screen.getByRole("button", { name: "Undo ↓" })).toBeDisabled();
+  });
+
   it("supports trash then undo flow", async () => {
     const controller = createMockBridge();
     installBaseHandlers(controller);
@@ -680,7 +755,7 @@ describe("App integration", () => {
       render(<App />);
 
       await clickFolderPicker(user);
-      await user.click(screen.getByRole("button", { name: "Pictures" }));
+      await user.click(await screen.findByRole("button", { name: "Pictures" }));
       await user.click(screen.getByRole("button", { name: "Use this folder" }));
       expect(desktopOpen).not.toHaveBeenCalled();
       await user.click(screen.getByRole("button", { name: "Scan folder" }));
@@ -734,7 +809,7 @@ describe("App integration", () => {
       render(<App />);
 
       await clickFolderPicker(user);
-      await user.click(screen.getByRole("button", { name: "Pictures" }));
+      await user.click(await screen.findByRole("button", { name: "Pictures" }));
       await user.click(screen.getByRole("button", { name: "Use this folder" }));
       await user.click(screen.getByRole("button", { name: "Scan folder" }));
 
@@ -789,7 +864,7 @@ describe("App integration", () => {
       expect(screen.queryByRole("button", { name: "Open settings" })).not.toBeInTheDocument();
 
       await clickFolderPicker(user);
-      await user.click(screen.getByRole("button", { name: "Pictures" }));
+      await user.click(await screen.findByRole("button", { name: "Pictures" }));
       await user.click(screen.getByRole("button", { name: "Use this folder" }));
       await user.click(screen.getByRole("button", { name: "Scan folder" }));
 
@@ -806,6 +881,8 @@ describe("App integration", () => {
   it("renders streamed scan batches and keeps the final result authoritative", async () => {
     const controller = createMockBridge();
     installBaseHandlers(controller);
+    const readPreview = vi.fn(() => "preview");
+    controller.onInvoke("read_text_preview", readPreview);
     window.__TIDY_DESKTOP_BRIDGE__ = controller.bridge;
 
     const streamedFile = createFile({
@@ -844,6 +921,8 @@ describe("App integration", () => {
     await waitFor(() =>
       expect(container.querySelector(".file-list")?.textContent).toContain("streamed.txt")
     );
+
+    expect(readPreview).not.toHaveBeenCalled();
 
     await act(async () => {
       resolveScan?.({ files: [streamedFile, finalFile], total: 2 });
@@ -931,6 +1010,7 @@ describe("App integration", () => {
       path: "/mock/cached.txt",
     });
     let scanFolderCalls = 0;
+    let finishHydration: (() => void) | undefined;
     let hydrateArgs: Record<string, unknown> | undefined;
 
     controller.bridge.open = async () => "/mock";
@@ -947,7 +1027,7 @@ describe("App integration", () => {
     }));
     controller.onInvoke("hydrate_cached_scan", (args) => {
       hydrateArgs = args;
-      return null;
+      return new Promise<void>((resolve) => { finishHydration = resolve; });
     });
     controller.onInvoke("scan_folder", () => {
       scanFolderCalls += 1;
@@ -960,6 +1040,10 @@ describe("App integration", () => {
     await clickFolderPicker(user);
     await user.click(screen.getByRole("button", { name: "Scan folder" }));
     await user.click(screen.getByRole("button", { name: "Load previous scan" }));
+    expect(await screen.findByRole("dialog", { name: "Loading previous scan" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Load previous scan" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Stop scan" })).not.toBeInTheDocument();
+    await act(async () => finishHydration?.());
 
     await waitFor(() =>
       expect(container.querySelector(".file-list")?.textContent).toContain("cached.txt"),

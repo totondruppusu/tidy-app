@@ -2,11 +2,18 @@
 use super::*;
 
 #[tauri::command]
-pub(crate) async fn generate_preview(
-  app: AppHandle,
-  state: tauri::State<'_, AppState>,
-  id: String,
-) -> Result<String, String> {
+pub(crate) async fn generate_preview(app: AppHandle, id: String) -> Result<String, String> {
+  tauri::async_runtime::spawn_blocking(move || generate_preview_blocking(app, id))
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+fn generate_preview_blocking(app: AppHandle, id: String) -> Result<String, String> {
+  let state = app.state::<AppState>();
+  let _job = state
+    .preview_jobs
+    .lock()
+    .map_err(|error| error.to_string())?;
   let source = {
     let map = state.map.lock().expect("map lock");
     map.get(&id).cloned().ok_or("File not found")?
@@ -34,7 +41,6 @@ pub(crate) async fn generate_preview(
     .app_cache_dir()
     .map_err(|error| error.to_string())?;
   let preview_root = cache_dir.join("previews");
-  let preview_jobs = state.preview_jobs.clone();
   let metadata = fs::metadata(&source_path).map_err(|error| error.to_string())?;
   let preview_cache_root = preview_root.join("office-cache");
   let cached_preview_path = preview_cache_root.join(format!(
@@ -71,37 +77,32 @@ pub(crate) async fn generate_preview(
     return Ok(preview_id);
   }
   let session_dir = preview_root.join(Uuid::new_v4().to_string());
-  let source_path_clone = source_path.clone();
-  let cached_preview_path_clone = cached_preview_path.clone();
-  let preview_path = tauri::async_runtime::spawn_blocking(move || {
-    let _job = preview_jobs.lock().map_err(|error| error.to_string())?;
+  let preview_path = (|| -> Result<PathBuf, String> {
     fs::create_dir_all(&preview_root).map_err(|error| error.to_string())?;
     fs::create_dir_all(&preview_cache_root).map_err(|error| error.to_string())?;
-    if cached_preview_path_clone.exists() {
-      return Ok(cached_preview_path_clone);
+    if cached_preview_path.exists() {
+      return Ok(cached_preview_path);
     }
     fs::create_dir_all(&session_dir).map_err(|error| error.to_string())?;
     let _session = PreviewSession(session_dir.clone());
     let generated = run_platform_preview(
       &session_dir,
-      &source_path_clone,
-      Some(&cached_preview_path_clone),
+      &source_path,
+      Some(&cached_preview_path),
     )?;
-    if generated != cached_preview_path_clone {
-      fs::copy(&generated, &cached_preview_path_clone).map_err(|error| error.to_string())?;
+    if generated != cached_preview_path {
+      fs::copy(&generated, &cached_preview_path).map_err(|error| error.to_string())?;
     }
     if let Err(error) = trim_preview_cache(
       &preview_cache_root,
-      &cached_preview_path_clone,
+      &cached_preview_path,
       256 * 1024 * 1024,
     ) {
-      let _ = fs::remove_file(&cached_preview_path_clone);
+      let _ = fs::remove_file(&cached_preview_path);
       return Err(error);
     }
-    Ok(cached_preview_path_clone)
-  })
-  .await
-  .map_err(|error| error.to_string())??;
+    Ok(cached_preview_path)
+  })()?;
 
   let preview_extension = preview_path
     .extension()

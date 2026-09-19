@@ -1,10 +1,20 @@
+import { describeScanProgress } from "../lib/scanProgress";
+import { Modal } from "../components/Modal";
+import { useConfirmation } from "../hooks/useConfirmation";
+import { createScanBatchQueue } from "../lib/scanBatchQueue";
+import { useScrollHints } from "../hooks/useScrollHints";
+import { DeferredMount } from "../components/DeferredMount";
+import { VirtualFileList } from "../components/VirtualFileList";
+import { buildFileListModel } from "../lib/fileListModel";
+import { sortFileEntries } from "../lib/sorting";
 import {
+  lazy,
+  startTransition,
   useCallback,
   useEffect,
   useMemo,
   useRef,
   useState,
-  type SetStateAction,
 } from "react";
 import type {
   ActivitySnapshot,
@@ -42,7 +52,6 @@ import {
   EVENT_LOOP_POLL_MS,
   HEARTBEAT_INTERVAL_MS,
   SETTINGS_KEY,
-  TREE_INDENT_PX,
 } from "../constants/appConstants";
 import {
   updateScrollHint,
@@ -51,25 +60,14 @@ import {
 } from "../lib/dom";
 import {
   buildCrashEmailBody,
-  formatBytes,
   formatCrashReport,
-  formatDuplicateGroupMeta,
-  formatGroupTitle,
   formatPathLabel,
 } from "../lib/format";
 import { dedupeFileEntries, getExtension } from "../lib/files";
 import { getGroupIdForFile, groupFilesByMode } from "../lib/grouping";
+import { buildFileTree, getFolderCollapseKey } from "../lib/tree";
+import { getRelativeSegments, splitPathSegments } from "../lib/path";
 import {
-  buildFileTree,
-  getFolderCollapseKey,
-} from "../lib/tree";
-import {
-  formatRelativeFolder,
-  getRelativeSegments,
-  splitPathSegments,
-} from "../lib/path";
-import {
-  confirmDialog,
   getDesktopWindow,
   invokeCommand,
   isDesktopRuntime,
@@ -77,7 +75,11 @@ import {
 } from "../lib/desktopBridge";
 import { useScanController } from "../hooks/useScanController";
 import { useMutationController } from "../hooks/useMutationController";
-import { useUndoHistory, useUndoAction } from "../hooks/useUndoController";
+import {
+  useUndoHistory,
+  useUndoAction,
+  type UndoFailure,
+} from "../hooks/useUndoController";
 import { usePreviewController } from "../hooks/usePreviewController";
 import { useSuggestionsController } from "../hooks/useSuggestionsController";
 import { useSwipeGestureController } from "../hooks/useSwipeGestureController";
@@ -89,15 +91,36 @@ import {
   listLocalDirectories,
   pickManagedDirectory,
 } from "../services/directoryService";
-import { AndroidFolderBrowserModal } from "../components/AndroidFolderBrowserModal";
-import { HelpModal } from "../components/HelpModal";
-import { CrashReportModal } from "../components/CrashReportModal";
 import { DestinationSlots } from "../components/DestinationSlots";
 import { FileListPanel } from "../components/FileListPanel";
 import { PreviewGestureLegend, PreviewPanel } from "../components/PreviewPanel";
-import { SettingsModal } from "../components/SettingsModal";
-import { SuggestionsModal } from "../components/SuggestionsModal";
 import { Toolbar } from "../components/Toolbar";
+
+const AndroidFolderBrowserModal = lazy(() =>
+  import("../components/AndroidFolderBrowserModal").then((module) => ({
+    default: module.AndroidFolderBrowserModal,
+  })),
+);
+const HelpModal = lazy(() =>
+  import("../components/HelpModal").then((module) => ({
+    default: module.HelpModal,
+  })),
+);
+const CrashReportModal = lazy(() =>
+  import("../components/CrashReportModal").then((module) => ({
+    default: module.CrashReportModal,
+  })),
+);
+const SettingsModal = lazy(() =>
+  import("../components/SettingsModal").then((module) => ({
+    default: module.SettingsModal,
+  })),
+);
+const SuggestionsModal = lazy(() =>
+  import("../components/SuggestionsModal").then((module) => ({
+    default: module.SuggestionsModal,
+  })),
+);
 
 const SUGGESTIONS_MODE_OPTIONS: { value: SuggestionsMode; label: string }[] = [
   { value: "review", label: "Review & Apply" },
@@ -161,6 +184,8 @@ export default function App() {
     isDesktopRuntime() &&
     /windows/i.test(navigator.userAgent);
   const isAndroidApp = isAndroidRuntime();
+  const { confirmDialog, confirmation, isConfirming } = useConfirmation();
+  const [undoFailure, setUndoFailure] = useState<UndoFailure | null>(null);
   const [storedSettings] = useState(() => getStoredSettings());
   const [files, setFiles] = useState<FileEntry[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
@@ -269,59 +294,35 @@ export default function App() {
   const [lastFolder, setLastFolder] = useState<string | null>(
     isAndroidApp ? null : (storedSettings.lastFolder ?? null),
   );
-  const initialFolder = !isAndroidApp && storedSettings.rememberLastFolder
-    ? (storedSettings.lastFolder ?? null)
-    : null;
+  const initialFolder =
+    !isAndroidApp && storedSettings.rememberLastFolder
+      ? (storedSettings.lastFolder ?? null)
+      : null;
   const [currentFolder, setCurrentFolder] = useState<string | null>(
     initialFolder,
   );
   const [currentFolderToken, setCurrentFolderToken] = useState<string | null>(
     initialFolder,
   );
-  const { isLoading, runScanWorkflow, activeScanId, scanProgress, setScanProgress,
-    isCancellingScan, resetCancelScanWorkflow, scan, cancel } = useScanController();
+  const {
+    isLoading,
+    runScanWorkflow,
+    activeScanId,
+    scanProgress,
+    setScanProgress,
+    isCancellingScan,
+    resetCancelScanWorkflow,
+    scan,
+    cancel,
+  } = useScanController();
   const [scanCachePrompt, setScanCachePrompt] =
     useState<ScanCachePromptState | null>(null);
   const [blockingOverlay, setBlockingOverlay] =
     useState<BlockingOverlayState | null>(null);
-  const { isMutating, mutationSpinnerLabel, runMutationWithSpinner } = useMutationController(setBlockingOverlay);
+  const { isMutating, mutationSpinnerLabel, runMutationWithSpinner } =
+    useMutationController(setBlockingOverlay);
   const resetSelectionToFirstRef = useRef(false);
-  const blockingOverlayShowFrameRef = useRef<number | null>(null);
-  const blockingOverlayHideFrameRef = useRef<number | null>(null);
-  const [renderCount, setRenderCount] = useState(0);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const settingsBodyRef = useRef<HTMLDivElement | null>(null);
-  const settingsFrameRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    if (!isSettingsOpen) {
-      return;
-    }
-    const scrollNode = settingsBodyRef.current;
-    const frameNode = settingsFrameRef.current;
-    if (!scrollNode || !frameNode) {
-      return;
-    }
-    let raf = 0;
-    const handle = () => {
-      if (raf) {
-        cancelAnimationFrame(raf);
-      }
-      raf = requestAnimationFrame(() =>
-        updateScrollHint(scrollNode, frameNode),
-      );
-    };
-    handle();
-    scrollNode.addEventListener("scroll", handle, { passive: true });
-    const resizeObserver = new ResizeObserver(handle);
-    resizeObserver.observe(scrollNode);
-    return () => {
-      scrollNode.removeEventListener("scroll", handle);
-      resizeObserver.disconnect();
-      if (raf) {
-        cancelAnimationFrame(raf);
-      }
-    };
-  }, [isSettingsOpen]);
   const [isHelpOpen, setIsHelpOpen] = useState(false);
   const [isAndroidFolderBrowserOpen, setIsAndroidFolderBrowserOpen] =
     useState(false);
@@ -354,15 +355,11 @@ export default function App() {
   const [collapsedFolders, setCollapsedFolders] = useState<
     Record<string, boolean>
   >({});
-  const scanBatchBufferRef = useRef<FileEntry[]>([]);
-  const scanBatchRafRef = useRef<number | null>(null);
   const hasAutoLoadedFolderRef = useRef(false);
-  const listItemRefs = useRef<Map<string, HTMLButtonElement | null>>(new Map());
   const currentFileIdRef = useRef<string | null>(null);
   const skipAutoExpandCurrentFileRef = useRef(false);
   const suppressAutoExpandForSortRef = useRef(false);
   const suppressAutoExpandForGroupModeRef = useRef(false);
-  const previousActiveFileIdRef = useRef<string | null>(null);
   const visibleFileOrderRef = useRef<string[]>([]);
   const visibleIndexByIdRef = useRef<Map<string, number>>(new Map());
   const previousExtensionsRef = useRef<string[]>([]);
@@ -371,42 +368,26 @@ export default function App() {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const selectAllRef = useRef<HTMLInputElement | null>(null);
   const fileListFrameRef = useRef<HTMLDivElement | null>(null);
+  const fileListPositionRef = useRef<{ top: number; selectedId?: string }>({
+    top: 0,
+  });
   const fileListScrollRef = useRef<HTMLDivElement | null>(null);
   const previewFrameRef = useRef<HTMLDivElement | null>(null);
   const previewScrollRef = useRef<HTMLElement | null>(null);
   const lastStatusRef = useRef<string | null>(null);
   const lastEventLoopLagRef = useRef<number | null>(null);
-  const cancelPendingScanBatchFlush = useCallback(() => {
-    scanBatchBufferRef.current = [];
-    if (scanBatchRafRef.current !== null) {
-      window.cancelAnimationFrame(scanBatchRafRef.current);
-      scanBatchRafRef.current = null;
-    }
-  }, []);
-  const flushQueuedScanBatches = useCallback(() => {
-    scanBatchRafRef.current = null;
-    const pending = scanBatchBufferRef.current;
-    if (pending.length === 0) {
-      return;
-    }
-    scanBatchBufferRef.current = [];
-    setFiles((prev) => dedupeFileEntries([...prev, ...pending]));
-  }, []);
-  const queueScanBatchFiles = useCallback(
-    (batchFiles: FileEntry[]) => {
-      if (batchFiles.length === 0) {
-        return;
-      }
-      scanBatchBufferRef.current.push(...batchFiles);
-      if (scanBatchRafRef.current !== null) {
-        return;
-      }
-      scanBatchRafRef.current = window.requestAnimationFrame(
-        flushQueuedScanBatches,
-      );
-    },
-    [flushQueuedScanBatches],
+  const scanBatchQueue = useMemo(
+    () =>
+      createScanBatchQueue((batch) =>
+        setFiles((previous) => previous.concat(batch)),
+      ),
+    [],
   );
+  const cancelPendingScanBatchFlush = scanBatchQueue.reset;
+  const queueScanBatchFiles = scanBatchQueue.enqueue;
+  useEffect(() => {
+    if (!isLoading) cancelPendingScanBatchFlush();
+  }, [isLoading, cancelPendingScanBatchFlush]);
   const resolveAndroidFolderBrowser = useCallback(
     (selection: PickedDirectory | null) => {
       setIsAndroidFolderBrowserOpen(false);
@@ -588,7 +569,9 @@ export default function App() {
     if (!isDesktopRuntime()) {
       return;
     }
-    void getDesktopWindow().minimize().catch(() => {});
+    void getDesktopWindow()
+      .minimize()
+      .catch(() => {});
   }, []);
 
   const handleToggleMaximizeWindow = useCallback(() => {
@@ -612,7 +595,9 @@ export default function App() {
     if (!isDesktopRuntime()) {
       return;
     }
-    void getDesktopWindow().close().catch(() => {});
+    void getDesktopWindow()
+      .close()
+      .catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -747,61 +732,8 @@ export default function App() {
     [],
   );
 
-  useEffect(() => {
-    const scrollNode = fileListScrollRef.current;
-    const frameNode = fileListFrameRef.current;
-    if (!scrollNode || !frameNode) {
-      return;
-    }
-    let raf = 0;
-    const handle = () => {
-      if (raf) {
-        cancelAnimationFrame(raf);
-      }
-      raf = requestAnimationFrame(() =>
-        updateScrollHint(scrollNode, frameNode),
-      );
-    };
-    handle();
-    scrollNode.addEventListener("scroll", handle, { passive: true });
-    const resizeObserver = new ResizeObserver(handle);
-    resizeObserver.observe(scrollNode);
-    return () => {
-      scrollNode.removeEventListener("scroll", handle);
-      resizeObserver.disconnect();
-      if (raf) {
-        cancelAnimationFrame(raf);
-      }
-    };
-  }, [isSidebarCollapsed]);
-
-  useEffect(() => {
-    const scrollNode = previewScrollRef.current;
-    const frameNode = previewFrameRef.current;
-    if (!scrollNode || !frameNode) {
-      return;
-    }
-    let raf = 0;
-    const handle = () => {
-      if (raf) {
-        cancelAnimationFrame(raf);
-      }
-      raf = requestAnimationFrame(() =>
-        updateScrollHint(scrollNode, frameNode),
-      );
-    };
-    handle();
-    scrollNode.addEventListener("scroll", handle, { passive: true });
-    const resizeObserver = new ResizeObserver(handle);
-    resizeObserver.observe(scrollNode);
-    return () => {
-      scrollNode.removeEventListener("scroll", handle);
-      resizeObserver.disconnect();
-      if (raf) {
-        cancelAnimationFrame(raf);
-      }
-    };
-  }, []);
+  useScrollHints(fileListScrollRef, fileListFrameRef, !isSidebarCollapsed);
+  useScrollHints(previewScrollRef, previewFrameRef);
 
   useEffect(() => {
     const applyWindowTheme = async () => {
@@ -922,102 +854,8 @@ export default function App() {
     suggestionPresets,
   ]);
 
-  const clearBlockingOverlayFrames = useCallback(() => {
-    if (blockingOverlayShowFrameRef.current !== null) {
-      window.cancelAnimationFrame(blockingOverlayShowFrameRef.current);
-      blockingOverlayShowFrameRef.current = null;
-    }
-    if (blockingOverlayHideFrameRef.current !== null) {
-      window.cancelAnimationFrame(blockingOverlayHideFrameRef.current);
-      blockingOverlayHideFrameRef.current = null;
-    }
-  }, []);
-
-  const runBlockingUiTransition = useCallback(
-    (
-      title: string,
-      action: () => void,
-      subtitle = "Updating the interface. Please wait...",
-    ) => {
-      clearBlockingOverlayFrames();
-      setBlockingOverlay({ title, subtitle });
-      blockingOverlayShowFrameRef.current = window.requestAnimationFrame(() => {
-        blockingOverlayShowFrameRef.current = null;
-        action();
-        blockingOverlayHideFrameRef.current = window.requestAnimationFrame(
-          () => {
-            blockingOverlayHideFrameRef.current = window.requestAnimationFrame(
-              () => {
-                blockingOverlayHideFrameRef.current = null;
-                setBlockingOverlay(null);
-              },
-            );
-          },
-        );
-      });
-    },
-    [clearBlockingOverlayFrames],
-  );
-
-  const makeBlockingSetter = useCallback(
-    <T,>(
-      title: string,
-      setter: (value: SetStateAction<T>) => void,
-      subtitle: string,
-    ) =>
-      (value: SetStateAction<T>) => {
-        runBlockingUiTransition(title, () => setter(value), subtitle);
-      },
-    [runBlockingUiTransition],
-  );
-
-  useEffect(() => () => clearBlockingOverlayFrames(), [clearBlockingOverlayFrames]);
-
   const sortFiles = useCallback(
-    (list: FileEntry[]) => {
-      if (sortMode === "none") {
-        return list;
-      }
-      const next = [...list];
-      const compareName = (a: FileEntry, b: FileEntry) =>
-        a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
-      const compareExtension = (a: FileEntry, b: FileEntry) =>
-        getExtension(a.name).localeCompare(getExtension(b.name), undefined, {
-          sensitivity: "base",
-        });
-      const compareType = (a: FileEntry, b: FileEntry) =>
-        a.kind.localeCompare(b.kind, undefined, { sensitivity: "base" });
-      next.sort((a, b) => {
-        switch (sortMode) {
-          case "size_desc":
-            return b.sizeBytes - a.sizeBytes || compareName(a, b);
-          case "size_asc":
-            return a.sizeBytes - b.sizeBytes || compareName(a, b);
-          case "date_desc":
-            return (
-              (b.modifiedMs ?? 0) - (a.modifiedMs ?? 0) || compareName(a, b)
-            );
-          case "date_asc":
-            return (
-              (a.modifiedMs ?? 0) - (b.modifiedMs ?? 0) || compareName(a, b)
-            );
-          case "type_asc":
-            return compareType(a, b) || compareName(a, b);
-          case "type_desc":
-            return compareType(b, a) || compareName(a, b);
-          case "extension_asc":
-            return compareExtension(a, b) || compareName(a, b);
-          case "extension_desc":
-            return compareExtension(b, a) || compareName(a, b);
-          case "name_desc":
-            return compareName(b, a);
-          case "name_asc":
-          default:
-            return compareName(a, b);
-        }
-      });
-      return next;
-    },
+    (list: FileEntry[]) => sortFileEntries(list, sortMode),
     [sortMode],
   );
 
@@ -1124,6 +962,7 @@ export default function App() {
     sortedFiles,
     currentIndex,
     skipLargePreviews,
+    enabled: !isLoading,
   });
   const currentFile = sortedFiles[currentIndex];
   const hasFiles = sortedFiles.length > 0;
@@ -1246,7 +1085,6 @@ export default function App() {
     setFiles([]);
     currentFileIdRef.current = null;
     setCurrentIndex(0);
-    setRenderCount(0);
     resetSuggestionsState();
     setCollapsedGroups({});
     setCollapsedFolders({});
@@ -1272,11 +1110,12 @@ export default function App() {
       skipAutoExpandCurrentFileRef.current =
         viewMode === "tree" && Object.keys(nextCollapsedFolders).length > 0;
       setCurrentIndex(0);
-      setRenderCount(0);
-        resetSuggestionsState();
+      resetSuggestionsState();
       setCollapsedGroups(nextCollapsedGroups);
       setCollapsedFolders(nextCollapsedFolders);
-      updateStatus(`Loaded ${uniqueFiles.length} items from ${folderLabel}.${result.issues?.length ? ` ${result.issues.length} scan issue(s): ${result.issues[0].message}` : ""}`);
+      updateStatus(
+        `Loaded ${uniqueFiles.length} items from ${folderLabel}.${result.issues?.length ? ` ${result.issues.length} scan issue(s): ${result.issues[0].message}` : ""}`,
+      );
     },
     [
       buildInitialCollapsedGroups,
@@ -1289,16 +1128,19 @@ export default function App() {
     ],
   );
 
-  const runFreshScan = useCallback((request: ScanCacheRequest, folderLabel: string) => {
-    setLastScanFilterMode(request.filterMode);
-    setScanCachePrompt(null);
-    return scan(request, folderLabel, {
-      reset: resetScanViewState,
-      apply: applyScanResult,
-      updateStatus,
-      cache: !isAndroidApp,
-    });
-  }, [scan, resetScanViewState, applyScanResult, updateStatus, isAndroidApp]);
+  const runFreshScan = useCallback(
+    (request: ScanCacheRequest, folderLabel: string) => {
+      setLastScanFilterMode(request.filterMode);
+      setScanCachePrompt(null);
+      return scan(request, folderLabel, {
+        reset: resetScanViewState,
+        apply: applyScanResult,
+        updateStatus,
+        cache: !isAndroidApp,
+      });
+    },
+    [scan, resetScanViewState, applyScanResult, updateStatus, isAndroidApp],
+  );
 
   const loadCachedScan = useCallback(
     async (cachedScan: CachedScan) => {
@@ -1337,9 +1179,7 @@ export default function App() {
   const handleScan = useCallback(
     async (target?: PickedDirectory | string) => {
       const resolvedTarget =
-        typeof target === "string"
-          ? { token: target, label: target }
-          : target;
+        typeof target === "string" ? { token: target, label: target } : target;
       if (!resolvedTarget) {
         updateStatus("No folder selected.");
         return;
@@ -1371,7 +1211,10 @@ export default function App() {
     updateStatus("Scan cancelled.");
   }, [updateStatus]);
 
-  const cancelActiveScan = useCallback(() => cancel(updateStatus), [cancel, updateStatus]);
+  const cancelActiveScan = useCallback(
+    () => cancel(updateStatus),
+    [cancel, updateStatus],
+  );
 
   const pickFolder = useCallback(async () => {
     try {
@@ -1428,14 +1271,23 @@ export default function App() {
     }
     const shouldDelete = await confirmDialog(
       `Delete preset "${preset.activePresetName}"?`,
-      { title: "Delete suggestion preset" },
+      {
+        title: "Delete suggestion preset",
+        confirmLabel: "Delete preset",
+        danger: true,
+      },
     );
     if (!shouldDelete) {
       return;
     }
     confirmDeleteSuggestionPreset(preset.activePresetId);
     updateStatus(`Preset "${preset.activePresetName}" deleted.`);
-  }, [confirmDeleteSuggestionPreset, getDeleteSuggestionPreset, updateStatus]);
+  }, [
+    confirmDialog,
+    confirmDeleteSuggestionPreset,
+    getDeleteSuggestionPreset,
+    updateStatus,
+  ]);
 
   const toggleSidebar = useCallback(() => {
     setIsSidebarCollapsed((prev) => !prev);
@@ -1451,85 +1303,64 @@ export default function App() {
 
   const handleFilterModeChange = useCallback(
     (value: FilterMode) => {
-      runBlockingUiTransition(
-        "Updating filter",
-        () => setFilterMode(value),
-        "Refreshing the file selection...",
-      );
+      startTransition(() => setFilterMode(value));
     },
-    [runBlockingUiTransition],
+    [startTransition],
   );
 
   const handleSortModeChange = useCallback(
     (value: SortMode) => {
       suppressAutoExpandForSortRef.current = true;
-      runBlockingUiTransition(
-        "Sorting files",
-        () => setSortMode(value),
-        "Reordering the list...",
-      );
+      startTransition(() => setSortMode(value));
     },
-    [runBlockingUiTransition],
+    [startTransition],
   );
 
   const handleSidebarGroupModeChange = useCallback(
     (value: GroupMode) => {
       suppressAutoExpandForGroupModeRef.current = true;
-      runBlockingUiTransition(
-        "Grouping files",
-        () => {
-          handleGroupModeChange(value);
-          setCollapsedGroups(buildInitialCollapsedGroups(sortedFiles, value));
-        },
-        "Rebuilding the file groups...",
-      );
+      startTransition(() => {
+        handleGroupModeChange(value);
+        setCollapsedGroups(buildInitialCollapsedGroups(sortedFiles, value));
+      });
     },
     [
       buildInitialCollapsedGroups,
       handleGroupModeChange,
-      runBlockingUiTransition,
+      startTransition,
       sortedFiles,
     ],
   );
 
   const handleViewModeChange = useCallback(
     (value: ViewMode) => {
-      runBlockingUiTransition(
-        "Changing view",
-        () => setViewMode(value),
-        "Switching the file layout...",
-      );
+      startTransition(() => setViewMode(value));
     },
-    [runBlockingUiTransition],
+    [startTransition],
   );
 
   const handleToggleAllExtensions = useCallback(
     (checked: boolean) => {
       hasUserAdjustedExtensionsRef.current = true;
-      runBlockingUiTransition(
-        "Updating extensions",
-        () => setSelectedExtensions(checked ? allExtensions : []),
-        "Refreshing the visible files...",
+      startTransition(() =>
+        setSelectedExtensions(checked ? allExtensions : []),
       );
     },
-    [allExtensions, runBlockingUiTransition],
+    [allExtensions, startTransition],
   );
 
   const handleToggleExtension = useCallback(
     (extension: string) => {
       hasUserAdjustedExtensionsRef.current = true;
-      runBlockingUiTransition(
-        "Updating extensions",
-        () =>
-          setSelectedExtensions((current) =>
-            current.includes(extension)
-              ? current.filter((value) => value !== extension)
-              : [...current, extension],
-          ),
-        "Refreshing the visible files...",
+      startTransition(() =>
+        setSelectedExtensions((current) =>
+          current.includes(extension)
+            ? current.filter((value) => value !== extension)
+            : [...current, extension],
+        ),
       );
     },
-    [runBlockingUiTransition],
+    [startTransition],
   );
 
   const applySelectedSuggestions = useCallback(async () => {
@@ -1564,7 +1395,7 @@ export default function App() {
     }
     const shouldApply = await confirmDialog(
       `Preview ready: ${plan.applied} planned, ${plan.blocked} blocked, ${plan.failed} failed.\n\nApply now?`,
-      { title: "Confirm cleanup suggestions" },
+      { title: "Apply cleanup suggestions?", confirmLabel: "Apply selected" },
     );
     if (!shouldApply) {
       updateStatus("Suggestion apply canceled.");
@@ -1602,6 +1433,7 @@ export default function App() {
     selectedSuggestions,
     updateStatus,
     buildSuggestionActions,
+    confirmDialog,
     suggestionDryRunResult,
     suggestionDryRunSelectionKey,
     selectedSuggestionPlanKey,
@@ -1649,16 +1481,22 @@ export default function App() {
           );
           if (selected) {
             updateDestinationSlot(slotIndex, selected);
-            updateStatus(`Destination ${slotIndex + 1} set to ${selected.label}.`);
+            updateStatus(
+              `Destination ${slotIndex + 1} set to ${selected.label}.`,
+            );
             return selected;
           }
-          updateStatus(`No destination selected. ${ANDROID_FOLDER_PICKER_HINT}`);
+          updateStatus(
+            `No destination selected. ${ANDROID_FOLDER_PICKER_HINT}`,
+          );
           return null;
         }
         const selected = await pickManagedDirectory();
         if (selected) {
           updateDestinationSlot(slotIndex, selected);
-          updateStatus(`Destination ${slotIndex + 1} set to ${selected.label}.`);
+          updateStatus(
+            `Destination ${slotIndex + 1} set to ${selected.label}.`,
+          );
           return selected;
         }
         updateStatus(
@@ -1684,74 +1522,6 @@ export default function App() {
     ],
   );
 
-  const removeFileById = useCallback(
-    (removedId: string) => {
-      setFiles((prev) => {
-        const filterByExtension = (file: FileEntry) =>
-          selectedExtensionsSet.has(getExtension(file.name));
-        const sortedPrev = sortFiles(prev.filter(filterByExtension));
-        const next = prev.filter((file) => file.id !== removedId);
-        const sortedNext = sortFiles(next.filter(filterByExtension));
-        const nextVisibleIds = new Set(sortedNext.map((file) => file.id));
-        const sortedNextIndexById = new Map(
-          sortedNext.map((file, index) => [file.id, index] as const),
-        );
-        const visibleOrder = visibleFileOrderRef.current;
-        const removedIndexInVisible = visibleOrder.indexOf(removedId);
-
-        setCurrentIndex((current) => {
-          if (sortedPrev.length === 0) {
-            currentFileIdRef.current = null;
-            return 0;
-          }
-
-          if (removedIndexInVisible !== -1) {
-            let nextVisibleId: string | null = null;
-            for (
-              let i = removedIndexInVisible + 1;
-              i < visibleOrder.length;
-              i++
-            ) {
-              const candidateId = visibleOrder[i];
-              if (nextVisibleIds.has(candidateId)) {
-                nextVisibleId = candidateId;
-                break;
-              }
-            }
-
-            if (!nextVisibleId) {
-              for (let i = removedIndexInVisible - 1; i >= 0; i--) {
-                const candidateId = visibleOrder[i];
-                if (nextVisibleIds.has(candidateId)) {
-                  nextVisibleId = candidateId;
-                  break;
-                }
-              }
-            }
-
-            if (nextVisibleId) {
-              const nextIndex = sortedNextIndexById.get(nextVisibleId);
-              if (nextIndex !== undefined) {
-                currentFileIdRef.current = nextVisibleId;
-                return nextIndex;
-              }
-            }
-          }
-
-          const boundedCurrent = Math.min(current, sortedPrev.length - 1);
-          const fallbackIndex =
-            sortedNext.length === 0
-              ? 0
-              : Math.min(boundedCurrent, sortedNext.length - 1);
-          currentFileIdRef.current = sortedNext[fallbackIndex]?.id ?? null;
-          return fallbackIndex;
-        });
-        return next;
-      });
-    },
-    [selectedExtensionsSet, sortFiles],
-  );
-
   const removeFilesByIds = useCallback(
     (removedIds: string[]) => {
       const removedSet = new Set(removedIds);
@@ -1763,8 +1533,10 @@ export default function App() {
           selectedExtensionsSet.has(getExtension(file.name));
         const sortedPrev = sortFiles(prev.filter(filterByExtension));
         const next = prev.filter((file) => !removedSet.has(file.id));
-        const sortedNext = sortFiles(next.filter(filterByExtension));
-        const nextVisibleIds = new Set(sortedNext.map((file) => file.id));
+        // Removing entries preserves their existing sort order.
+        const sortedNext = sortedPrev.filter(
+          (file) => !removedSet.has(file.id),
+        );
         const sortedNextIndexById = new Map(
           sortedNext.map((file, index) => [file.id, index] as const),
         );
@@ -1787,7 +1559,7 @@ export default function App() {
             let nextVisibleId: string | null = null;
             for (let i = firstRemovedIndex + 1; i < visibleOrder.length; i++) {
               const candidateId = visibleOrder[i];
-              if (nextVisibleIds.has(candidateId)) {
+              if (sortedNextIndexById.has(candidateId)) {
                 nextVisibleId = candidateId;
                 break;
               }
@@ -1796,7 +1568,7 @@ export default function App() {
             if (!nextVisibleId) {
               for (let i = firstRemovedIndex - 1; i >= 0; i--) {
                 const candidateId = visibleOrder[i];
-                if (nextVisibleIds.has(candidateId)) {
+                if (sortedNextIndexById.has(candidateId)) {
                   nextVisibleId = candidateId;
                   break;
                 }
@@ -1826,27 +1598,83 @@ export default function App() {
     [selectedExtensionsSet, sortFiles],
   );
 
-  const restoreFileEntry = useCallback(
-    (restored: FileEntry) => {
+  const removeFileById = useCallback(
+    (removedId: string) => removeFilesByIds([removedId]),
+    [removeFilesByIds],
+  );
+
+  const restoreFileEntries = useCallback(
+    (restored: FileEntry[]) => {
       setFiles((prev) => {
-        if (prev.some((file) => file.id === restored.id)) {
-          return prev;
-        }
-        const next = [...prev, restored];
-        const filterByExtension = (file: FileEntry) =>
+        const existingIds = new Set(prev.map((file) => file.id));
+        const added = restored.filter((file) => {
+          if (existingIds.has(file.id)) return false;
+          existingIds.add(file.id);
+          return true;
+        });
+        if (!added.length) return prev;
+        const next = prev.concat(added);
+        const matchesExtension = (file: FileEntry) =>
           selectedExtensionsSet.has(getExtension(file.name));
-        const sortedNext = sortFiles(next.filter(filterByExtension));
-        const restoredIndex = sortedNext.findIndex(
-          (file) => file.id === restored.id,
-        );
-        if (restoredIndex !== -1) {
-          currentFileIdRef.current = restored.id;
-          setCurrentIndex(restoredIndex);
+        const visibleAdded = added.filter(matchesExtension);
+        const selected = visibleAdded[visibleAdded.length - 1];
+        if (selected) {
+          const sortedNext = sortFiles(next.filter(matchesExtension));
+          currentFileIdRef.current = selected.id;
+          setCurrentIndex(
+            sortedNext.findIndex((file) => file.id === selected.id),
+          );
         }
         return next;
       });
     },
     [selectedExtensionsSet, sortFiles],
+  );
+  const restoreFileEntry = useCallback(
+    (file: FileEntry) => restoreFileEntries([file]),
+    [restoreFileEntries],
+  );
+
+  const requestDeletion = useCallback(
+    async (
+      message: string,
+      path: string,
+      permanent: boolean,
+      target: { id?: string; folderPath?: string },
+    ) => {
+      let reason: string | null;
+      try {
+        reason = await invokeCommand<string | null>(
+          "deletion_path_warning",
+          target,
+        );
+      } catch (error) {
+        updateStatus(`Unable to check deletion safety: ${String(error)}`);
+        return null;
+      }
+      const needsConfirmation = Boolean(reason) || confirmTrash || permanent;
+      if (
+        needsConfirmation &&
+        !(await confirmDialog(
+          reason
+            ? `${message}\n\nThis location may contain system or application files. Removing it could stop your system or an app from working.\n\n${reason}`
+            : message,
+          {
+            title: reason
+              ? "Delete from a protected location?"
+              : permanent
+                ? "Permanently delete?"
+                : "Move to trash?",
+            confirmLabel: permanent ? "Delete permanently" : "Move to trash",
+            danger: true,
+            detail: path,
+          },
+        ))
+      )
+        return null;
+      return Boolean(reason);
+    },
+    [confirmDialog, confirmTrash, updateStatus],
   );
 
   const trashCurrent = useCallback(async () => {
@@ -1854,19 +1682,15 @@ export default function App() {
       updateStatus("No file selected.");
       return;
     }
-    const shouldConfirmTrash = confirmTrash || trashBehavior === "permanent";
-    const confirmMessage =
+    const allowUnsafe = await requestDeletion(
       trashBehavior === "permanent"
         ? `Permanently delete ${currentFile.name}? This cannot be undone.`
-        : `Move ${currentFile.name} to system trash?`;
-    const confirmTitle =
-      trashBehavior === "permanent" ? "Confirm delete" : "Confirm trash";
-    const shouldTrash = shouldConfirmTrash
-      ? await confirmDialog(confirmMessage, { title: confirmTitle })
-      : true;
-    if (!shouldTrash) {
-      return;
-    }
+        : `Move ${currentFile.name} to system trash?`,
+      currentFile.path,
+      trashBehavior === "permanent",
+      { id: currentFile.id },
+    );
+    if (allowUnsafe === null) return;
     await runMutationWithSpinner(
       trashBehavior === "permanent" ? "Deleting…" : "Trashing…",
       async () => {
@@ -1874,11 +1698,14 @@ export default function App() {
           const result = await invokeCommand<TrashResult>("trash_file", {
             id: currentFile.id,
             trashMode: trashBehavior,
+            allowPermanentDelete: trashBehavior === "permanent",
+            allowUnsafe,
           });
           removeFileById(currentFile.id);
           if (result.trashPath) {
             pushUndo({
               kind: "trash",
+              allowUnsafe,
               file: currentFile,
               fromPath: currentFile.path,
               trashPath: result.trashPath,
@@ -1900,7 +1727,7 @@ export default function App() {
       },
     );
   }, [
-    confirmTrash,
+    requestDeletion,
     currentFile,
     removeFileById,
     updateStatus,
@@ -1915,20 +1742,20 @@ export default function App() {
       updateStatus("No file selected.");
       return;
     }
-    const confirmMessage = `Permanently delete ${currentFile.name}? This cannot be undone.`;
-    const shouldDelete = confirmTrash
-      ? await confirmDialog(confirmMessage, {
-          title: "Confirm permanent delete",
-        })
-      : true;
-    if (!shouldDelete) {
-      return;
-    }
+    const allowUnsafe = await requestDeletion(
+      `Permanently delete ${currentFile.name}? This cannot be undone.`,
+      currentFile.path,
+      true,
+      { id: currentFile.id },
+    );
+    if (allowUnsafe === null) return;
     await runMutationWithSpinner("Deleting…", async () => {
       try {
         await invokeCommand<TrashResult>("trash_file", {
           id: currentFile.id,
           trashMode: "permanent",
+          allowPermanentDelete: true,
+          allowUnsafe,
         });
         removeFileById(currentFile.id);
         // Permanent delete doesn't create a trash path, so no undo
@@ -1938,7 +1765,7 @@ export default function App() {
       }
     });
   }, [
-    confirmTrash,
+    requestDeletion,
     currentFile,
     removeFileById,
     updateStatus,
@@ -1982,27 +1809,15 @@ export default function App() {
       const folderSegments = splitPathSegments(folderPath);
       const folderLabel =
         folderSegments[folderSegments.length - 1] ?? folderPath;
-      const shouldConfirmTrash = confirmTrash || trashBehavior === "permanent";
-      const confirmMessage =
-        trashBehavior === "permanent"
-          ? `Permanently delete ${folderLabel} and all its contents (${folderFiles.length} item${
-              folderFiles.length === 1 ? "" : "s"
-            })? This cannot be undone.`
-          : `Move ${folderLabel} and all its contents (${folderFiles.length} item${
-              folderFiles.length === 1 ? "" : "s"
-            }) to system trash?`;
-      const confirmTitle =
-        trashBehavior === "permanent"
-          ? "Confirm delete"
-          : "Confirm folder trash";
-      const shouldTrash = shouldConfirmTrash
-        ? await confirmDialog(confirmMessage, { title: confirmTitle })
-        : true;
-      if (!shouldTrash) {
-        return;
-      }
       const base = currentFolder.replace(/[\\/]+$/, "");
       const fullFolderPath = `${base}/${folderPath}`;
+      const allowUnsafe = await requestDeletion(
+        `${trashBehavior === "permanent" ? "Permanently delete" : "Move to trash"} ${folderLabel} and all its contents? This includes files hidden by the current filters.${trashBehavior === "permanent" ? " This cannot be undone." : ""}`,
+        fullFolderPath,
+        trashBehavior === "permanent",
+        { folderPath: fullFolderPath },
+      );
+      if (allowUnsafe === null) return;
       const items: FolderTrashItem[] = folderFiles.map((file) => ({
         file,
         relativePath: getRelativeSegments(file.path, fullFolderPath).join("/"),
@@ -2019,11 +1834,14 @@ export default function App() {
               folderPath: fullFolderPath,
               files: entries,
               trashMode: trashBehavior,
+              allowPermanentDelete: trashBehavior === "permanent",
+              allowUnsafe,
             });
             removeFilesByIds(folderFiles.map((file) => file.id));
             if (result.trashPath) {
               pushUndo({
                 kind: "trash-folder",
+                allowUnsafe,
                 folderPath: fullFolderPath,
                 trashPath: result.trashPath,
                 items,
@@ -2045,7 +1863,7 @@ export default function App() {
       );
     },
     [
-      confirmTrash,
+      requestDeletion,
       currentFolder,
       getFolderFiles,
       isAndroidApp,
@@ -2196,7 +2014,15 @@ export default function App() {
     setCurrentIndex(prevIndex);
   }, [currentFile, sortedIndexById]);
 
-  const undoLastAction = useUndoAction({ undoStack, setUndoStack, restoreFileEntry, updateStatus, runMutationWithSpinner });
+  const undoLastAction = useUndoAction({
+    undoStack,
+    setUndoStack,
+    restoreFileEntry,
+    restoreFileEntries,
+    updateStatus,
+    runMutationWithSpinner,
+    onFailure: setUndoFailure,
+  });
 
   const toggleVideoPlayback = useCallback(() => {
     const video = videoRef.current;
@@ -2233,6 +2059,7 @@ export default function App() {
 
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
+      if (isConfirming || undoFailure || isLoading || scanCachePrompt) return;
       if (isHelpOpen) {
         if (event.key === "Escape") {
           event.preventDefault();
@@ -2322,6 +2149,10 @@ export default function App() {
     goPrev,
     blockingOverlay,
     isHelpOpen,
+    isConfirming,
+    undoFailure,
+    isLoading,
+    scanCachePrompt,
     isMutating,
     isSuggestionsOpen,
     isSettingsOpen,
@@ -2371,38 +2202,25 @@ export default function App() {
     };
   }, [cancelPendingScanBatchFlush, queueScanBatchFiles]);
 
-  useEffect(() => {
-    setRenderCount(sortedFiles.length);
-  }, [sortedFiles.length]);
-
-  const visibleFiles = useMemo(() => {
-    // Render all current rows and rely on native browser scrolling.
-    return sortedFiles.slice(0, renderCount);
-  }, [sortedFiles, renderCount]);
-
-  const folderKeys = useMemo(() => {
-    const keys = new Set<string>();
-    const addKey = (groupId: string | null, path: string) => {
-      if (!path) {
-        return;
-      }
-      keys.add(getFolderCollapseKey(groupId, path));
-    };
-    sortedFiles.forEach((file) => {
-      const segments = getRelativeSegments(file.path, currentFolder);
-      const folderSegments = segments.length > 1 ? segments.slice(0, -1) : [];
-      if (folderSegments.length === 0) {
-        return;
-      }
-      const groupId = getGroupIdForFile(effectiveGroupMode, file);
-      let currentPath = "";
-      folderSegments.forEach((segment) => {
-        currentPath = currentPath ? `${currentPath}/${segment}` : segment;
-        addKey(groupId, currentPath);
-      });
-    });
-    return Array.from(keys);
-  }, [sortedFiles, effectiveGroupMode, currentFolder]);
+  const listModel = useMemo(
+    () =>
+      buildFileListModel(
+        sortedFiles,
+        effectiveGroupMode,
+        viewMode,
+        currentFolder,
+      ),
+    [sortedFiles, effectiveGroupMode, viewMode, currentFolder],
+  );
+  const folderKeys = listModel.folderKeys;
+  const visibleFileOrder = listModel.fileOrder;
+  const selectListFile = useCallback(
+    (file: FileEntry) => {
+      currentFileIdRef.current = file.id;
+      setCurrentIndex(sortedIndexById.get(file.id) ?? 0);
+    },
+    [sortedIndexById],
+  );
 
   const hasFolders = folderKeys.length > 0;
   const hasCollapsedFolders = useMemo(
@@ -2433,359 +2251,27 @@ export default function App() {
     setCollapsedFolders((prev) => ({ ...prev, [folderKey]: !prev[folderKey] }));
   }, []);
 
-  const listRender = useMemo(() => {
-    const showDuplicateLocation = shouldGroupDuplicates && viewMode === "list";
-    const renderButton = (file: FileEntry, index: number, depth?: number) => (
-      <button
-        key={file.id}
-        className={`file-item ${index === currentIndex ? "active " : ""}${
-          depth !== undefined ? "tree-item" : ""
-        }`}
-        onClick={() => {
-          currentFileIdRef.current = file.id;
-          setCurrentIndex(index);
-        }}
-        onDoubleClick={() => {
-          if (!isAndroidApp) {
-            void openFileInFinder(file);
-          }
-        }}
-        ref={(node) => listItemRefs.current.set(file.id, node)}
-        type="button"
-        aria-current={index === currentIndex ? "true" : undefined}
-        disabled={isLoading || isMutating}
-        style={
-          depth !== undefined
-            ? ({
-                "--tree-indent": `${depth * TREE_INDENT_PX}px`,
-              } as React.CSSProperties)
-            : undefined
-        }
-      >
-        <span className={`badge badge-${file.kind}`}>{file.kind}</span>
-        <span className="file-content">
-          <span className="filename">{file.name}</span>
-          {showDuplicateLocation && (
-            <span className="file-location">
-              {formatRelativeFolder(file.path, currentFolder)}
-            </span>
-          )}
-        </span>
-      </button>
-    );
-
-    const indexMap = new Map<string, number>();
-    visibleFiles.forEach((file, index) => {
-      indexMap.set(file.id, index);
-    });
-
-    const isDuplicateGrouping = effectiveGroupMode === "duplicates";
-
-    if (viewMode === "list") {
-      if (effectiveGroupMode === "none") {
-        return {
-          items: visibleFiles.map((file, index) => renderButton(file, index)),
-        };
-      }
-
-      const { groups, keys } = groupFilesByMode(
-        effectiveGroupMode,
-        visibleFiles,
-      );
-
-      const items: JSX.Element[] = [];
-      keys.forEach((key) => {
-        const groupFiles = groups.get(key);
-        if (!groupFiles || groupFiles.length === 0) {
-          return;
-        }
-        const groupId = `${effectiveGroupMode}:${key}`;
-        const isGroupCollapsed = Boolean(collapsedGroups[groupId]);
-        const groupTitle = formatGroupTitle(
-          effectiveGroupMode,
-          key,
-          groupFiles,
-        );
-        const groupMeta = isDuplicateGrouping
-          ? formatDuplicateGroupMeta(groupFiles)
-          : null;
-        const countLabel = isDuplicateGrouping
-          ? `${groupFiles.length} copies`
-          : `${groupFiles.length}`;
-        items.push(
-          <div
-            key={`${effectiveGroupMode}-${key}`}
-            className={`list-section${isDuplicateGrouping ? " list-section-duplicates" : ""}`}
-          >
-            <button
-              type="button"
-              className="list-section-toggle"
-              onClick={() => toggleGroupCollapse(groupId)}
-              aria-expanded={!isGroupCollapsed}
-              aria-label={
-                isGroupCollapsed
-                  ? `Expand ${groupTitle}`
-                  : `Collapse ${groupTitle}`
-              }
-              disabled={isLoading}
-              data-prevent-open-on-enter
-            >
-              <span className="list-section-caret" aria-hidden="true">
-                <svg viewBox="0 0 24 24" focusable="false">
-                  {isGroupCollapsed ? (
-                    <path d="M9 5.5 16 12 9 18.5V5.5Z" />
-                  ) : (
-                    <path d="M6 9l6 6 6-6H6Z" />
-                  )}
-                </svg>
-              </span>
-              <span className="list-section-text">
-                <span className="list-section-title">{groupTitle}</span>
-                {groupMeta && (
-                  <span className="list-section-meta">{groupMeta}</span>
-                )}
-              </span>
-              <span className="list-section-count">{countLabel}</span>
-            </button>
-            {!isGroupCollapsed && (
-              <div className="list-section-items">
-                {groupFiles.map((file) =>
-                  renderButton(file, indexMap.get(file.id) ?? 0),
-                )}
-              </div>
-            )}
-          </div>,
-        );
-      });
-      return { items };
-    }
-
-    const renderTreeNodes = (
-      nodes: TreeNode[],
-      depth: number,
-      groupId: string | null,
-    ) =>
-      nodes.map((node) => {
-        if (node.type === "file") {
-          const index = indexMap.get(node.file.id) ?? 0;
-          return renderButton(node.file, index, Math.max(depth - 1, 0));
-        }
-        const folderKey = getFolderCollapseKey(groupId, node.path);
-        const isCollapsed = Boolean(collapsedFolders[folderKey]);
-        return (
-          <div key={`folder-${folderKey}`} className="tree-node">
-            <div
-              className="folder-item tree-item"
-              style={
-                {
-                  "--tree-indent": `${depth * TREE_INDENT_PX}px`,
-                } as React.CSSProperties
-              }
-            >
-              <button
-                type="button"
-                className="folder-item-toggle"
-                onClick={() => toggleFolderCollapse(folderKey)}
-                aria-expanded={!isCollapsed}
-                aria-label={
-                  isCollapsed ? `Expand ${node.name}` : `Collapse ${node.name}`
-                }
-                disabled={isLoading}
-                data-prevent-open-on-enter
-              >
-                <span className="folder-caret" aria-hidden="true">
-                  <svg viewBox="0 0 24 24" focusable="false">
-                    {isCollapsed ? (
-                      <path d="M9 5.5 16 12 9 18.5V5.5Z" />
-                    ) : (
-                      <path d="M6 9l6 6 6-6H6Z" />
-                    )}
-                  </svg>
-                </span>
-                <span className="folder-label">
-                  <span className="folder-name">{node.name}</span>
-                  <span className="folder-size">{formatBytes(node.totalBytes)}</span>
-                </span>
-                <span className="folder-count">{node.fileCount}</span>
-              </button>
-              <button
-                type="button"
-                className="folder-trash-button"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  void trashFolder(node.path);
-                }}
-                aria-label={`Trash ${node.name}`}
-                title={`Trash ${node.name}`}
-                disabled={isLoading || isMutating}
-                data-prevent-open-on-enter
-              >
-                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                  <path d="M9 4h6l1 2h4v2H4V6h4l1-2Zm1 6h2v8h-2v-8Zm4 0h2v8h-2v-8ZM7 10h2v8H7v-8Z" />
-                </svg>
-              </button>
-            </div>
-            {!isCollapsed && (
-              <div className="tree-children">
-                {renderTreeNodes(node.children, depth + 1, groupId)}
-              </div>
-            )}
-          </div>
-        );
-      });
-
-    const renderTreeForFiles = (
-      entries: FileEntry[],
-      groupId: string | null,
-    ) => {
-      const tree = buildFileTree(entries, currentFolder);
-      return renderTreeNodes(tree.children, 0, groupId);
-    };
-
-    if (effectiveGroupMode === "none") {
-      return { items: renderTreeForFiles(visibleFiles, null) };
-    }
-
-    const { groups, keys } = groupFilesByMode(effectiveGroupMode, visibleFiles);
-    const items: JSX.Element[] = [];
-    keys.forEach((key) => {
-      const groupFiles = groups.get(key);
-      if (!groupFiles || groupFiles.length === 0) {
-        return;
-      }
-      const groupId = `${effectiveGroupMode}:${key}`;
-      const isGroupCollapsed = Boolean(collapsedGroups[groupId]);
-      const groupTitle = formatGroupTitle(effectiveGroupMode, key, groupFiles);
-      const groupMeta = isDuplicateGrouping
-        ? formatDuplicateGroupMeta(groupFiles)
-        : null;
-      const countLabel = isDuplicateGrouping
-        ? `${groupFiles.length} copies`
-        : `${groupFiles.length}`;
-      items.push(
-        <div
-          key={`${effectiveGroupMode}-${key}`}
-          className={`list-section${isDuplicateGrouping ? " list-section-duplicates" : ""}`}
-        >
-          <button
-            type="button"
-            className="list-section-toggle"
-            onClick={() => toggleGroupCollapse(groupId)}
-            aria-expanded={!isGroupCollapsed}
-            aria-label={
-              isGroupCollapsed
-                ? `Expand ${groupTitle}`
-                : `Collapse ${groupTitle}`
-            }
-            disabled={isLoading}
-            data-prevent-open-on-enter
-          >
-            <span className="list-section-caret" aria-hidden="true">
-              <svg viewBox="0 0 24 24" focusable="false">
-                {isGroupCollapsed ? (
-                  <path d="M9 5.5 16 12 9 18.5V5.5Z" />
-                ) : (
-                  <path d="M6 9l6 6 6-6H6Z" />
-                )}
-              </svg>
-            </span>
-            <span className="list-section-text">
-              <span className="list-section-title">{groupTitle}</span>
-              {groupMeta && (
-                <span className="list-section-meta">{groupMeta}</span>
-              )}
-            </span>
-            <span className="list-section-count">{countLabel}</span>
-          </button>
-          {!isGroupCollapsed && (
-            <div className="list-section-items">
-              {renderTreeForFiles(groupFiles, groupId)}
-            </div>
-          )}
-        </div>,
-      );
-    });
-    return { items };
-  }, [
-    visibleFiles,
-    isLoading,
-    isMutating,
-    effectiveGroupMode,
-    shouldGroupDuplicates,
-    isAndroidApp,
-    openFileInFinder,
-    currentFolder,
-    viewMode,
-    collapsedGroups,
-    collapsedFolders,
-    toggleGroupCollapse,
-    toggleFolderCollapse,
-    trashFolder,
-  ]);
-
-  const listItems = listRender.items;
-
-  const visibleFileOrder = useMemo(() => {
-    const order: string[] = [];
-    if (viewMode === "list") {
-      if (effectiveGroupMode === "none") {
-        return sortedFiles.map((file) => file.id);
-      }
-      const { groups, keys } = groupFilesByMode(
-        effectiveGroupMode,
-        sortedFiles,
-      );
-      keys.forEach((key) => {
-        const groupFiles = groups.get(key);
-        if (!groupFiles || groupFiles.length === 0) {
-          return;
-        }
-        groupFiles.forEach((file) => order.push(file.id));
-      });
-      return order;
-    }
-
-    const indexMap = new Map<string, number>();
-    sortedFiles.forEach((file, index) => {
-      indexMap.set(file.id, index);
-    });
-
-    const collectTreeNodes = (nodes: TreeNode[], groupId: string | null) => {
-      nodes.forEach((node) => {
-        if (node.type === "file") {
-          order.push(node.file.id);
-          return;
-        }
-        collectTreeNodes(node.children, groupId);
-      });
-    };
-
-    const collectTreeForFiles = (
-      entries: FileEntry[],
-      groupId: string | null,
-    ) => {
-      const tree = buildFileTree(entries, currentFolder);
-      collectTreeNodes(tree.children, groupId);
-    };
-
-    if (effectiveGroupMode === "none") {
-      collectTreeForFiles(sortedFiles, null);
-      return order;
-    }
-
-    const { groups, keys } = groupFilesByMode(effectiveGroupMode, sortedFiles);
-
-    keys.forEach((key) => {
-      const groupFiles = groups.get(key);
-      if (!groupFiles || groupFiles.length === 0) {
-        return;
-      }
-      const groupId = `${effectiveGroupMode}:${key}`;
-      collectTreeForFiles(groupFiles, groupId);
-    });
-
-    return order;
-  }, [sortedFiles, effectiveGroupMode, currentFolder, viewMode]);
+  const listItems = (
+    <VirtualFileList
+      model={listModel}
+      positionRef={fileListPositionRef}
+      scrollRef={fileListScrollRef}
+      currentId={currentFile?.id}
+      collapsedFolders={collapsedFolders}
+      collapsedGroups={collapsedGroups}
+      onToggleFolder={toggleFolderCollapse}
+      onToggleGroup={toggleGroupCollapse}
+      onSelect={selectListFile}
+      onOpen={openFileInFinder}
+      onTrashFolder={trashFolder}
+      isLoading={isLoading}
+      isMutating={isMutating}
+      isAndroid={isAndroidApp}
+      density={listDensity}
+      showLocation={shouldGroupDuplicates && viewMode === "list"}
+      currentFolder={currentFolder}
+    />
+  );
 
   useEffect(() => {
     visibleFileOrderRef.current = visibleFileOrder;
@@ -2867,75 +2353,7 @@ export default function App() {
     suppressAutoExpandForGroupModeRef.current = false;
   }, [currentFile?.id, effectiveGroupMode]);
 
-  useEffect(() => {
-    const previousId = previousActiveFileIdRef.current;
-    if (previousId && previousId !== currentFile?.id) {
-      const previousNode = listItemRefs.current.get(previousId);
-      if (previousNode) {
-        previousNode.classList.remove("active");
-        previousNode.removeAttribute("aria-current");
-      }
-    }
-    if (currentFile?.id) {
-      const currentNode = listItemRefs.current.get(currentFile.id);
-      if (currentNode) {
-        currentNode.classList.add("active");
-        currentNode.setAttribute("aria-current", "true");
-      }
-    }
-    previousActiveFileIdRef.current = currentFile?.id ?? null;
-  }, [
-    currentFile?.id,
-    renderCount,
-    collapsedGroups,
-    collapsedFolders,
-    effectiveGroupMode,
-    viewMode,
-  ]);
-
-  useEffect(() => {
-    if (!currentFile) {
-      return;
-    }
-    const node = listItemRefs.current.get(currentFile.id);
-    if (!node) {
-      return;
-    }
-    requestAnimationFrame(() => {
-      node.scrollIntoView({
-        block: "nearest",
-        behavior: "auto",
-      });
-    });
-  }, [
-    currentFile,
-    renderCount,
-    collapsedGroups,
-    collapsedFolders,
-    viewMode,
-    effectiveGroupMode,
-  ]);
-
-  const loadingMessage = useMemo(() => {
-    if (!isLoading || !scanProgress) {
-      return null;
-    }
-    if (scanProgress.phase === "indexing") {
-      return scanProgress.total
-        ? `Indexing ${scanProgress.scanned}/${scanProgress.total} files...`
-        : `Indexing ${scanProgress.scanned} files...`;
-    }
-    if (!scanProgress.total) {
-      return `Scanning ${scanProgress.scanned} files · ${scanProgress.matched} matched`;
-    }
-    const percent = scanProgress.total
-      ? Math.min(
-          100,
-          Math.round((scanProgress.scanned / scanProgress.total) * 100),
-        )
-      : 0;
-    return `Scanning ${percent}% · ${scanProgress.scanned}/${scanProgress.total} files · ${scanProgress.matched} matched`;
-  }, [isLoading, scanProgress]);
+  const scanDescription = describeScanProgress(scanProgress, isCancellingScan);
 
   const activeBlockingOverlay = useMemo<{
     title: string;
@@ -2952,7 +2370,21 @@ export default function App() {
         subtitle: blockingOverlay.subtitle,
         showSpinner: true,
         showCancel: false,
-        actions: [] as { label: string; onClick: () => void; disabled?: boolean }[],
+        actions: [] as {
+          label: string;
+          onClick: () => void;
+          disabled?: boolean;
+        }[],
+      };
+    }
+    if (scanCachePrompt && isLoading) {
+      return {
+        title: "Loading previous scan",
+        subtitle:
+          "Restoring saved file details. To check for changes on disk, run a fresh scan afterward.",
+        showSpinner: true,
+        showCancel: false,
+        actions: [],
       };
     }
     if (scanCachePrompt) {
@@ -2982,13 +2414,17 @@ export default function App() {
     }
     if (isLoading) {
       return {
-        title: "Scanning files",
-        subtitle: loadingMessage ?? "Collecting file list...",
+        title: scanDescription.title,
+        subtitle: scanDescription.detail,
         showSpinner: true,
         showCancel: true,
         showClose: false,
         onClose: undefined,
-        actions: [] as { label: string; onClick: () => void; disabled?: boolean }[],
+        actions: [] as {
+          label: string;
+          onClick: () => void;
+          disabled?: boolean;
+        }[],
       };
     }
     return null;
@@ -2997,14 +2433,15 @@ export default function App() {
     dismissScanCachePrompt,
     isLoading,
     loadCachedScan,
-    loadingMessage,
+    scanDescription.title,
+    scanDescription.detail,
     runFreshScan,
     scanCachePrompt,
   ]);
 
-  const isInteractionBlocked = Boolean(activeBlockingOverlay);
+  const isInteractionBlocked =
+    Boolean(activeBlockingOverlay) || isConfirming || Boolean(undoFailure);
   const areControlsDisabled = isLoading || isInteractionBlocked;
-  const isRenderingList = renderCount < sortedFiles.length;
   const totalFiles = files.length;
   const filteredCount = sortedFiles.length;
   const isDrawerMode = isNarrowLayout;
@@ -3056,7 +2493,6 @@ export default function App() {
     viewMode,
     effectiveGroupMode,
     listDensity,
-    renderCount,
     filteredCount,
     collapsedGroups,
     collapsedFolders,
@@ -3092,7 +2528,9 @@ export default function App() {
       aria-busy={isLoading || isInteractionBlocked}
       data-window-platform={isWindowsDesktop ? "windows" : "default"}
     >
-      {isWindowsDesktop && <div className="titlebar-drag" data-tauri-drag-region />}
+      {isWindowsDesktop && (
+        <div className="titlebar-drag" data-tauri-drag-region />
+      )}
       <Toolbar
         isSidebarCollapsed={isSidebarCollapsed}
         isDrawerMode={isDrawerMode}
@@ -3128,7 +2566,6 @@ export default function App() {
               hasFolders,
               hasCollapsedFolders,
               onToggleAllFolders: toggleAllFolders,
-              isRenderingList,
               sortMode,
               onSortModeChange: handleSortModeChange,
               displayGroupMode,
@@ -3139,8 +2576,6 @@ export default function App() {
               listDensity,
               hasFiles,
               listItems,
-              renderCount,
-              filteredCount,
             }}
             extensions={{
               isCollapsed: isExtensionsCollapsed,
@@ -3183,7 +2618,9 @@ export default function App() {
               onPickDestination={pickDestinationForSlot}
             />
             {(mutationSpinnerLabel || !isGestureMode) && (
-              <div className={`action-row${isGestureMode ? " gesture-mode" : ""}`}>
+              <div
+                className={`action-row${isGestureMode ? " gesture-mode" : ""}`}
+              >
                 {mutationSpinnerLabel && (
                   <div
                     className="action-progress"
@@ -3241,182 +2678,234 @@ export default function App() {
         )}
       </div>
 
-      {activeBlockingOverlay && (
-        <div className="blocking-overlay" role="alert" aria-live="assertive">
-          <div className="loading-state blocking-overlay-card">
-            {activeBlockingOverlay.showClose && activeBlockingOverlay.onClose && (
-              <button
-                type="button"
-                className="icon-button blocking-overlay-close"
-                onClick={activeBlockingOverlay.onClose}
-                aria-label="Close previous scan dialog"
-              >
-                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                  <path d="M18.3 5.7a1 1 0 0 0-1.4 0L12 10.6 7.1 5.7a1 1 0 1 0-1.4 1.4L10.6 12l-4.9 4.9a1 1 0 1 0 1.4 1.4L12 13.4l4.9 4.9a1 1 0 0 0 1.4-1.4L13.4 12l4.9-4.9a1 1 0 0 0 0-1.4Z" />
-                </svg>
-              </button>
-            )}
-            {activeBlockingOverlay.showSpinner && (
-              <div className="spinner" aria-hidden="true" />
-            )}
-            <div className="loading-title">{activeBlockingOverlay.title}</div>
-            <div className="loading-subtitle">
-              {activeBlockingOverlay.subtitle}
-            </div>
-            {activeBlockingOverlay.actions.length > 0 && (
-              <div className="modal-action-row">
-                {activeBlockingOverlay.actions.map((action) => (
-                  <button
-                    key={action.label}
-                    type="button"
-                    className="preview-action-button"
-                    onClick={action.onClick}
-                    disabled={action.disabled}
-                  >
-                    {action.label}
-                  </button>
-                ))}
-              </div>
-            )}
-            {activeBlockingOverlay.showCancel && (
-              <button
-                type="button"
-                className="preview-action-button"
-                onClick={() => void cancelActiveScan()}
-                disabled={isCancellingScan}
-              >
-                {isCancellingScan ? "Stopping..." : "Stop scan"}
-              </button>
-            )}
+      {undoFailure && (
+        <Modal
+          labelledBy="undo-error-title"
+          describedBy="undo-error-message"
+          className="confirmation-modal"
+          backdropClassName="confirmation-backdrop"
+          alert
+          onClose={() => setUndoFailure(null)}
+        >
+          <div className="modal-header">
+            <h2 id="undo-error-title" className="modal-title">
+              Couldn’t complete undo
+            </h2>
           </div>
-        </div>
+          <div className="modal-body">
+            <p id="undo-error-message" className="dialog-message">
+              {undoFailure.message}
+            </p>
+            <p className="dialog-message">
+              The undo action is saved for retry. Check that the original folder
+              is available and the NAS is connected. Existing files will not be
+              overwritten.
+            </p>
+            <p className="dialog-path">
+              Restore to: {undoFailure.destinationPath}
+            </p>
+            <p className="dialog-path">
+              Recovery source: {undoFailure.sourcePath}
+            </p>
+          </div>
+          <div className="modal-footer">
+            <button
+              type="button"
+              data-dialog-initial-focus
+              onClick={() => setUndoFailure(null)}
+            >
+              Close
+            </button>
+            <button
+              type="button"
+              className="dialog-primary"
+              onClick={() => {
+                setUndoFailure(null);
+                void undoLastAction();
+              }}
+            >
+              Retry undo
+            </button>
+          </div>
+        </Modal>
+      )}
+      {confirmation}
+      {activeBlockingOverlay && (
+        <Modal
+          labelledBy="progress-title"
+          describedBy="progress-description"
+          className="progress-modal"
+          backdropClassName="blocking-overlay"
+          onClose={activeBlockingOverlay.onClose}
+        >
+          {activeBlockingOverlay.showClose && activeBlockingOverlay.onClose && (
+            <button
+              type="button"
+              className="icon-button blocking-overlay-close"
+              onClick={activeBlockingOverlay.onClose}
+              aria-label="Close previous scan dialog"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M18.3 5.7a1 1 0 0 0-1.4 0L12 10.6 7.1 5.7a1 1 0 1 0-1.4 1.4L10.6 12l-4.9 4.9a1 1 0 1 0 1.4 1.4L12 13.4l4.9 4.9a1 1 0 0 0 1.4-1.4L13.4 12l4.9-4.9a1 1 0 0 0 0-1.4Z" />
+              </svg>
+            </button>
+          )}
+          {activeBlockingOverlay.showSpinner && (
+            <div className="spinner" aria-hidden="true" />
+          )}
+          <h2 id="progress-title" className="modal-title">
+            {activeBlockingOverlay.title}
+          </h2>
+          <div
+            id="progress-description"
+            className="dialog-message"
+            role="status"
+            aria-live="polite"
+          >
+            {activeBlockingOverlay.subtitle}
+          </div>
+          {isLoading && (
+            <p className="dialog-path" title={currentFolder ?? undefined}>
+              {currentFolder}
+            </p>
+          )}
+          {activeBlockingOverlay.actions.length > 0 && (
+            <div className="modal-action-row">
+              {activeBlockingOverlay.actions.map((action) => (
+                <button
+                  key={action.label}
+                  type="button"
+                  className="preview-action-button"
+                  onClick={action.onClick}
+                  disabled={action.disabled}
+                >
+                  {action.label}
+                </button>
+              ))}
+            </div>
+          )}
+          {activeBlockingOverlay.showCancel && (
+            <button
+              type="button"
+              className="preview-action-button"
+              onClick={() => void cancelActiveScan()}
+              disabled={isCancellingScan}
+            >
+              {isCancellingScan ? "Stopping..." : "Stop scan"}
+            </button>
+          )}
+        </Modal>
       )}
 
-      <CrashReportModal
-        isOpen={isCrashReportOpen}
-        crashReport={crashReport}
-        crashReportText={crashReportText}
-        onDismiss={handleDismissCrashReport}
-        onReveal={handleRevealCrashReport}
-        onCopy={handleCopyCrashReport}
-        onSend={handleSendCrashReport}
-      />
+      <DeferredMount active={isCrashReportOpen}>
+        <CrashReportModal
+          isOpen={isCrashReportOpen}
+          crashReport={crashReport}
+          crashReportText={crashReportText}
+          onDismiss={handleDismissCrashReport}
+          onReveal={handleRevealCrashReport}
+          onCopy={handleCopyCrashReport}
+          onSend={handleSendCrashReport}
+        />
+      </DeferredMount>
 
-      <AndroidFolderBrowserModal
-        isOpen={isAndroidFolderBrowserOpen}
-        title="Choose folder"
-        currentPath={androidFolderBrowserPath}
-        parentPath={androidFolderBrowserParentPath}
-        directories={androidFolderBrowserDirectories}
-        isLoading={isAndroidFolderBrowserLoading}
-        error={androidFolderBrowserError}
-        onClose={() => resolveAndroidFolderBrowser(null)}
-        onNavigateUp={() => {
-          if (!androidFolderBrowserParentPath) {
-            return;
+      <DeferredMount active={isAndroidFolderBrowserOpen}>
+        <AndroidFolderBrowserModal
+          isOpen={isAndroidFolderBrowserOpen}
+          title="Choose folder"
+          currentPath={androidFolderBrowserPath}
+          parentPath={androidFolderBrowserParentPath}
+          directories={androidFolderBrowserDirectories}
+          isLoading={isAndroidFolderBrowserLoading}
+          error={androidFolderBrowserError}
+          onClose={() => resolveAndroidFolderBrowser(null)}
+          onNavigateUp={() => {
+            if (!androidFolderBrowserParentPath) {
+              return;
+            }
+            void loadAndroidFolderBrowserPath(androidFolderBrowserParentPath);
+          }}
+          onOpenDirectory={(path) => {
+            void loadAndroidFolderBrowserPath(path);
+          }}
+          onConfirm={() =>
+            resolveAndroidFolderBrowser({
+              token: androidFolderBrowserPath,
+              label: androidFolderBrowserPath,
+            })
           }
-          void loadAndroidFolderBrowserPath(androidFolderBrowserParentPath);
-        }}
-        onOpenDirectory={(path) => {
-          void loadAndroidFolderBrowserPath(path);
-        }}
-        onConfirm={() =>
-          resolveAndroidFolderBrowser({
-            token: androidFolderBrowserPath,
-            label: androidFolderBrowserPath,
-          })
-        }
-      />
+        />
+      </DeferredMount>
 
-      <SuggestionsModal
-        isOpen={isSuggestionsOpen}
-        onClose={() => setIsSuggestionsOpen(false)}
-        onDeletePreset={() => void handleDeleteSuggestionPreset()}
-        onApplySelectedSuggestions={() => void applySelectedSuggestions()}
-        controller={suggestionsController}
-        modeOptions={SUGGESTIONS_MODE_OPTIONS}
-        actionFilterOptions={SUGGESTION_ACTION_FILTER_OPTIONS}
-        sortOptions={SUGGESTION_SORT_OPTIONS}
-        minLargeFileOptions={SUGGESTION_MIN_LARGE_FILE_OPTIONS}
-      />
+      <DeferredMount active={isSuggestionsOpen}>
+        <SuggestionsModal
+          isOpen={isSuggestionsOpen}
+          onClose={() => setIsSuggestionsOpen(false)}
+          onDeletePreset={() => void handleDeleteSuggestionPreset()}
+          onApplySelectedSuggestions={() => void applySelectedSuggestions()}
+          controller={suggestionsController}
+          modeOptions={SUGGESTIONS_MODE_OPTIONS}
+          actionFilterOptions={SUGGESTION_ACTION_FILTER_OPTIONS}
+          sortOptions={SUGGESTION_SORT_OPTIONS}
+          minLargeFileOptions={SUGGESTION_MIN_LARGE_FILE_OPTIONS}
+        />
+      </DeferredMount>
 
-      <SettingsModal
-        isOpen={isSettingsOpen}
-        isLoading={areControlsDisabled}
-        layout={{
-          viewMode,
-          setViewMode: makeBlockingSetter(
-            "Changing default view",
-            setViewMode,
-            "Switching the default layout...",
-          ),
-          sortMode,
-          setSortMode: makeBlockingSetter(
-            "Changing default sort",
-            setSortMode,
-            "Updating how files are ordered...",
-          ),
-          displayGroupMode,
-          handleGroupModeChange: (value) =>
-            runBlockingUiTransition(
-              "Changing default grouping",
-              () => handleGroupModeChange(value),
-              "Updating how files are grouped...",
-            ),
-          shouldGroupDuplicates,
-          extensionFilterMode,
-          setExtensionFilterMode: makeBlockingSetter(
-            "Changing extension defaults",
-            setExtensionFilterMode,
-            "Refreshing extension preferences...",
-          ),
-          listDensity,
-          setListDensity: makeBlockingSetter(
-            "Changing list density",
-            setListDensity,
-            "Refreshing the list spacing...",
-          ),
-        }}
-        scanning={{
-          autoScanOnPick,
-          setAutoScanOnPick,
-          rememberLastFolder,
-          setRememberLastFolder,
-          includeSubfolders,
-          setIncludeSubfolders,
-          includeHidden,
-          setIncludeHidden,
-        }}
-        cleanup={{
-          useHashForDuplicates,
-          setUseHashForDuplicates,
-          duplicateMinSizeBytes,
-          setDuplicateMinSizeBytes,
-          trashBehavior,
-          setTrashBehavior,
-          confirmTrash,
-          setConfirmTrash,
-        }}
-        preview={{
-          autoPlayMedia,
-          setAutoPlayMedia,
-          skipLargePreviews,
-          setSkipLargePreviews,
-        }}
-        appearance={{
-          theme,
-          setTheme: makeBlockingSetter(
-            "Changing theme",
-            setTheme,
-            "Applying the updated appearance...",
-          ),
-        }}
-        onClose={() => setIsSettingsOpen(false)}
-        onOpenHelp={() => setIsHelpOpen(true)}
-        settingsFrameRef={settingsFrameRef}
-        settingsBodyRef={settingsBodyRef}
-      />
-      <HelpModal isOpen={isHelpOpen} onClose={() => setIsHelpOpen(false)} />
+      <DeferredMount active={isSettingsOpen}>
+        <SettingsModal
+          isOpen={isSettingsOpen}
+          isLoading={areControlsDisabled}
+          layout={{
+            viewMode,
+            setViewMode: setViewMode,
+            sortMode,
+            setSortMode: setSortMode,
+            displayGroupMode,
+            handleGroupModeChange: (value) =>
+              startTransition(() => handleGroupModeChange(value)),
+            shouldGroupDuplicates,
+            extensionFilterMode,
+            setExtensionFilterMode: setExtensionFilterMode,
+            listDensity,
+            setListDensity: setListDensity,
+          }}
+          scanning={{
+            autoScanOnPick,
+            setAutoScanOnPick,
+            rememberLastFolder,
+            setRememberLastFolder,
+            includeSubfolders,
+            setIncludeSubfolders,
+            includeHidden,
+            setIncludeHidden,
+          }}
+          cleanup={{
+            useHashForDuplicates,
+            setUseHashForDuplicates,
+            duplicateMinSizeBytes,
+            setDuplicateMinSizeBytes,
+            trashBehavior,
+            setTrashBehavior,
+            confirmTrash,
+            setConfirmTrash,
+          }}
+          preview={{
+            autoPlayMedia,
+            setAutoPlayMedia,
+            skipLargePreviews,
+            setSkipLargePreviews,
+          }}
+          appearance={{
+            theme,
+            setTheme: setTheme,
+          }}
+          onClose={() => setIsSettingsOpen(false)}
+          onOpenHelp={() => setIsHelpOpen(true)}
+        />
+      </DeferredMount>
+      <DeferredMount active={isHelpOpen}>
+        <HelpModal isOpen={isHelpOpen} onClose={() => setIsHelpOpen(false)} />
+      </DeferredMount>
     </div>
   );
 }

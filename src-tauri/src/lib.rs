@@ -49,9 +49,6 @@ use tar::Archive;
 use xz2::read::XzDecoder;
 use zip::ZipArchive;
 
-#[cfg(target_os = "macos")]
-use objc2_app_kit::NSWindow;
-
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 
@@ -2910,19 +2907,6 @@ fn list_tar_entries<R: Read>(reader: R) -> Result<ArchivePreview, String> {
   Ok(ArchivePreview { entries, truncated })
 }
 
-#[cfg(target_os = "macos")]
-fn configure_macos_window_dragging(app: &tauri::AppHandle) -> Result<(), String> {
-  let window = app
-    .get_webview_window("main")
-    .ok_or_else(|| "main window not found".to_string())?;
-  let ns_window = window.ns_window().map_err(|error| error.to_string())?;
-  unsafe {
-    let ns_window: &NSWindow = &*ns_window.cast();
-    ns_window.setMovableByWindowBackground(true);
-  }
-  Ok(())
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   let context = tauri::generate_context!();
@@ -3000,8 +2984,6 @@ pub fn run() {
         let _job = state.mutation_jobs.lock().expect("mutation jobs lock");
         let _ = cleanup_unreferenced_backups(&maintenance_app, &state.trash_dir);
       });
-      #[cfg(target_os = "macos")]
-      configure_macos_window_dragging(app.handle())?;
       Ok(())
     })
     .plugin(android_files::init())

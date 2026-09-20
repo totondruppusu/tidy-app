@@ -79,6 +79,7 @@ export const usePreviewController = ({
   const previewDelayTimeoutRef = useRef<number | null>(null);
   const officePreviewTimeoutRef = useRef<number | null>(null);
   const archivePreviewTimeoutRef = useRef<number | null>(null);
+  const lastPreviewIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!isDesktopRuntime()) {
@@ -415,6 +416,22 @@ export const usePreviewController = ({
       setPreviewIndex(sortedFiles.length - 1);
     }
   }, [previewIndex, sortedFiles.length]);
+
+  // If the file currently shown in the preview was removed from the list
+  // (e.g. a trash/move action), the debounced previewIndex no longer refers to
+  // it and would briefly show a different file that happens to sit at the same
+  // index. Snap the preview to the current selection in that case.
+  useEffect(() => {
+    const previousId = lastPreviewIdRef.current;
+    lastPreviewIdRef.current = previewFile?.id ?? null;
+    if (previousId === null) {
+      return;
+    }
+    const stillPresent = sortedFiles.some((file) => file.id === previousId);
+    if (!stillPresent) {
+      setPreviewIndex(currentIndex);
+    }
+  }, [currentIndex, previewFile?.id, sortedFiles]);
 
   useEffect(() => {
     if (previewDelayTimeoutRef.current !== null) {

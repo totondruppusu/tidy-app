@@ -43,19 +43,23 @@ export const buildFileTree = (list: FileEntry[], basePath: string | null) => {
     });
     parent.children.push({ type: "file", file });
   });
-  const sortFoldersFirst = (folder: TreeFolderNode) => {
-    folder.children.sort((a, b) => {
-      if (a.type === b.type) {
-        return 0;
-      }
-      return a.type === "folder" ? -1 : 1;
-    });
-    folder.children.forEach((child) => {
+  // Folders must appear before files, but ordering within each group is
+  // irrelevant to the model. Use a stable partition instead of a comparator
+  // sort: the tree can contain tens of thousands of root entries, and this
+  // keeps tree construction linear instead of O(n log n).
+  const orderFoldersFirst = (folder: TreeFolderNode) => {
+    const folders: TreeFolderNode["children"] = [];
+    const files: TreeFolderNode["children"] = [];
+    for (const child of folder.children) {
       if (child.type === "folder") {
-        sortFoldersFirst(child);
+        folders.push(child);
+        orderFoldersFirst(child);
+      } else {
+        files.push(child);
       }
-    });
+    }
+    folder.children = folders.concat(files);
   };
-  sortFoldersFirst(root);
+  orderFoldersFirst(root);
   return root;
 };

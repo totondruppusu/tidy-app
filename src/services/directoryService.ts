@@ -1,13 +1,9 @@
-import { invokeCommand, isDesktopRuntime, openDialog } from "../lib/desktopBridge";
+import { invokeCommand, openDialog } from "../lib/desktopBridge";
+import { isAndroidRuntime } from "./platform";
 import type {
   LocalDirectoryListing,
   PickedDirectory,
 } from "../types";
-
-export const isAndroidRuntime = () =>
-  typeof navigator !== "undefined" &&
-  isDesktopRuntime() &&
-  /android/i.test(navigator.userAgent);
 
 export const pickManagedDirectory = async (): Promise<PickedDirectory | null> => {
   if (isAndroidRuntime()) {

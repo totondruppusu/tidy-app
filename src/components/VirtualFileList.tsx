@@ -11,6 +11,7 @@ import type { DensityMode, FileEntry } from "../types";
 import { TREE_INDENT_PX } from "../constants/appConstants";
 import { formatBytes } from "../lib/format";
 import { formatRelativeFolder } from "../lib/path";
+import { FILE_TYPE_ICONS } from "../lib/materialIcons";
 import { visibleListRows, type buildFileListModel } from "../lib/fileListModel";
 import { useVirtualScroll } from "../lib/useVirtualScroll";
 
@@ -138,7 +139,9 @@ export const VirtualFileList = memo(function VirtualFileList(props: Props) {
               }}
             >
               <span className={`badge badge-${row.file.kind}`}>
-                {row.file.kind}
+                <span className="material-icon" aria-hidden="true">
+                  {FILE_TYPE_ICONS[row.file.kind]}
+                </span>
               </span>
               <span className="file-content">
                 <span className="filename">{row.file.name}</span>

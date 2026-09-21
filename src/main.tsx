@@ -1,4 +1,5 @@
 import React from "react";
+import "@fontsource/material-symbols-rounded/400.css";
 import ReactDOM from "react-dom/client";
 import App from "./app/App";
 import "./styles/app.css";

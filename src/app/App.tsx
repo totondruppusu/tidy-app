@@ -198,6 +198,7 @@ export default function App() {
     useMutationController(setBlockingOverlay);
   const resetSelectionToFirstRef = useRef(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isInfoOpen, setIsInfoOpen] = useState(false);
   const [isHelpOpen, setIsHelpOpen] = useState(false);
   const androidFolderPicker = useAndroidFolderPicker();
   const {
@@ -213,7 +214,6 @@ export default function App() {
   } = androidFolderPicker;
   const [isSuggestionsOpen, setIsSuggestionsOpen] = useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
-  const [isExtensionsCollapsed, setIsExtensionsCollapsed] = useState(true);
   const { undoStack, setUndoStack, pushUndo } = useUndoHistory();
   const [collapsedGroups, setCollapsedGroups] = useState<
     Record<string, boolean>
@@ -516,6 +516,10 @@ export default function App() {
   });
   const currentFile = sortedFiles[currentIndex];
   const hasFiles = sortedFiles.length > 0;
+
+  useEffect(() => {
+    setIsInfoOpen(false);
+  }, [isAndroidApp, preview.previewFile?.id]);
 
   useEffect(() => {
     // While a scan is still streaming in, keep the current selection stable and
@@ -1335,11 +1339,10 @@ export default function App() {
     collapsedGroups,
     collapsedFolders,
     isLoading,
-    isExtensionsCollapsed,
   ]);
 
-  useEffect(() => {
-    syncScrollHints(previewScrollRef.current, previewFrameRef.current);
+ useEffect(() => {
+   syncScrollHints(previewScrollRef.current, previewFrameRef.current);
   }, [
     syncScrollHints,
     preview.previewFile?.id,
@@ -1372,12 +1375,9 @@ export default function App() {
       <Toolbar
         isSidebarCollapsed={isSidebarCollapsed}
         isDrawerMode={isDrawerMode}
-        isSettingsOpen={isSettingsOpen}
-        showSettingsButton={!isAndroidApp}
         showWindowControls={isWindowsDesktop}
         isWindowMaximized={isWindowMaximized}
         onToggleSidebar={toggleSidebar}
-        onOpenSettings={() => setIsSettingsOpen(true)}
         onMinimizeWindow={handleMinimizeWindow}
         onToggleMaximizeWindow={handleToggleMaximizeWindow}
         onCloseWindow={handleCloseWindow}
@@ -1416,13 +1416,10 @@ export default function App() {
               listItems,
             }}
             extensions={{
-              isCollapsed: isExtensionsCollapsed,
               allExtensions,
               selectedExtensions,
               allExtensionsSelected,
               selectAllRef,
-              onToggleCollapsed: () =>
-                setIsExtensionsCollapsed((prev) => !prev),
               onToggleAll: handleToggleAllExtensions,
               onToggleExtension: handleToggleExtension,
             }}
@@ -1441,10 +1438,8 @@ export default function App() {
             audioRef={audioRef}
             gesture={swipeGesture}
             isAndroidApp={isAndroidApp}
-            isSettingsOpen={isSettingsOpen}
-            canOpenFile={!isAndroidApp}
-            onOpenSettings={() => setIsSettingsOpen(true)}
-            onOpenFile={openFileInSystem}
+            isInfoOpen={isInfoOpen}
+            onCloseInfo={() => setIsInfoOpen(false)}
           />
         </main>
 
@@ -1463,6 +1458,17 @@ export default function App() {
           undoLastAction={undoLastAction}
           trashCurrent={trashCurrent}
           pickDestinationForSlot={pickDestinationForSlot}
+          previewFile={preview.previewFile ?? null}
+          preview={preview}
+          canOpenFile={!isAndroidApp}
+          isSidebarCollapsed={isSidebarCollapsed}
+          isSettingsOpen={isSettingsOpen}
+          isInfoOpen={isInfoOpen}
+          shouldUseAndroidFloatingInfo={isAndroidApp}
+          onToggleSidebar={toggleSidebar}
+          onOpenSettings={() => setIsSettingsOpen(true)}
+          onOpenFile={openFileInSystem}
+          onToggleInfo={() => setIsInfoOpen((current) => !current)}
         />
         {isGestureMode && isAndroidApp && (
           <PreviewGestureLegend gesture={swipeGesture} />

@@ -31,6 +31,7 @@
     "test:all": "npm run test:coverage && npm run test:e2e && npm run test:rust"
   },
   "dependencies": {
+    "@fontsource/material-symbols-rounded": "^5.3.7",
     "@tauri-apps/api": "^2.9.0",
     "@tauri-apps/plugin-dialog": "^2.6.0",
     "react": "^18.3.1",

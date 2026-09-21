@@ -1,13 +1,10 @@
 import { Modal } from "./Modal";
 import {
-  useEffect,
-  useState,
   type PointerEventHandler,
   type Ref,
   type WheelEventHandler,
 } from "react";
 import { LARGE_PREVIEW_SIZE_BYTES } from "../constants/appConstants";
-import type { FileEntry } from "../types";
 import { buildMediaUrl } from "../lib/media";
 import { extractFolder } from "../lib/path";
 import { formatBytes, formatKindLabel, formatTimestamp } from "../lib/format";
@@ -27,10 +24,8 @@ type PreviewPanelProps = {
   audioRef: Ref<HTMLAudioElement>;
   gesture: SwipeGestureController;
   isAndroidApp: boolean;
-  isSettingsOpen: boolean;
-  canOpenFile: boolean;
-  onOpenSettings: () => void;
-  onOpenFile: (file: FileEntry) => void | Promise<void>;
+  isInfoOpen: boolean;
+  onCloseInfo: () => void;
 };
 
 export const PreviewGestureLegend = ({
@@ -66,17 +61,10 @@ export const PreviewPanel = ({
   audioRef,
   gesture,
   isAndroidApp,
-  isSettingsOpen,
-  canOpenFile,
-  onOpenSettings,
-  onOpenFile,
+  isInfoOpen,
+  onCloseInfo,
 }: PreviewPanelProps) => {
   const previewFile = preview.previewFile;
-  const [isInfoOpen, setIsInfoOpen] = useState(false);
-
-  useEffect(() => {
-    setIsInfoOpen(false);
-  }, [isAndroidApp, previewFile?.id]);
 
   const shouldUseAndroidFloatingInfo = isAndroidApp;
 
@@ -451,101 +439,6 @@ export const PreviewPanel = ({
               )}
               {!isAndroidApp && <PreviewGestureLegend gesture={gesture} />}
             </div>
-            <div className="preview-actions">
-              <button
-                type="button"
-                className="preview-action-button"
-                disabled={!canOpenFile}
-                onClick={() => void onOpenFile(previewFile)}
-                title={
-                  canOpenFile
-                    ? "Open file in the system default app"
-                    : "Opening files in external apps is not available on Android yet"
-                }
-              >
-                Open file
-              </button>
-              {shouldUseAndroidFloatingInfo && (
-                <>
-                  <button
-                    type="button"
-                    className="icon-button preview-bar-button"
-                    aria-label={
-                      isInfoOpen ? "Hide file details" : "Show file details"
-                    }
-                    aria-expanded={isInfoOpen}
-                    aria-controls="preview-details-sheet"
-                    onClick={() => setIsInfoOpen((current) => !current)}
-                    title={
-                      isInfoOpen ? "Hide file details" : "Show file details"
-                    }
-                  >
-                    <svg
-                      viewBox="0 0 24 24"
-                      aria-hidden="true"
-                      focusable="false"
-                    >
-                      <path d="M12 2.75A9.25 9.25 0 1 0 21.25 12 9.26 9.26 0 0 0 12 2.75Zm0 3.5a1.2 1.2 0 1 1-1.2 1.2 1.2 1.2 0 0 1 1.2-1.2Zm1.5 11h-3v-1.5h.75v-4h-.75v-1.5H12.75v5.5h.75Z" />
-                    </svg>
-                  </button>
-                  <button
-                    type="button"
-                    className="icon-button preview-bar-button"
-                    onClick={onOpenSettings}
-                    aria-label="Open settings"
-                    aria-haspopup="dialog"
-                    aria-expanded={isSettingsOpen}
-                    title="Open settings"
-                  >
-                    <svg
-                      viewBox="0 0 24 24"
-                      aria-hidden="true"
-                      focusable="false"
-                    >
-                      <path d="M19.14 12.94c.04-.31.06-.63.06-.94s-.02-.63-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.02 7.02 0 0 0-1.62-.94l-.36-2.54a.5.5 0 0 0-.5-.42h-3.84a.5.5 0 0 0-.5.42l-.36 2.54c-.57.23-1.12.54-1.62.94l-2.39-.96a.5.5 0 0 0-.6.22L2.61 7.86a.5.5 0 0 0 .12.64l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58a.5.5 0 0 0-.12.64l1.92 3.32c.13.22.39.3.6.22l2.39-.96c.5.4 1.05.71 1.62.94l.36 2.54c.05.24.26.42.5.42h3.84c.25 0 .46-.18.5-.42l.36-2.54c.57-.23 1.12-.54 1.62-.94l2.39.96c.22.08.47 0 .6-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58ZM12 15.5A3.5 3.5 0 1 1 12 8a3.5 3.5 0 0 1 0 7.5Z" />
-                    </svg>
-                  </button>
-                </>
-              )}
-              <div className="preview-zoom-controls">
-                <button
-                  type="button"
-                  className="icon-button"
-                  onClick={preview.handleZoomOut}
-                  disabled={!preview.isZoomablePreview}
-                  aria-label="Zoom out"
-                  title="Zoom out"
-                >
-                  <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                    <path d="M5 11h14v2H5z" />
-                  </svg>
-                </button>
-                <button
-                  type="button"
-                  className="icon-button preview-zoom-reset"
-                  onClick={preview.handleZoomReset}
-                  disabled={!preview.isZoomablePreview}
-                  aria-label="Reset zoom"
-                  title="Reset zoom"
-                >
-                  <span className="preview-zoom-value">
-                    {Math.round(preview.previewZoom * 100)}%
-                  </span>
-                </button>
-                <button
-                  type="button"
-                  className="icon-button"
-                  onClick={preview.handleZoomIn}
-                  disabled={!preview.isZoomablePreview}
-                  aria-label="Zoom in"
-                  title="Zoom in"
-                >
-                  <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                    <path d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6z" />
-                  </svg>
-                </button>
-              </div>
-            </div>
             <div className="caption" aria-hidden="true" />
             {!shouldUseAndroidFloatingInfo && (
               <aside className="preview-details" aria-label="File details">
@@ -559,7 +452,7 @@ export const PreviewPanel = ({
         <Modal
           className="preview-info-modal"
           labelledBy="preview-info-title"
-          onClose={() => setIsInfoOpen(false)}
+          onClose={onCloseInfo}
         >
           <div
             id="preview-details-sheet"
@@ -574,7 +467,7 @@ export const PreviewPanel = ({
             <button
               type="button"
               className="icon-button"
-              onClick={() => setIsInfoOpen(false)}
+              onClick={onCloseInfo}
               aria-label="Close file details"
             >
               <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">

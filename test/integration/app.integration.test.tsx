@@ -861,7 +861,7 @@ describe("App integration", () => {
       const user = userEvent.setup();
       render(<App />);
 
-      expect(screen.queryByRole("button", { name: "Open settings" })).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Open settings" })).toBeInTheDocument();
 
       await clickFolderPicker(user);
       await user.click(await screen.findByRole("button", { name: "Pictures" }));

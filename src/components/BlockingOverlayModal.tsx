@@ -43,19 +43,7 @@ export const BlockingOverlayModal = ({
       className="progress-modal"
       backdropClassName="blocking-overlay"
       onClose={overlay.onClose}
-    >
-      {overlay.showClose && overlay.onClose && (
-        <button
-          type="button"
-          className="icon-button blocking-overlay-close"
-          onClick={overlay.onClose}
-          aria-label="Close previous scan dialog"
-        >
-          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-            <path d="M18.3 5.7a1 1 0 0 0-1.4 0L12 10.6 7.1 5.7a1 1 0 1 0-1.4 1.4L10.6 12l-4.9 4.9a1 1 0 1 0 1.4 1.4L12 13.4l4.9 4.9a1 1 0 0 0 1.4-1.4L13.4 12l4.9-4.9a1 1 0 0 0 0-1.4Z" />
-          </svg>
-        </button>
-      )}
+   >
       {overlay.showSpinner && (
         <div className="spinner" aria-hidden="true" />
       )}
@@ -75,31 +63,42 @@ export const BlockingOverlayModal = ({
           {currentFolder}
         </p>
       )}
-      {overlay.actions.length > 0 && (
-        <div className="modal-action-row">
-          {overlay.actions.map((action) => (
-            <button
-              key={action.label}
-              type="button"
-              className="preview-action-button"
-              onClick={action.onClick}
-              disabled={action.disabled}
-            >
-              {action.label}
-            </button>
-          ))}
-        </div>
-      )}
-      {overlay.showCancel && (
-        <button
-          type="button"
-          className="preview-action-button"
-          onClick={() => void cancelActiveScan()}
-          disabled={isCancellingScan}
-        >
-          {isCancellingScan ? "Stopping..." : "Stop scan"}
-        </button>
-      )}
+     <div className="modal-footer">
+       {overlay.onClose && (
+         <button
+           type="button"
+           aria-label="Close previous scan dialog"
+           onClick={overlay.onClose}
+         >
+           Close
+         </button>
+       )}
+        {overlay.actions.length > 0 && (
+          <div className="modal-action-row">
+            {overlay.actions.map((action) => (
+              <button
+                key={action.label}
+                type="button"
+                className="preview-action-button"
+                onClick={action.onClick}
+                disabled={action.disabled}
+              >
+                {action.label}
+              </button>
+            ))}
+          </div>
+        )}
+        {overlay.showCancel && (
+          <button
+            type="button"
+            className="preview-action-button"
+            onClick={() => void cancelActiveScan()}
+            disabled={isCancellingScan}
+          >
+            {isCancellingScan ? "Stopping..." : "Stop scan"}
+          </button>
+        )}
+      </div>
     </Modal>
   );
 };

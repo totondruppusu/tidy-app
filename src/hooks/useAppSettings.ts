@@ -57,11 +57,10 @@ export function useAppSettings({ isAndroidApp }: UseAppSettingsOptions) {
       if (!storedSlots) {
         return createEmptyDestinationSlots();
       }
-      const normalized = storedSlots.slice(0, DESTINATION_SLOT_COUNT);
-      while (normalized.length < DESTINATION_SLOT_COUNT) {
-        normalized.push(null);
-      }
-      return normalized;
+      return Array.from(
+        { length: DESTINATION_SLOT_COUNT },
+        (_, index) => storedSlots[index] ?? null,
+      );
     },
   );
   const [destinationSlotTokens, setDestinationSlotTokens] = useState<
@@ -74,11 +73,10 @@ export function useAppSettings({ isAndroidApp }: UseAppSettingsOptions) {
     if (!storedSlots) {
       return createEmptyDestinationSlots();
     }
-    const normalized = storedSlots.slice(0, DESTINATION_SLOT_COUNT);
-    while (normalized.length < DESTINATION_SLOT_COUNT) {
-      normalized.push(null);
-    }
-    return normalized;
+    return Array.from(
+      { length: DESTINATION_SLOT_COUNT },
+      (_, index) => storedSlots[index] ?? null,
+    );
   });
   const [confirmTrash, setConfirmTrash] = useState(
     storedSettings.confirmTrash ?? true,
@@ -200,4 +198,3 @@ export function useAppSettings({ isAndroidApp }: UseAppSettingsOptions) {
     updateDestinationSlot,
   };
 }
-

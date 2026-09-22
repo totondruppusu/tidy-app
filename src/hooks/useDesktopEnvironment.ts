@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  CRASH_REPORT_EMAIL,
+  CRASH_REPORT_ISSUES_URL,
   HEARTBEAT_INTERVAL_MS,
 } from "../constants/appConstants";
 import {
@@ -70,6 +70,7 @@ export function useDesktopEnvironment({
     let isMounted = true;
     const appWindow = getDesktopWindow();
     let unlistenResize: (() => void) | null = null;
+    let resizeTimeout: ReturnType<typeof setTimeout> | null = null;
     const syncWindowState = async () => {
       try {
         const fullscreen = await appWindow.isFullscreen();
@@ -91,7 +92,13 @@ export function useDesktopEnvironment({
     void syncWindowState();
     void appWindow
       .onResized(() => {
-        void syncWindowState();
+        if (resizeTimeout) {
+          clearTimeout(resizeTimeout);
+        }
+        resizeTimeout = setTimeout(() => {
+          resizeTimeout = null;
+          void syncWindowState();
+        }, 120);
       })
       .then((unlisten) => {
         if (!isMounted) {
@@ -103,6 +110,9 @@ export function useDesktopEnvironment({
       .catch(() => {});
     return () => {
       isMounted = false;
+      if (resizeTimeout) {
+        clearTimeout(resizeTimeout);
+      }
       if (unlistenResize) {
         unlistenResize();
       }
@@ -242,12 +252,12 @@ export function useDesktopEnvironment({
     if (!crashReport) {
       return;
     }
-    const subject = `Tidy crash report (${new Date(crashReport.createdMs).toLocaleString()})`;
+    const title = `Tidy crash report (${new Date(crashReport.createdMs).toLocaleString()})`;
     const body = buildCrashEmailBody(crashReport);
-    const mailto = `mailto:${CRASH_REPORT_EMAIL}?subject=${encodeURIComponent(
-      subject,
+    const issueUrl = `${CRASH_REPORT_ISSUES_URL}/new?title=${encodeURIComponent(
+      title,
     )}&body=${encodeURIComponent(body)}`;
-    window.location.href = mailto;
+    window.location.href = issueUrl;
   }, [crashReport]);
 
   const handleRevealCrashReport = useCallback(() => {

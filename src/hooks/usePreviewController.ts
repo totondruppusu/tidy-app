@@ -112,7 +112,9 @@ export const usePreviewController = ({
   const canRenderPreview = !isPreviewSuppressed;
   const isMediaPreview =
     canRenderPreview &&
-    (previewFile?.kind === "image" || previewFile?.kind === "video");
+    (previewFile?.kind === "image" ||
+      previewFile?.kind === "video" ||
+      previewExtension === "svg");
   const isAudioPreview = canRenderPreview && previewFile?.kind === "audio";
   const isReadableText = Boolean(
     previewFile && (previewFile.kind === "text" || isSupportedTextPreviewFile(previewFile.name)),

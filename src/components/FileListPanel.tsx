@@ -73,8 +73,10 @@ export const FileListPanel = ({
       <div className="list-header">
         <div className="list-header-top">
           <div className="list-title">
-            <span>Files</span>
-            <span className="badge badge-text">{list.totalFiles}</span>
+            <span className="list-brand">
+              <span className="list-brand-accent">Tidy</span>
+              <span> App</span>
+            </span>
           </div>
           <div className="list-header-actions">
             {list.viewMode === "tree" && (
@@ -198,7 +200,7 @@ export const FileListPanel = ({
           title="Hide sidebar"
         >
           <span className="material-icon" aria-hidden="true">
-            {MATERIAL_ICONS.menu}
+            {MATERIAL_ICONS.sidebarClose}
           </span>
         </button>
         <div

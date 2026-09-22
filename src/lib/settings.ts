@@ -1,4 +1,5 @@
 import {
+  DESTINATION_SLOT_COUNT,
   EXTENSION_FILTER_MODES,
   FILTER_MODES,
   GROUP_MODES,
@@ -148,7 +149,9 @@ export const normalizeDestinationSlots = (value: unknown): (string | null)[] | n
   if (!Array.isArray(value)) {
     return null;
   }
-  return value.map((entry) => (typeof entry === "string" ? entry : null));
+  return value
+    .map((entry) => (typeof entry === "string" ? entry : null))
+    .slice(0, DESTINATION_SLOT_COUNT);
 };
 
 export const getStoredSettings = (): StoredSettings => {

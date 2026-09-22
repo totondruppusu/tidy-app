@@ -1469,6 +1469,7 @@ export default function App() {
           onOpenSettings={() => setIsSettingsOpen(true)}
           onOpenFile={openFileInSystem}
           onToggleInfo={() => setIsInfoOpen((current) => !current)}
+          gesture={swipeGesture}
         />
         {isGestureMode && isAndroidApp && (
           <PreviewGestureLegend gesture={swipeGesture} />

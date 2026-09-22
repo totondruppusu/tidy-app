@@ -7,6 +7,7 @@ export const MATERIAL_ICONS = Object.freeze({
   zoomOut: "\ue900",
   funnel: "\uef4f",
   menu: "\ue5d2",
+  sidebarClose: "\ue9bd",
   keyboardArrowLeft: "\ue314",
   keyboardArrowRight: "\ue315",
   undo: "\ue166",

@@ -33,7 +33,8 @@
       {
         "title": "Tidy-app",
         "width": 1600,
-        "height": 1000
+        "height": 1000,
+        "minWidth": 350
       }
     ],
     "security": {

@@ -2651,7 +2651,7 @@ fn is_hidden_entry(path: &Path, root: &Path) -> bool {
 fn is_image_extension(extension: &str) -> bool {
   matches!(
     extension,
-    "jpg" | "jpeg" | "png" | "gif" | "bmp" | "webp" | "tiff" | "heic" | "heif"
+    "jpg" | "jpeg" | "png" | "gif" | "bmp" | "webp" | "tiff" | "heic" | "heif" | "svg"
   )
 }
 
@@ -2701,6 +2701,7 @@ fn is_text_extension(extension: &str) -> bool {
       | "yaml"
       | "yml"
       | "xml"
+      | "cer"
       | "htm"
       | "html"
       | "css"
@@ -2764,6 +2765,7 @@ fn is_text_extension(extension: &str) -> bool {
       | "cmake"
       | "m"
       | "mm"
+      | "pom"
   )
 }
 
@@ -2839,7 +2841,7 @@ fn is_executable_extension(extension: &str) -> bool {
 fn is_binary_extension(extension: &str) -> bool {
   matches!(
     extension,
-    "bin" | "dat" | "db" | "sqlite" | "bak" | "pak" | "img" | "iso"
+    "bin" | "dat" | "db" | "sqlite" | "bak" | "pak" | "img" | "iso" | "woff" | "woff2" | "otf" | "icns"
   )
 }
 
@@ -2912,6 +2914,17 @@ pub fn run() {
   let context = tauri::generate_context!();
   tauri::Builder::default()
     .setup(|app| {
+      #[cfg(not(target_os = "android"))]
+      if let Some(window) = app.get_webview_window("main") {
+        let constraints = tauri::WindowSizeConstraints {
+          min_width: Some(tauri::LogicalUnit::new(350.0).into()),
+          ..Default::default()
+        };
+        if let Err(error) = window.set_size_constraints(constraints) {
+          eprintln!("Failed to set minimum window size: {error}");
+        }
+      }
+
       let app_data_dir = app
         .path()
         .app_data_dir()
@@ -3197,6 +3210,27 @@ mod tests {
     assert!(matches!(classify_file(Path::new("/tmp/.env.local")), FileKind::Text));
     assert!(matches!(classify_file(Path::new("/tmp/Dockerfile")), FileKind::Text));
     assert!(matches!(classify_file(Path::new("/tmp/.gitignore")), FileKind::Text));
+  }
+
+  #[test]
+  fn classify_file_recognizes_requested_preview_formats() {
+    for extension in ["cer", "pom"] {
+      assert!(matches!(
+        classify_file(Path::new(&format!("/tmp/file.{}", extension))),
+        FileKind::Text
+      ));
+    }
+    assert!(matches!(classify_file(Path::new("/tmp/icon.svg")), FileKind::Image));
+    for extension in ["woff", "woff2", "otf", "icns"] {
+      assert!(matches!(
+        classify_file(Path::new(&format!("/tmp/file.{}", extension))),
+        FileKind::Binary
+      ));
+    }
+    assert!(matches!(
+      classify_file(Path::new("/tmp/pom.xml")),
+      FileKind::Text
+    ));
   }
 
   #[test]

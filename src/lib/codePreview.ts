@@ -48,6 +48,9 @@ const PLAIN_TEXT_EXTENSIONS: Record<string, DescriptorTemplate> = {
 };
 
 const CODE_EXTENSIONS: Record<string, DescriptorTemplate> = {
+  pom: { language: "xml", label: "Maven POM" },
+  svg: { language: "xml", label: "SVG" },
+  cer: { language: "generic", label: "Certificate", kind: "plain" },
   astro: { language: "html", label: "Astro" },
   bash: { language: "shell", label: "Bash" },
   bat: { language: "powershell", label: "Batch" },
@@ -682,6 +685,16 @@ const highlightPowerShellLine = (line: string) =>
 
 export const getTextPreviewDescriptor = (fileName: string): TextPreviewDescriptor => {
   const normalizedName = fileName.trim().toLowerCase();
+  const extension = getExtension(fileName);
+  if (extension === "woff" || extension === "woff2") {
+    return { kind: "plain", language: "generic", label: "Web Font" };
+  }
+  if (extension === "otf") {
+    return { kind: "plain", language: "generic", label: "OpenType Font" };
+  }
+  if (extension === "icns") {
+    return { kind: "plain", language: "generic", label: "Apple Icon Image" };
+  }
   if (SPECIAL_FILENAMES[normalizedName]) {
     const descriptor = SPECIAL_FILENAMES[normalizedName];
     return {
@@ -691,7 +704,6 @@ export const getTextPreviewDescriptor = (fileName: string): TextPreviewDescripto
     };
   }
 
-  const extension = getExtension(fileName);
   if (PLAIN_TEXT_EXTENSIONS[extension]) {
     const descriptor = PLAIN_TEXT_EXTENSIONS[extension];
     return {
@@ -726,10 +738,13 @@ export const getTextPreviewDescriptor = (fileName: string): TextPreviewDescripto
 
 export const isSupportedTextPreviewFile = (fileName: string) => {
   const normalizedName = fileName.trim().toLowerCase();
+  const extension = getExtension(fileName);
+  if (["woff", "woff2", "otf", "icns"].includes(extension)) {
+    return false;
+  }
   if (SPECIAL_FILENAMES[normalizedName]) {
     return true;
   }
-  const extension = getExtension(fileName);
   if (PLAIN_TEXT_EXTENSIONS[extension] || CODE_EXTENSIONS[extension]) {
     return true;
   }

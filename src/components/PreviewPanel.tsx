@@ -173,7 +173,9 @@ export const PreviewPanel = ({
           >
             <div className="placeholder">Select a folder to preview files.</div>
           </div>
-          {!isAndroidApp && <PreviewGestureLegend gesture={gesture} />}
+          {!isAndroidApp && !gesture.enabled && (
+            <PreviewGestureLegend gesture={gesture} />
+          )}
         </section>
       </div>
     );
@@ -245,14 +247,14 @@ export const PreviewPanel = ({
                   </button>
                 </div>
               )}
-              {preview.isMediaPreview && (
-                <div
-                  className={`preview-zoom${previewFile.kind === "image" ? " is-draggable" : ""}${
+                  {preview.isMediaPreview && (
+                    <div
+                  className={`preview-zoom${previewFile.kind === "image" || preview.previewExtension === "svg" ? " is-draggable" : ""}${
                     preview.isPreviewPanning ? " is-panning" : ""
                   }`}
                   style={{
                     transform:
-                      previewFile.kind === "image"
+                      previewFile.kind === "image" || preview.previewExtension === "svg"
                         ? `translate(${preview.previewPan.x}px, ${preview.previewPan.y}px) scale(${preview.previewZoom})`
                         : `scale(${preview.previewZoom})`,
                   }}
@@ -277,14 +279,14 @@ export const PreviewPanel = ({
                       : (preview.handlePreviewPanEnd as PointerEventHandler<HTMLDivElement>)
                   }
                 >
-                  {previewFile.kind === "image" && (
-                    <img
-                      src={buildMediaUrl(previewFile.id)}
-                      alt={previewFile.name}
-                      draggable={false}
-                      onDragStart={(event) => event.preventDefault()}
-                    />
-                  )}
+                      {(previewFile.kind === "image" || preview.previewExtension === "svg") && (
+                        <img
+                          src={buildMediaUrl(previewFile.id)}
+                          alt={previewFile.name}
+                          draggable={false}
+                          onDragStart={(event) => event.preventDefault()}
+                        />
+                      )}
                   {previewFile.kind === "video" && (
                     <video
                       ref={videoRef}
@@ -437,7 +439,9 @@ export const PreviewPanel = ({
                   </div>
                 </div>
               )}
-              {!isAndroidApp && <PreviewGestureLegend gesture={gesture} />}
+              {!isAndroidApp && !gesture.enabled && (
+                <PreviewGestureLegend gesture={gesture} />
+              )}
             </div>
             <div className="caption" aria-hidden="true" />
             {!shouldUseAndroidFloatingInfo && (

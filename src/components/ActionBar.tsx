@@ -1,8 +1,10 @@
 import { DestinationSlots } from "./DestinationSlots";
 import { PreviewActions } from "./PreviewActions";
+import { PreviewGestureLegend } from "./PreviewPanel";
 import { MATERIAL_ICONS } from "../lib/materialIcons";
 import type { FileEntry } from "../types";
 import type { PreviewController } from "../hooks/usePreviewController";
+import type { SwipeGestureController } from "../hooks/useSwipeGestureController";
 
 type ActionBarProps = {
   destinationSlots: (string | null)[];
@@ -30,6 +32,7 @@ type ActionBarProps = {
   onOpenSettings: () => void;
   onOpenFile: (file: FileEntry) => void | Promise<void>;
   onToggleInfo: () => void;
+  gesture: SwipeGestureController;
 };
 
 export const ActionBar = ({
@@ -58,6 +61,7 @@ export const ActionBar = ({
   onOpenSettings,
   onOpenFile,
   onToggleInfo,
+  gesture,
 }: ActionBarProps) => (
   <footer className="actions">
     <div className="actions-row">
@@ -82,6 +86,7 @@ export const ActionBar = ({
         />
       </div>
       <div className="actions-navigation">
+        {isGestureMode && <PreviewGestureLegend gesture={gesture} />}
         {(mutationSpinnerLabel || !isGestureMode) && (
           <div
             className={`action-row${isGestureMode ? " gesture-mode" : ""}`}

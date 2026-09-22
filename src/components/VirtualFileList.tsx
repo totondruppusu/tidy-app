@@ -138,8 +138,11 @@ export const VirtualFileList = memo(function VirtualFileList(props: Props) {
                 if (!props.isAndroid) void props.onOpen(row.file);
               }}
             >
-              <span className={`badge badge-${row.file.kind}`}>
-                <span className="material-icon" aria-hidden="true">
+              <span
+                className={`file-type-icon badge-${row.file.kind}`}
+                aria-hidden="true"
+              >
+                <span className="material-icon">
                   {FILE_TYPE_ICONS[row.file.kind]}
                 </span>
               </span>

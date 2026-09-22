@@ -1,5 +1,5 @@
 import { Modal } from "./Modal";
-import { CRASH_REPORT_EMAIL } from "../constants/appConstants";
+import { CRASH_REPORT_ISSUES_URL } from "../constants/appConstants";
 import { formatActivitySummary, formatTimestamp } from "../lib/format";
 import type { CrashReport } from "../types";
 
@@ -35,8 +35,11 @@ export const CrashReportModal = ({
       </div>
       <div className="modal-body crash-body">
         <p className="crash-intro">
-          A crash report was saved. You can send it to {CRASH_REPORT_EMAIL} to
-          help us improve stability.
+          A crash report was saved. Open an issue at{" "}
+          <a href={CRASH_REPORT_ISSUES_URL} target="_blank" rel="noreferrer">
+            {CRASH_REPORT_ISSUES_URL}
+          </a>{" "}
+          to help us improve stability.
         </p>
         <div className="crash-meta">
           <div>
@@ -76,7 +79,7 @@ export const CrashReportModal = ({
           Copy report
         </button>
         <button type="button" onClick={onSend}>
-          Send report
+          Open issue
         </button>
         <button type="button" onClick={onDismiss}>
           Dismiss

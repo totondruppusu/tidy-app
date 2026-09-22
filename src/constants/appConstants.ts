@@ -51,14 +51,15 @@ export const COMMON_EXTENSIONS = new Set([
   "rar",
 ]);
 export const SCROLL_HINT_TOLERANCE = 6;
-export const CRASH_REPORT_EMAIL = "support@tidy-app.dev";
+export const CRASH_REPORT_ISSUES_URL = "https://github.com/totondruppusu/tidy-app/issues";
 export const MAX_CRASH_EMAIL_BODY = 4000;
 export const HEARTBEAT_INTERVAL_MS = 10_000;
 export const EVENT_LOOP_POLL_MS = 1000;
 export const EVENT_LOOP_LAG_WARN_MS = 500;
 export const OFFICE_PREVIEW_DEBOUNCE_MS = 500;
 export const ARCHIVE_PREVIEW_DEBOUNCE_MS = 250;
-export const DESTINATION_SLOT_COUNT = 5;
+export const DEFAULT_DESTINATION_SLOT_COUNT = 5;
+export const DESTINATION_SLOT_COUNT = DEFAULT_DESTINATION_SLOT_COUNT + 1;
 export const SETTINGS_KEY = "tidy-settings";
 export const TREE_INDENT_PX = 16;
 

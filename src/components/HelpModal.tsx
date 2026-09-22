@@ -1,4 +1,5 @@
 import { Modal } from "./Modal";
+import { CRASH_REPORT_ISSUES_URL } from "../constants/appConstants";
 
 type HelpModalProps = {
   isOpen: boolean;
@@ -70,7 +71,7 @@ export const HelpModal = ({ isOpen, onClose }: HelpModalProps) => {
           <section className="help-section">
             <h3 className="help-section-title">Move & Clean Up</h3>
             <ul className="help-list">
-              <li>Set destination slots 1-5 to move files with one click.</li>
+              <li>Set destination slots 1-6 to move files with one click.</li>
               <li>Use Prev and Next to step through the list quickly.</li>
               <li>
                 Trash removes the current file; Undo restores the last action.
@@ -93,6 +94,22 @@ export const HelpModal = ({ isOpen, onClose }: HelpModalProps) => {
                 mode.
               </li>
               <li>Adjust list density for a roomier or compact list.</li>
+            </ul>
+          </section>
+          <section className="help-section">
+            <h3 className="help-section-title">Support</h3>
+            <ul className="help-list">
+              <li>
+                Found a problem or have a suggestion? Open an issue on{" "}
+                <a
+                  href={CRASH_REPORT_ISSUES_URL}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  GitHub
+                </a>
+                .
+              </li>
             </ul>
           </section>
           <section className="help-section help-section-wide">
@@ -119,7 +136,7 @@ export const HelpModal = ({ isOpen, onClose }: HelpModalProps) => {
                 <span>Reveal in file manager</span>
               </div>
               <div className="help-shortcut">
-                <span className="help-key">1-5</span>
+                <span className="help-key">1-6</span>
                 <span>Move to destination slot</span>
               </div>
               <div className="help-shortcut">

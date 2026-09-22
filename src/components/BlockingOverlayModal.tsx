@@ -63,16 +63,7 @@ export const BlockingOverlayModal = ({
           {currentFolder}
         </p>
       )}
-     <div className="modal-footer">
-       {overlay.onClose && (
-         <button
-           type="button"
-           aria-label="Close previous scan dialog"
-           onClick={overlay.onClose}
-         >
-           Close
-         </button>
-       )}
+      <div className="modal-footer">
         {overlay.actions.length > 0 && (
           <div className="modal-action-row">
             {overlay.actions.map((action) => (
@@ -87,6 +78,15 @@ export const BlockingOverlayModal = ({
               </button>
             ))}
           </div>
+        )}
+        {overlay.onClose && (
+          <button
+            type="button"
+            aria-label="Close previous scan dialog"
+            onClick={overlay.onClose}
+          >
+            Close
+          </button>
         )}
         {overlay.showCancel && (
           <button

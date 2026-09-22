@@ -98,7 +98,7 @@ export function useKeyboardShortcuts({
         toggleVideoPlayback();
         return;
       }
-      if (event.key >= "1" && event.key <= "5") {
+      if (event.key >= "1" && event.key <= "6") {
         event.preventDefault();
         void moveCurrentToSlot(Number(event.key) - 1);
         return;

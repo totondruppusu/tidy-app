@@ -103,9 +103,13 @@ export const VirtualFileList = memo(function VirtualFileList(props: Props) {
     if (!node || index === undefined || !shouldReveal) return;
     const top = layout.offsets[index];
     const bottom = layout.offsets[index + 1];
+    const bottomClearance = 16;
     if (top < node.scrollTop) node.scrollTop = top;
-    else if (bottom > node.scrollTop + node.clientHeight)
-      node.scrollTop = Math.max(0, bottom - node.clientHeight);
+    else if (bottom > node.scrollTop + node.clientHeight - bottomClearance)
+      node.scrollTop = Math.max(
+        0,
+        bottom - node.clientHeight + bottomClearance,
+      );
     refresh();
   }, [currentId, layout, scrollRef, refresh]);
   return (

@@ -422,7 +422,7 @@ optgroup {
   left: 0;
   right: 0;
   bottom: 0;
-  background: var(--color-drawer-backdrop);
+  background: transparent;
   cursor: pointer;
   z-index: 2;
 }
@@ -437,6 +437,9 @@ optgroup {
   row-gap: var(--space-2);
   padding: 0 var(--layout-pad) var(--layout-pad);
   z-index: auto;
+  transition:
+    grid-template-columns 320ms cubic-bezier(0.22, 1, 0.36, 1),
+    column-gap 320ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .app-grid .toolbar {
@@ -467,14 +470,35 @@ optgroup {
 }
 
 .app-shell.sidebar-collapsed .app-grid {
-  grid-template-columns: 1fr;
+  grid-template-columns: 0px minmax(0, 1fr);
   column-gap: 0;
+}
+
+.app-shell .list-panel {
+  opacity: 1;
+  transform: translateX(0) scale(1);
+  transition:
+    opacity 180ms ease,
+    transform 320ms cubic-bezier(0.22, 1, 0.36, 1),
+    visibility 0s linear;
+  visibility: visible;
+}
+
+.app-shell.sidebar-collapsed .list-panel {
+  opacity: 0;
+  transform: translateX(-14px) scale(0.985);
+  transition:
+    opacity 160ms ease,
+    transform 280ms cubic-bezier(0.4, 0, 1, 1),
+    visibility 0s linear 280ms;
+  visibility: hidden;
+  pointer-events: none;
 }
 
 .app-shell.sidebar-collapsed .app-grid .toolbar,
 .app-shell.sidebar-collapsed .app-grid .content,
 .app-shell.sidebar-collapsed .app-grid .actions {
-  grid-column: 1;
+  grid-column: 2;
 }
 
 :is(.list-panel, .toolbar, .actions, .modal-panel) {
@@ -3865,6 +3889,12 @@ optgroup {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .app-grid,
+  .app-shell .list-panel,
+  .app-shell.sidebar-collapsed .list-panel {
+    transition: none;
+  }
+
   .list-panel,
   .toolbar,
   .preview-panel,
@@ -3885,6 +3915,17 @@ optgroup {
     grid-template-rows: auto 1fr auto;
     padding: 0 var(--layout-pad) var(--layout-pad);
     gap: var(--space-3);
+  }
+
+  .app-shell.sidebar-collapsed .app-grid {
+    grid-template-columns: minmax(0, 1fr);
+    column-gap: 0;
+  }
+
+  .app-shell.sidebar-collapsed .app-grid .toolbar,
+  .app-shell.sidebar-collapsed .app-grid .content,
+  .app-shell.sidebar-collapsed .app-grid .actions {
+    grid-column: 1;
   }
 
   .list-panel {

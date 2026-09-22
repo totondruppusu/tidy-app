@@ -106,11 +106,15 @@ export function useKeyboardShortcuts({
       switch (event.key) {
         case "ArrowLeft":
           event.preventDefault();
-          goPrev();
+          for (let step = 0; step < (event.repeat ? 3 : 1); step += 1) {
+            goPrev();
+          }
           break;
         case "ArrowRight":
           event.preventDefault();
-          goNext();
+          for (let step = 0; step < (event.repeat ? 3 : 1); step += 1) {
+            goNext();
+          }
           break;
         case "ArrowUp":
           event.preventDefault();

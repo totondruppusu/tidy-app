@@ -1383,48 +1383,47 @@ export default function App() {
         onCloseWindow={handleCloseWindow}
       />
       <div className="app-grid">
-        {!isSidebarCollapsed && (
-          <FileListPanel
-            frameRef={fileListFrameRef}
-            scrollRef={fileListScrollRef}
-            search={{
-              currentFolder,
-              folderLabel,
-              emptyFolderLabel: "Select folder…",
-              filterMode,
-              onPickFolder: pickFolder,
-              onFilterModeChange: handleFilterModeChange,
-              onScan: handleCurrentFolderScan,
-              onToggleSidebar: toggleSidebar,
-            }}
-            list={{
-              areControlsDisabled,
-              totalFiles,
-              viewMode,
-              hasFolders,
-              hasCollapsedFolders,
-              onToggleAllFolders: toggleAllFolders,
-              sortMode,
-              onSortModeChange: handleSortModeChange,
-              displayGroupMode,
-              shouldGroupDuplicates,
-              onGroupModeChange: handleSidebarGroupModeChange,
-              onViewModeChange: handleViewModeChange,
-              isLoading,
-              listDensity,
-              hasFiles,
-              listItems,
-            }}
-            extensions={{
-              allExtensions,
-              selectedExtensions,
-              allExtensionsSelected,
-              selectAllRef,
-              onToggleAll: handleToggleAllExtensions,
-              onToggleExtension: handleToggleExtension,
-            }}
-          />
-        )}
+        <FileListPanel
+          isCollapsed={isSidebarCollapsed}
+          frameRef={fileListFrameRef}
+          scrollRef={fileListScrollRef}
+          search={{
+            currentFolder,
+            folderLabel,
+            emptyFolderLabel: "Select folder…",
+            filterMode,
+            onPickFolder: pickFolder,
+            onFilterModeChange: handleFilterModeChange,
+            onScan: handleCurrentFolderScan,
+            onToggleSidebar: toggleSidebar,
+          }}
+          list={{
+            areControlsDisabled,
+            totalFiles,
+            viewMode,
+            hasFolders,
+            hasCollapsedFolders,
+            onToggleAllFolders: toggleAllFolders,
+            sortMode,
+            onSortModeChange: handleSortModeChange,
+            displayGroupMode,
+            shouldGroupDuplicates,
+            onGroupModeChange: handleSidebarGroupModeChange,
+            onViewModeChange: handleViewModeChange,
+            isLoading,
+            listDensity,
+            hasFiles,
+            listItems,
+          }}
+          extensions={{
+            allExtensions,
+            selectedExtensions,
+            allExtensionsSelected,
+            selectAllRef,
+            onToggleAll: handleToggleAllExtensions,
+            onToggleExtension: handleToggleExtension,
+          }}
+        />
 
         <main className="content">
           <PreviewPanel

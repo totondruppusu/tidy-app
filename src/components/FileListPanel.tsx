@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { createPortal } from "react-dom";
 import type { ReactNode, Ref } from "react";
 import { Modal } from "./Modal";
 import { FILTER_OPTIONS } from "../constants/appConstants";
@@ -52,6 +53,7 @@ type ExtensionControls = {
 };
 
 type FileListPanelProps = {
+  isCollapsed: boolean;
   frameRef: Ref<HTMLDivElement>;
   scrollRef: Ref<HTMLDivElement>;
   search: SearchControls;
@@ -60,6 +62,7 @@ type FileListPanelProps = {
 };
 
 export const FileListPanel = ({
+  isCollapsed,
   frameRef,
   scrollRef,
   search,
@@ -69,7 +72,13 @@ export const FileListPanel = ({
   const [isExtensionsModalOpen, setIsExtensionsModalOpen] = useState(false);
 
   return (
-    <aside className="list-panel" id="sidebar-panel">
+    <>
+    <aside
+      className="list-panel"
+      id="sidebar-panel"
+      aria-hidden={isCollapsed}
+      ref={(panel) => panel?.toggleAttribute("inert", isCollapsed)}
+    >
       <div className="list-header">
         <div className="list-header-top">
           <div className="list-title">
@@ -249,7 +258,9 @@ export const FileListPanel = ({
           </button>
         </div>
       </div>
-      {isExtensionsModalOpen && (
+    </aside>
+    {isExtensionsModalOpen &&
+      createPortal(
         <Modal
           className="extensions-modal"
           labelledBy="extensions-modal-title"
@@ -304,8 +315,9 @@ export const FileListPanel = ({
             Close
           </button>
         </div>
-        </Modal>
-        )}
-    </aside>
+        </Modal>,
+        document.body,
+      )}
+    </>
   );
 };

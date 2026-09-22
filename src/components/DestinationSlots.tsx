@@ -16,8 +16,9 @@ export const DestinationSlots = ({
     {Array.from({ length: DESTINATION_SLOT_COUNT }, (_, index) => {
       const destinationPath = destinationSlots[index] ?? null;
       const pathParts = destinationPath?.split(/[\\/]+/).filter(Boolean) ?? [];
-      const parentFolder = pathParts.length > 1 ? pathParts.at(-2) : null;
-      const folderName = pathParts.at(-1) ?? null;
+      const parentFolder =
+        pathParts.length > 1 ? pathParts[pathParts.length - 2] ?? null : null;
+      const folderName = pathParts[pathParts.length - 1] ?? null;
       return (
         <button
           key={`destination-${index}`}

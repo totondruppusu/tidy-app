@@ -87,6 +87,8 @@ const installBridgeScript = () => {
             return null;
           case "scan_folder":
             return { files: [...state.files], total: state.files.length };
+          case "read_text_preview":
+            return args?.id === "f1" ? "alpha-preview" : "preview";
           case "trash_file": {
             const id = String(args?.id ?? "");
             const index = state.files.findIndex((file) => file.id === id);
@@ -180,10 +182,13 @@ const swipeHandle = async (page: Page, deltaX: number, deltaY: number) => {
 
 const openFolderPicker = async (page: Page) => {
   const picker = page.getByText("Select folder…");
-  if ((await picker.count()) === 0) {
+  if (!(await picker.isVisible())) {
+    await expect(page.locator(".app-shell")).toHaveClass(/sidebar-collapsed/);
     await page.getByRole("button", { name: "Show sidebar" }).click();
+    await expect(page.locator(".app-shell")).not.toHaveClass(/sidebar-collapsed/);
+    await expect(picker).toBeVisible();
   }
-  await page.getByText("Select folder…").click();
+  await picker.click();
 };
 
 const closeSidebarIfOpen = async (page: Page) => {
@@ -219,10 +224,10 @@ test("trash and undo restores file", async ({ page }) => {
 test("mobile viewport swaps directional buttons for preview swipes", async ({
   page,
 }) => {
-  await page.setViewportSize({ width: 390, height: 844 });
   await openFolderPicker(page);
   await page.getByRole("button", { name: "Scan folder" }).click();
   await closeSidebarIfOpen(page);
+  await page.setViewportSize({ width: 390, height: 844 });
 
   await expect(
     page.getByLabel("Swipe the preview: left previous, right next, up trash, down undo"),
@@ -235,31 +240,31 @@ test("mobile viewport swaps directional buttons for preview swipes", async ({
 });
 
 test("mobile swipe gestures navigate files", async ({ page }) => {
-  await page.setViewportSize({ width: 390, height: 844 });
   await openFolderPicker(page);
   await page.getByRole("button", { name: "Scan folder" }).click();
   await closeSidebarIfOpen(page);
-  await expect(page.getByText("/mock/alpha.txt")).toBeVisible();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.getByText("alpha-preview")).toBeVisible();
 
   await swipeHandle(page, 90, 0);
-  await expect(page.getByText("/mock/old.zip")).toBeVisible();
+  await expect(page.getByText("Archive contents")).toBeVisible();
 
   await swipeHandle(page, -90, 0);
-  await expect(page.getByText("/mock/alpha.txt")).toBeVisible();
+  await expect(page.getByText("alpha-preview")).toBeVisible();
 });
 
 test("mobile swipe up trashes and swipe down undoes", async ({ page }) => {
-  await page.setViewportSize({ width: 390, height: 844 });
   await openFolderPicker(page);
   await page.getByRole("button", { name: "Scan folder" }).click();
   await closeSidebarIfOpen(page);
-  await expect(page.getByText("/mock/alpha.txt")).toBeVisible();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.getByText("alpha-preview")).toBeVisible();
 
   await swipeHandle(page, 0, -90);
-  await expect(page.getByText("/mock/old.zip")).toBeVisible();
+  await expect(page.getByText("Archive contents")).toBeVisible();
 
   await swipeHandle(page, 0, 90);
-  await expect(page.getByText("/mock/alpha.txt")).toBeVisible();
+  await expect(page.getByText("alpha-preview")).toBeVisible();
 });
 
 test("suggestions entrypoint remains hidden for now", async ({
@@ -275,13 +280,21 @@ test("suggestions entrypoint remains hidden for now", async ({
   ).toHaveCount(0);
 });
 
-test("deferred settings retain section state across reopen", async ({ page }) => {
+test("settings retain list density across reopen", async ({ page }) => {
   await page.getByRole("button", { name: "Open settings" }).click();
-  const section = page.locator(".settings-section-header").first();
-  await expect(section).toBeVisible();
-  await section.click();
-  await expect(section).toHaveAttribute("aria-expanded", "true");
-  await page.getByRole("button", { name: "Close settings" }).click();
+  const settings = page.getByRole("dialog", { name: "Settings" });
+  const density = settings
+    .locator(".settings-row")
+    .filter({ hasText: "List density" })
+    .locator("select");
+  await density.selectOption("compact");
+  await settings.getByRole("button", { name: "Close", exact: true }).click();
   await page.getByRole("button", { name: "Open settings" }).click();
-  await expect(section).toHaveAttribute("aria-expanded", "true");
+  await expect(
+    page
+      .getByRole("dialog", { name: "Settings" })
+      .locator(".settings-row")
+      .filter({ hasText: "List density" })
+      .locator("select"),
+  ).toHaveValue("compact");
 });

@@ -21,11 +21,18 @@ test.beforeEach(async ({ page }) => {
       mime: "text/plain",
     }));
     const state = window as any;
+    state.files = files;
+    state.setTestFiles = (nextFiles: typeof files) => {
+      state.files = nextFiles;
+    };
     state.testCommands = [];
     state.__TIDY_DESKTOP_BRIDGE__ = {
       isTauri: () => true,
       open: async () => "C:\\Users\\Sam\\Documents",
-      convertFileSrc: (id: string) => id,
+      convertFileSrc: (id: string) =>
+        id === "tall-image"
+          ? "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='100' height='3000'%3E%3Crect width='100' height='3000' fill='red'/%3E%3C/svg%3E"
+          : id,
       listen: async (name: string, listener: (event: unknown) => void) => {
         const bucket = listeners.get(name) ?? new Set();
         bucket.add(listener);
@@ -54,10 +61,10 @@ test.beforeEach(async ({ page }) => {
             );
           if (state.delayScan)
             return new Promise((resolve, reject) => {
-              state.finishScan = () => resolve({ files, total: files.length });
+              state.finishScan = () => resolve({ files: state.files, total: state.files.length });
               state.stopScan = () => reject("Scan cancelled");
             });
-          return { files, total: files.length };
+          return { files: state.files, total: state.files.length };
         }
         if (command === "cancel_scan") return null;
         if (command === "deletion_path_warning")
@@ -108,10 +115,6 @@ test("Windows-style paths and long folder rows remain usable across resize and d
     .poll(() => page.locator(".file-item").first().textContent())
     .not.toContain("file-0000");
   await page.getByRole("button", { name: "Open settings" }).click();
-  await page
-    .locator(".settings-section-header")
-    .filter({ hasText: "Layout" })
-    .click();
   await page
     .locator(".settings-row")
     .filter({ hasText: "List density" })
@@ -260,7 +263,7 @@ test("folder undo restores thousands of rows together and keeps the list bounded
     .click();
   await expect(page.locator(".folder-count")).toHaveCount(0);
   await page.getByRole("button", { name: "Undo ↓" }).click();
-  await expect(page.locator(".list-title .badge")).toHaveText("3000");
+  await expect(page.locator(".folder-count")).toHaveText("3000");
   await expect(page.locator(".file-item.active")).toContainText(
     "file-0000.txt",
   );
@@ -273,4 +276,103 @@ test("folder undo restores thousands of rows together and keeps the list bounded
   ).toBeVisible();
   expect(await page.locator(".file-item").count()).toBeLessThan(100);
   await expect(page.getByRole("button", { name: "Undo ↓" })).toBeDisabled();
+});
+
+test("file details use a tablet popup and fill the phone screen with a bottom close button", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page.evaluate(() => {
+    (window as any).setTestFiles([
+      {
+        id: "details-file",
+        name: "notes.txt",
+        path: "/mock/notes.txt",
+        kind: "text",
+        sizeBytes: 12,
+        modifiedMs: 1,
+        mime: "text/plain",
+      },
+    ]);
+  });
+  await page.getByText("Select folder…").click();
+  await page.getByRole("button", { name: "Scan folder" }).click();
+  const hideSidebar = page.getByRole("button", { name: "Hide sidebar" });
+  if (await hideSidebar.count()) await hideSidebar.click();
+  await page.setViewportSize({ width: 768, height: 900 });
+  await page.getByRole("button", { name: "Show file details" }).click();
+
+  const tabletDialog = page.getByRole("dialog", { name: "File details" });
+  await expect(tabletDialog).toBeVisible();
+  expect(await page.locator("body > .preview-info-backdrop").count()).toBe(1);
+  const tabletBox = await tabletDialog.boundingBox();
+  expect(tabletBox).not.toBeNull();
+  expect(tabletBox!.width).toBeLessThan(768);
+  await expect(tabletDialog.getByRole("button", { name: "Close" })).toBeVisible();
+  await tabletDialog.getByRole("button", { name: "Close" }).click();
+  await expect(tabletDialog).toHaveCount(0);
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByRole("button", { name: "Show file details" }).click();
+  const phoneDialog = page.getByRole("dialog", { name: "File details" });
+  await expect(phoneDialog).toBeVisible();
+  await expect
+    .poll(async () => Math.round((await phoneDialog.boundingBox())?.x ?? -1))
+    .toBe(0);
+  await expect
+    .poll(async () => Math.round((await phoneDialog.boundingBox())?.y ?? -1))
+    .toBe(0);
+  const phoneBox = await phoneDialog.boundingBox();
+  expect(phoneBox).not.toBeNull();
+  expect(Math.round(phoneBox!.x)).toBe(0);
+  expect(Math.round(phoneBox!.width)).toBe(390);
+  expect(Math.round(phoneBox!.y)).toBe(0);
+  expect(Math.round(phoneBox!.height)).toBe(844);
+  await expect(phoneDialog.getByRole("button")).toHaveCount(1);
+  await expect(phoneDialog.getByRole("button", { name: "Close" })).toBeVisible();
+});
+
+test("very tall image previews scale to fit a phone viewport", async ({ page }) => {
+  await page.goto("/");
+  await page.evaluate(() => {
+    (window as any).setTestFiles([
+      {
+        id: "tall-image",
+        name: "portrait.svg",
+        path: "/mock/portrait.svg",
+        kind: "image",
+        sizeBytes: 100,
+        modifiedMs: 1,
+        mime: "image/svg+xml",
+      },
+    ]);
+  });
+  await page.getByText("Select folder…").click();
+  await page.getByRole("button", { name: "Scan folder" }).click();
+  const hideSidebar = page.getByRole("button", { name: "Hide sidebar" });
+  if (await hideSidebar.count()) await hideSidebar.click();
+  await page.setViewportSize({ width: 390, height: 844 });
+
+  const image = page.locator(".preview-zoom img");
+  await expect(image).toBeVisible();
+  await expect
+    .poll(() => image.evaluate((node: HTMLImageElement) => node.naturalHeight))
+    .toBe(3000);
+  const geometry = await image.evaluate((node) => {
+    const box = node.getBoundingClientRect();
+    return {
+      left: box.left,
+      right: box.right,
+      top: box.top,
+      bottom: box.bottom,
+      height: box.height,
+      viewportWidth: window.innerWidth,
+      viewportHeight: window.innerHeight,
+    };
+  });
+  expect(geometry.left).toBeGreaterThanOrEqual(0);
+  expect(geometry.right).toBeLessThanOrEqual(geometry.viewportWidth);
+  expect(geometry.top).toBeGreaterThanOrEqual(0);
+  expect(geometry.bottom).toBeLessThanOrEqual(geometry.viewportHeight);
+  expect(geometry.height).toBeLessThan(geometry.viewportHeight);
 });

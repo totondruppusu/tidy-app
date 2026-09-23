@@ -29,8 +29,8 @@ export const HelpModal = ({ isOpen, onClose }: HelpModalProps) => {
                 types.
               </li>
               <li>
-                Click a file to preview it; double-click to reveal it in your
-                file manager.
+                Click a file to preview it; double-click to open it in its
+                default app.
               </li>
               <li>
                 Use the extensions list to narrow the scan to specific suffixes.
@@ -65,7 +65,8 @@ export const HelpModal = ({ isOpen, onClose }: HelpModalProps) => {
               <li>
                 Text, PDF, Office, and archive previews render when available.
               </li>
-              <li>Use Open file to launch the file in its default app.</li>
+              <li>Double-click a file to open it in its default app.</li>
+              <li>Use the folder button to open its containing folder.</li>
             </ul>
           </section>
           <section className="help-section">

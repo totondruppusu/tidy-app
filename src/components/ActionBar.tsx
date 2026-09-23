@@ -23,14 +23,15 @@ type ActionBarProps = {
   pickDestinationForSlot: (slotIndex: number) => void | Promise<unknown>;
   previewFile: FileEntry | null;
   preview: PreviewController;
-  canOpenFile: boolean;
+  canOpenFolder: boolean;
   isSidebarCollapsed: boolean;
   isSettingsOpen: boolean;
   isInfoOpen: boolean;
   shouldUseAndroidFloatingInfo: boolean;
   onToggleSidebar: () => void;
   onOpenSettings: () => void;
-  onOpenFile: (file: FileEntry) => void | Promise<void>;
+  onOpenFolder: (file: FileEntry) => void | Promise<void>;
+  onShareFile: (file: FileEntry) => void | Promise<void>;
   onToggleInfo: () => void;
   gesture: SwipeGestureController;
 };
@@ -52,14 +53,15 @@ export const ActionBar = ({
   pickDestinationForSlot,
   previewFile,
   preview,
-  canOpenFile,
+  canOpenFolder,
   isSidebarCollapsed,
   isSettingsOpen,
   isInfoOpen,
   shouldUseAndroidFloatingInfo,
   onToggleSidebar,
   onOpenSettings,
-  onOpenFile,
+  onOpenFolder,
+  onShareFile,
   onToggleInfo,
   gesture,
 }: ActionBarProps) => (
@@ -68,7 +70,7 @@ export const ActionBar = ({
       <div className="actions-primary">
         <PreviewActions
           previewFile={previewFile}
-          canOpenFile={canOpenFile}
+          canOpenFolder={canOpenFolder}
           isSidebarCollapsed={isSidebarCollapsed}
           isSettingsOpen={isSettingsOpen}
           isInfoOpen={isInfoOpen}
@@ -76,7 +78,8 @@ export const ActionBar = ({
           preview={preview}
           onToggleSidebar={onToggleSidebar}
           onOpenSettings={onOpenSettings}
-          onOpenFile={onOpenFile}
+          onOpenFolder={onOpenFolder}
+          onShareFile={onShareFile}
           onToggleInfo={onToggleInfo}
         />
         <DestinationSlots

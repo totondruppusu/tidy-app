@@ -1525,6 +1525,30 @@ async fn read_text_preview(app_handle: AppHandle, id: String) -> Result<String, 
 }
 
 #[tauri::command]
+async fn share_file(app_handle: AppHandle, id: String, mime_type: String) -> Result<(), String> {
+  #[cfg(target_os = "android")]
+  {
+    return tauri::async_runtime::spawn_blocking(move || {
+      let state = app_handle.state::<AppState>();
+      let source = {
+        let map = state.map.lock().expect("map lock");
+        map.get(&id).cloned().ok_or("File not found")?
+      };
+      let path = managed_source_to_local_path(&app_handle, &source)?;
+      android_files::share_file(&app_handle, &path.to_string_lossy(), &mime_type)
+    })
+    .await
+    .map_err(|error| error.to_string())?;
+  }
+
+  #[cfg(not(target_os = "android"))]
+  {
+    let _ = (app_handle, id, mime_type);
+    Err("System file sharing is unavailable on this platform.".to_string())
+  }
+}
+
+#[tauri::command]
 async fn list_archive_entries(app_handle: AppHandle, id: String) -> Result<ArchivePreview, String> {
   tauri::async_runtime::spawn_blocking(move || {
     let state = app_handle.state::<AppState>();
@@ -3031,6 +3055,7 @@ pub fn run() {
       get_index_stats,
       get_file_by_id,
       read_text_preview,
+      share_file,
       cancel_scan,
       build_cleanup_suggestions,
       apply_action_batch,

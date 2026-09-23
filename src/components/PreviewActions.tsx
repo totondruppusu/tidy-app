@@ -4,7 +4,7 @@ import { MATERIAL_ICONS } from "../lib/materialIcons";
 
 type PreviewActionsProps = {
   previewFile: FileEntry | null;
-  canOpenFile: boolean;
+  canOpenFolder: boolean;
   isSidebarCollapsed: boolean;
   isSettingsOpen: boolean;
   isInfoOpen: boolean;
@@ -12,13 +12,14 @@ type PreviewActionsProps = {
   preview: PreviewController;
   onToggleSidebar: () => void;
   onOpenSettings: () => void;
-  onOpenFile: (file: FileEntry) => void | Promise<void>;
+  onOpenFolder: (file: FileEntry) => void | Promise<void>;
+  onShareFile: (file: FileEntry) => void | Promise<void>;
   onToggleInfo: () => void;
 };
 
 export const PreviewActions = ({
   previewFile,
-  canOpenFile,
+  canOpenFolder,
   isSidebarCollapsed,
   isSettingsOpen,
   isInfoOpen,
@@ -26,7 +27,8 @@ export const PreviewActions = ({
   preview,
   onToggleSidebar,
   onOpenSettings,
-  onOpenFile,
+  onOpenFolder,
+  onShareFile,
   onToggleInfo,
 }: PreviewActionsProps) => {
   const sidebarButton = isSidebarCollapsed ? (
@@ -74,32 +76,46 @@ export const PreviewActions = ({
       {settingsButton}
       <button
         type="button"
-        className="preview-action-button"
-        disabled={!canOpenFile}
-        onClick={() => void onOpenFile(previewFile)}
+        className={`icon-button preview-bar-button preview-info-button${
+          shouldUseAndroidFloatingInfo ? " is-always-visible" : ""
+        }`}
+        aria-label={isInfoOpen ? "Hide file details" : "Show file details"}
+        aria-expanded={isInfoOpen}
+        aria-controls="preview-details-sheet"
+        onClick={onToggleInfo}
+        title={isInfoOpen ? "Hide file details" : "Show file details"}
+      >
+        <span className="material-icon" aria-hidden="true">
+          {MATERIAL_ICONS.info}
+        </span>
+      </button>
+      <button
+        type="button"
+        className="icon-button preview-bar-button"
+        disabled={!canOpenFolder}
+        onClick={() => void onOpenFolder(previewFile)}
+        aria-label="Open containing folder"
         title={
-          canOpenFile
-            ? "Open file in the system default app"
-            : "Opening files in external apps is not available on Android yet"
+          canOpenFolder
+            ? "Open containing folder in the file manager"
+            : "Opening a file's folder is not available on Android yet"
         }
       >
-        Open file
+        <span className="material-icon" aria-hidden="true">
+          {MATERIAL_ICONS.folderOpen}
+        </span>
       </button>
-      {shouldUseAndroidFloatingInfo && (
-        <button
-          type="button"
-          className="icon-button preview-bar-button"
-          aria-label={isInfoOpen ? "Hide file details" : "Show file details"}
-          aria-expanded={isInfoOpen}
-          aria-controls="preview-details-sheet"
-          onClick={onToggleInfo}
-          title={isInfoOpen ? "Hide file details" : "Show file details"}
-        >
-          <span className="material-icon" aria-hidden="true">
-            {MATERIAL_ICONS.info}
-          </span>
-        </button>
-      )}
+      <button
+        type="button"
+        className="icon-button preview-bar-button"
+        onClick={() => void onShareFile(previewFile)}
+        aria-label="Share file"
+        title="Share file"
+      >
+        <span className="material-icon" aria-hidden="true">
+          {MATERIAL_ICONS.share}
+        </span>
+      </button>
       <div className="preview-zoom-controls">
         <button
           type="button"

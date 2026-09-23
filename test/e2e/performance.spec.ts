@@ -75,6 +75,13 @@ test("large folder remains navigable with bounded mounted rows", async ({
     "file-09958.txt",
   );
   await expect(page.locator(".file-item.active")).toBeVisible();
+  await page.keyboard.down("ArrowLeft");
+  await page.keyboard.down("ArrowLeft");
+  await page.keyboard.up("ArrowLeft");
+  await expect(page.locator(".file-item.active")).toContainText(
+    "file-09954.txt",
+  );
+  await expect(page.locator(".virtual-file-list-active-indicator")).toBeVisible();
   if (!process.env.TIDY_PERF_BASELINE) {
     const controls = page.locator(".list-header-controls select");
     await controls.nth(1).selectOption("extension");

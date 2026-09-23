@@ -36,11 +36,13 @@ import {
 } from "../constants/appConstants";
 import { updateScrollHint } from "../lib/dom";
 import { formatPathLabel } from "../lib/format";
+import { buildMediaUrl } from "../lib/media";
 import { getExtension } from "../lib/files";
 import { getGroupIdForFile } from "../lib/grouping";
 import { getFolderCollapseKey } from "../lib/tree";
 import { getRelativeSegments } from "../lib/path";
 import {
+  invokeCommand,
   isDesktopRuntime,
   listenEvent,
 } from "../lib/desktopBridge";
@@ -366,6 +368,51 @@ export default function App() {
     lastStatusRef.current = message;
     setStatus(message);
   }, []);
+
+  const shareFile = useCallback(
+    async (file: FileEntry) => {
+      try {
+        if (isAndroidApp) {
+          await invokeCommand("share_file", {
+            id: file.id,
+            mimeType: file.mime,
+          });
+          return;
+        }
+
+        if (
+          typeof navigator.share !== "function" ||
+          typeof navigator.canShare !== "function"
+        ) {
+          updateStatus("Sharing files isn't supported on this device.");
+          return;
+        }
+
+        const response = await fetch(buildMediaUrl(file.id));
+        if (!response.ok) {
+          throw new Error(
+            response.status === 413
+              ? "This file is too large to share from this device."
+              : "The file could not be read for sharing.",
+          );
+        }
+        const blob = await response.blob();
+        const sharedFile = new File([blob], file.name, {
+          type: file.mime || blob.type || "application/octet-stream",
+        });
+        const shareData = { files: [sharedFile] };
+        if (!navigator.canShare(shareData)) {
+          updateStatus("Sharing files isn't supported on this device.");
+          return;
+        }
+        await navigator.share(shareData);
+      } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError") return;
+        updateStatus(`Sharing failed: ${String(error)}`);
+      }
+    },
+    [isAndroidApp, updateStatus],
+  );
 
   const suggestionsController = useSuggestionsController({
     storedSettings,
@@ -1104,7 +1151,7 @@ export default function App() {
       onToggleFolder={toggleFolderCollapse}
       onToggleGroup={toggleGroupCollapse}
       onSelect={selectListFile}
-      onOpen={openFileInFinder}
+      onOpen={openFileInSystem}
       onTrashFolder={trashFolder}
       isLoading={isLoading}
       isMutating={isMutating}
@@ -1459,14 +1506,15 @@ export default function App() {
           pickDestinationForSlot={pickDestinationForSlot}
           previewFile={preview.previewFile ?? null}
           preview={preview}
-          canOpenFile={!isAndroidApp}
+          canOpenFolder={!isAndroidApp}
           isSidebarCollapsed={isSidebarCollapsed}
           isSettingsOpen={isSettingsOpen}
           isInfoOpen={isInfoOpen}
           shouldUseAndroidFloatingInfo={isAndroidApp}
           onToggleSidebar={toggleSidebar}
           onOpenSettings={() => setIsSettingsOpen(true)}
-          onOpenFile={openFileInSystem}
+          onOpenFolder={openFileInFinder}
+          onShareFile={shareFile}
           onToggleInfo={() => setIsInfoOpen((current) => !current)}
           gesture={swipeGesture}
         />

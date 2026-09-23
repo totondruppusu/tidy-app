@@ -103,6 +103,14 @@ struct CopyDocumentToPathPayload<'a> {
 #[cfg(target_os = "android")]
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct ShareFilePayload<'a> {
+  path: &'a str,
+  mime_type: &'a str,
+}
+
+#[cfg(target_os = "android")]
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct DeleteDocumentPayload<'a> {
   document_uri: &'a str,
 }
@@ -219,6 +227,16 @@ pub fn copy_document_to_path<R: Runtime>(
       document_uri,
       target_path,
     },
+  )?;
+  Ok(())
+}
+
+#[cfg(target_os = "android")]
+pub fn share_file<R: Runtime>(app: &AppHandle<R>, path: &str, mime_type: &str) -> Result<(), String> {
+  let _: serde_json::Value = run_plugin(
+    app,
+    "shareFile",
+    ShareFilePayload { path, mime_type },
   )?;
   Ok(())
 }

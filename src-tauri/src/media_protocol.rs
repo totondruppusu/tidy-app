@@ -112,6 +112,10 @@ fn file_response(
 
   let mut headers = HeaderMap::new();
   headers.insert(
+    HeaderName::from_static("access-control-allow-origin"),
+    HeaderValue::from_static("*"),
+  );
+  headers.insert(
     HeaderName::from_static("content-type"),
     HeaderValue::from_str(&content_type)
       .unwrap_or(HeaderValue::from_static("application/octet-stream")),

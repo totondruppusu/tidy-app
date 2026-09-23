@@ -76,6 +76,7 @@ export const VirtualFileList = memo(function VirtualFileList(props: Props) {
     containerRef: scrollRef,
     offsets: layout.offsets,
   });
+  const activeIndex = currentId ? layout.fileRows.get(currentId) : undefined;
   const selectedIdRef = useRef(currentId);
   selectedIdRef.current = currentId;
   useLayoutEffect(() => {
@@ -117,6 +118,16 @@ export const VirtualFileList = memo(function VirtualFileList(props: Props) {
       className="virtual-file-list"
       style={{ height: layout.offsets[rows.length] }}
     >
+      {activeIndex !== undefined && (
+        <div
+          className="virtual-file-list-active-indicator"
+          aria-hidden="true"
+          style={{
+            top: layout.offsets[activeIndex],
+            height: layout.offsets[activeIndex + 1] - layout.offsets[activeIndex],
+          }}
+        />
+      )}
       {rows.slice(startIndex, endIndex).map((row, relativeIndex) => {
         const index = startIndex + relativeIndex;
         const style = {
@@ -133,7 +144,7 @@ export const VirtualFileList = memo(function VirtualFileList(props: Props) {
               key={row.key}
               type="button"
               style={style}
-              className={`file-item ${row.file.id === currentId ? "active " : ""}${row.depth !== undefined ? "tree-item" : ""}`}
+              className={`file-item ${row.file.id === currentId ? "active " : ""}${row.depth === undefined ? "" : `tree-item${row.depth === 0 ? " tree-item-root" : ""}`}`}
               title={row.file.path}
               aria-current={row.file.id === currentId ? "true" : undefined}
               disabled={props.isLoading || props.isMutating}

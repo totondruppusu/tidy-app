@@ -1,5 +1,8 @@
 import { Modal } from "./Modal";
+import { createPortal } from "react-dom";
 import {
+  useLayoutEffect,
+  useRef,
   type PointerEventHandler,
   type Ref,
   type WheelEventHandler,
@@ -65,6 +68,37 @@ export const PreviewPanel = ({
   onCloseInfo,
 }: PreviewPanelProps) => {
   const previewFile = preview.previewFile;
+  const detailsRef = useRef<HTMLElement>(null);
+
+  useLayoutEffect(() => {
+    const details = detailsRef.current;
+    const scrollport = details?.closest<HTMLElement>(".preview-panel");
+    if (!details || !scrollport) return;
+
+    const updateStickyOffset = () => {
+      const topInset = 0;
+      const bottomInset = 20;
+      const visibleHeight = scrollport.clientHeight;
+      const detailsHeight = details.getBoundingClientRect().height;
+      const stickyTop = Math.min(
+        topInset,
+        visibleHeight - detailsHeight - bottomInset,
+      );
+      details.style.setProperty("--preview-details-sticky-top", `${stickyTop}px`);
+    };
+
+    const observer = new ResizeObserver(updateStickyOffset);
+    observer.observe(details);
+    observer.observe(scrollport);
+    window.addEventListener("resize", updateStickyOffset);
+    updateStickyOffset();
+
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", updateStickyOffset);
+      details.style.removeProperty("--preview-details-sticky-top");
+    };
+  }, [previewFile?.id, gesture.enabled, isAndroidApp]);
 
   const shouldUseAndroidFloatingInfo = isAndroidApp;
 
@@ -445,43 +479,49 @@ export const PreviewPanel = ({
             </div>
             <div className="caption" aria-hidden="true" />
             {!shouldUseAndroidFloatingInfo && (
-              <aside className="preview-details" aria-label="File details">
+              <aside
+                ref={detailsRef}
+                className="preview-details"
+                aria-label="File details"
+              >
                 {detailsContent}
               </aside>
             )}
           </div>
         </div>
       </section>
-      {shouldUseAndroidFloatingInfo && isInfoOpen && (
-        <Modal
-          className="preview-info-modal"
-          labelledBy="preview-info-title"
-          onClose={onCloseInfo}
-        >
-          <div
-            id="preview-details-sheet"
-            className="preview-details-sheet-header"
+      {isInfoOpen &&
+        createPortal(
+          <Modal
+            className="preview-info-modal"
+            backdropClassName="preview-info-backdrop"
+            labelledBy="preview-info-title"
+            onClose={onCloseInfo}
           >
             <div
-              id="preview-info-title"
-              className="preview-details-sheet-title"
+              id="preview-details-sheet"
+              className="preview-details-sheet-header"
             >
-              File details
+              <div
+                id="preview-info-title"
+                className="preview-details-sheet-title"
+              >
+                File details
+              </div>
             </div>
-            <button
-              type="button"
-              className="icon-button"
-              onClick={onCloseInfo}
-              aria-label="Close file details"
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                <path d="M18.3 5.7a1 1 0 0 0-1.4 0L12 10.6 7.1 5.7a1 1 0 1 0-1.4 1.4L10.6 12l-4.9 4.9a1 1 0 1 0 1.4 1.4L12 13.4l4.9 4.9a1 1 0 0 0 1.4-1.4L13.4 12l4.9-4.9a1 1 0 0 0 0-1.4Z" />
-              </svg>
-            </button>
-          </div>
-          <div className="preview-info-modal-body">{detailsContent}</div>
-        </Modal>
-      )}
+            <div className="preview-info-modal-body">{detailsContent}</div>
+            <div className="preview-info-modal-footer">
+              <button
+                type="button"
+                className="preview-info-close"
+                onClick={onCloseInfo}
+              >
+                Close
+              </button>
+            </div>
+          </Modal>,
+          document.body,
+        )}
     </div>
   );
 };

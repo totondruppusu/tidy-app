@@ -70,11 +70,9 @@ describe("App integration", () => {
   };
 
   const clickFolderPicker = async (user: ReturnType<typeof userEvent.setup>) => {
-    if (!screen.queryByText("Select folder…")) {
-      const revealSidebar = screen.queryByRole("button", { name: "Show sidebar" });
-      if (revealSidebar) {
-        await user.click(revealSidebar);
-      }
+    const revealSidebar = screen.queryByRole("button", { name: "Show sidebar" });
+    if (revealSidebar) {
+      await user.click(revealSidebar);
     }
     const picker = await screen.findByText("Select folder…").then((node) => node.closest("button"));
     expect(picker).not.toBeNull();
@@ -136,6 +134,98 @@ describe("App integration", () => {
       n.textContent?.trim()
     );
     expect(fileNames[0]).toBe("big.jpg");
+  });
+
+  it("opens a file on double click and reveals its folder from the toolbar", async () => {
+    const controller = createMockBridge();
+    installBaseHandlers(controller);
+    window.__TIDY_DESKTOP_BRIDGE__ = controller.bridge;
+
+    const file = createFile({
+      id: "f1",
+      name: "notes.txt",
+      kind: "text",
+      path: "/mock/notes.txt",
+    });
+    const reveal = vi.fn();
+    controller.bridge.open = async () => "/mock";
+    controller.onInvoke("scan_folder", () => ({ files: [file], total: 1 }));
+    controller.onInvoke("reveal_in_file_manager", reveal);
+
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+    await clickFolderPicker(user);
+    await user.click(screen.getByRole("button", { name: "Scan folder" }));
+
+    const fileRow = await screen.findByRole("button", { name: /notes\.txt/ });
+    await user.dblClick(fileRow);
+    await waitFor(() =>
+      expect(reveal).toHaveBeenLastCalledWith({
+        path: "/mock/notes.txt",
+        reveal: false,
+      }),
+    );
+
+    await user.click(screen.getByRole("button", { name: "Open containing folder" }));
+    await waitFor(() =>
+      expect(reveal).toHaveBeenLastCalledWith({
+        path: "/mock/notes.txt",
+        reveal: true,
+      }),
+    );
+    expect(container.querySelector(".file-list")).toBeInTheDocument();
+  });
+
+  it("shares the file bytes without adding path or title text", async () => {
+    const controller = createMockBridge();
+    installBaseHandlers(controller);
+    window.__TIDY_DESKTOP_BRIDGE__ = controller.bridge;
+
+    const file = createFile({
+      id: "f1",
+      name: "notes.txt",
+      kind: "text",
+      path: "/mock/notes.txt",
+      mime: "text/plain",
+    });
+    controller.bridge.open = async () => "/mock";
+    controller.onInvoke("scan_folder", () => ({ files: [file], total: 1 }));
+
+    const originalFetch = globalThis.fetch;
+    const originalShare = navigator.share;
+    const originalCanShare = navigator.canShare;
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      blob: async () => new Blob(["file contents"], { type: "text/plain" }),
+    });
+    const shareMock = vi.fn().mockResolvedValue(undefined);
+    const canShareMock = vi.fn().mockReturnValue(true);
+    Object.defineProperty(globalThis, "fetch", { configurable: true, value: fetchMock });
+    Object.defineProperty(navigator, "share", { configurable: true, value: shareMock });
+    Object.defineProperty(navigator, "canShare", { configurable: true, value: canShareMock });
+
+    try {
+      const user = userEvent.setup();
+      const { container } = render(<App />);
+      await clickFolderPicker(user);
+      await user.click(screen.getByRole("button", { name: "Scan folder" }));
+      await waitFor(() =>
+        expect(container.querySelector(".file-list")?.textContent).toContain("notes.txt"),
+      );
+      await user.click(screen.getByRole("button", { name: "Share file" }));
+
+      await waitFor(() => expect(shareMock).toHaveBeenCalledTimes(1));
+      const shareData = shareMock.mock.calls[0][0] as ShareData;
+      expect(Object.keys(shareData)).toEqual(["files"]);
+      expect(shareData.files).toHaveLength(1);
+      expect(shareData.files?.[0].name).toBe("notes.txt");
+      expect(await shareData.files?.[0].text()).toBe("file contents");
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    } finally {
+      Object.defineProperty(globalThis, "fetch", { configurable: true, value: originalFetch });
+      Object.defineProperty(navigator, "share", { configurable: true, value: originalShare });
+      Object.defineProperty(navigator, "canShare", { configurable: true, value: originalCanShare });
+    }
   });
 
   it("defaults new tree scans to folded folders", async () => {
@@ -813,7 +903,9 @@ describe("App integration", () => {
       await user.click(screen.getByRole("button", { name: "Use this folder" }));
       await user.click(screen.getByRole("button", { name: "Scan folder" }));
 
-      expect(await screen.findByRole("button", { name: "Open file" })).toBeDisabled();
+      expect(
+        await screen.findByRole("button", { name: "Open containing folder" }),
+      ).toBeDisabled();
     });
   });
 
@@ -857,6 +949,8 @@ describe("App integration", () => {
         ],
         total: 1,
       }));
+      const shareFile = vi.fn();
+      controller.onInvoke("share_file", shareFile);
 
       const user = userEvent.setup();
       render(<App />);
@@ -875,6 +969,14 @@ describe("App integration", () => {
       await user.click(screen.getByRole("button", { name: "Show file details" }));
       expect(await screen.findByLabelText("File details")).toBeInTheDocument();
       expect(screen.getByText("Full path")).toBeInTheDocument();
+
+      await user.click(screen.getByRole("button", { name: "Share file" }));
+      await waitFor(() =>
+        expect(shareFile).toHaveBeenCalledWith({
+          id: "f1",
+          mimeType: "image/jpeg",
+        }),
+      );
     });
   });
 

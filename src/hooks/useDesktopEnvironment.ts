@@ -227,7 +227,9 @@ export function useDesktopEnvironment({
         return;
       }
       try {
-        await getDesktopWindow().setTheme(theme === "dark" ? "dark" : "light");
+        await getDesktopWindow().setTheme(
+          theme === "light" || theme === "high-contrast" ? "light" : "dark",
+        );
       } catch (error) {
         console.warn("Failed to sync window theme.", error);
       }

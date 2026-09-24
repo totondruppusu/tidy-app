@@ -108,6 +108,30 @@ export const SettingsModal = ({
          <div className="settings-grid">
             <div className="settings-row">
               <div className="setting-info">
+                <div className="setting-title">Theme</div>
+                <div className="setting-subtitle">Choose the app color palette.</div>
+              </div>
+              <select
+                value={appearance.theme}
+                onChange={(event) => appearance.setTheme(event.target.value as ThemeMode)}
+                disabled={isLoading}
+              >
+                <option value="light">Light</option>
+                <option value="dark">Dark</option>
+                <option value="ocean">Ocean</option>
+                <option value="forest">Forest</option>
+                <option value="sunset">Sunset</option>
+                <option value="monokai">Monokai</option>
+                <option value="one-dark">One Dark</option>
+                <option value="dracula">Dracula</option>
+                <option value="nord">Nord</option>
+                <option value="solarized-dark">Solarized Dark</option>
+                <option value="high-contrast">High contrast</option>
+                <option value="amoled">AMOLED black</option>
+              </select>
+            </div>
+            <div className="settings-row">
+              <div className="setting-info">
                 <div className="setting-title">Start view</div>
                 <div className="setting-subtitle">Choose the default file list layout.</div>
               </div>
@@ -297,16 +321,6 @@ export const SettingsModal = ({
               <label className="setting-toggle">
                 <input type="checkbox" checked={preview.skipLargePreviews} onChange={(event) => preview.setSkipLargePreviews(event.target.checked)} disabled={isLoading} />
                 <span>{preview.skipLargePreviews ? "On" : "Off"}</span>
-              </label>
-            </div>
-            <div className="settings-row">
-              <div className="setting-info">
-                <div className="setting-title">Dark mode</div>
-                <div className="setting-subtitle">Switch to a darker color palette.</div>
-              </div>
-              <label className="setting-toggle">
-                <input type="checkbox" checked={appearance.theme === "dark"} onChange={(event) => appearance.setTheme(event.target.checked ? "dark" : "light")} disabled={isLoading} />
-                <span>{appearance.theme === "dark" ? "On" : "Off"}</span>
               </label>
             </div>
          </div>

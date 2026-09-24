@@ -27,7 +27,21 @@ export type SortMode =
 
 export type DensityMode = "comfortable" | "compact";
 export type GroupMode = "none" | "type" | "extension" | "duplicates";
-export type ThemeMode = "light" | "dark";
+export const THEME_MODES = [
+  "light",
+  "dark",
+  "ocean",
+  "forest",
+  "sunset",
+  "monokai",
+  "one-dark",
+  "dracula",
+  "nord",
+  "solarized-dark",
+  "high-contrast",
+  "amoled",
+] as const;
+export type ThemeMode = (typeof THEME_MODES)[number];
 export type ViewMode = "tree" | "list";
 export type ExtensionFilterMode = "all" | "remember" | "common";
 export type TrashBehavior = "system" | "permanent";

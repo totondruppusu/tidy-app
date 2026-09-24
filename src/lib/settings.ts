@@ -9,6 +9,7 @@ import {
   VIEW_MODES,
   DENSITY_MODES,
 } from "../constants/appConstants";
+import { THEME_MODES } from "../types";
 import type {
   DensityMode,
   ExtensionFilterMode,
@@ -49,8 +50,11 @@ export const getInitialTheme = (): ThemeMode => {
     return "dark";
   }
   const stored = window.localStorage.getItem("tidy-theme");
-  if (stored === "light" || stored === "dark") {
-    return stored;
+  if (
+    typeof stored === "string" &&
+    (THEME_MODES as readonly string[]).includes(stored)
+  ) {
+    return stored as ThemeMode;
   }
   return "dark";
 };
